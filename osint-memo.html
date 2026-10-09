@@ -682,6 +682,7 @@ const truncate = (s, n) => { s = String(s ?? ''); return s.length > n ? s.slice(
 const uniq = (arr) => Array.from(new Set(arr));
 const byId = (arr, id) => arr.find((x) => x.id === id);
 const enc = encodeURIComponent;
+const safeHref = (u) => (typeof u === 'string' && /^https?:\/\/[^\s]+$/i.test(u.trim()) ? u.trim() : null);
 const utf8 = (s) => new TextEncoder().encode(s);
 const unutf8 = (b) => new TextDecoder().decode(b);
 
@@ -1152,7 +1153,7 @@ async function sha256Hex(bytes) {
 }
 async function hashAll(input) {
   const bytes = typeof input === 'string' ? utf8(input) : input;
-  const r = { md5: md5Hex(bytes) };
+  const r = { md5: bytes.length <= 300 * 1024 * 1024 ? md5Hex(bytes) : null };
   if (HAS_SUBTLE) {
     const [a, b, c] = await Promise.all(['SHA-1', 'SHA-256', 'SHA-512'].map((al) => crypto.subtle.digest(al, bytes)));
     r.sha1 = hex(a); r.sha256 = hex(b); r.sha512 = hex(c);
@@ -1679,7 +1680,7 @@ function pivotsFor(type, raw, label = '') {
       }
       add('검색엔진', 'Google', G(`"${v}"`));
       if (host) add('검색엔진', 'Google site:', G(`site:${host}`));
-      add('열기', '직접 열기 (주의)', v, '대상 서버에 접속 기록이 남습니다');
+      if (safeHref(v)) add('열기', '직접 열기 (주의)', v, '대상 서버에 접속 기록이 남습니다');
       break;
     }
     case 'hash': {
@@ -1792,7 +1793,7 @@ const LIST_RE = /^(\s*)([-*+]|\d{1,9}[.)])\s+(.*)$/;
 function selHTML(a, raw, ctx) {
   const ent = ctx.known && a.t ? ctx.known(a.t, a.v) : null;
   const shown = ctx.defang && ['url', 'email', 'domain', 'ip'].includes(a.t) ? defang(refang(raw), a.t) : raw;
-  return `<span class="sel${ent ? ' known' : ''}"${ent ? ` data-t="${a.t}" data-eid="${ent.id}"` : ''} data-k="${a.k}" data-st="${a.t || ''}" data-v="${esc(a.v)}" title="${esc(KIND[a.k].label)}${ent ? ' · 등록된 엔티티' : ' · 클릭하여 피벗/등록'}">${esc(shown)}</span>`;
+  return `<span class="sel${ent ? ' known' : ''}"${ent ? ` data-t="${esc(a.t)}" data-eid="${esc(ent.id)}"` : ''} data-k="${a.k}" data-st="${a.t || ''}" data-v="${esc(a.v)}" title="${esc(KIND[a.k].label)}${ent ? ' · 등록된 엔티티' : ' · 클릭하여 피벗/등록'}">${esc(shown)}</span>`;
 }
 function textHTML(str, ctx = {}) {
   if (ctx.noSel || !str) return esc(str);
@@ -1834,7 +1835,7 @@ function wikiHTML(inner, ctx) {
   const target = (bar >= 0 ? inner.slice(0, bar) : inner).trim();
   const label = (bar >= 0 ? inner.slice(bar + 1) : inner).trim() || target;
   const r = ctx.resolveWiki ? ctx.resolveWiki(target) : null;
-  return `<a class="wl${r ? '' : ' missing'}" href="#" data-wl="${esc(target)}"${r ? ` data-kind="${r.kind}" data-id="${r.id}"` : ''} title="${r ? (r.kind === 'note' ? '노트로 이동' : '엔티티 열기') : '없는 항목 — 클릭하여 만들기'}">${esc(label)}</a>`;
+  return `<a class="wl${r ? '' : ' missing'}" href="#" data-wl="${esc(target)}"${r ? ` data-kind="${esc(r.kind)}" data-id="${esc(r.id)}"` : ''} title="${r ? (r.kind === 'note' ? '노트로 이동' : '엔티티 열기') : '없는 항목 — 클릭하여 만들기'}">${esc(label)}</a>`;
 }
 const WORDCH = /[\p{L}\p{N}]/u;
 function findClose(s, from, delim, wordBound) {
@@ -2032,15 +2033,47 @@ function newCase(title = '새 사건') {
     notes: [], entities: [], links: [], events: [], sources: [], tasks: [], hypotheses: [], log: [], graph: {} };
 }
 const CASE_ARRAYS = ['notes', 'entities', 'links', 'events', 'sources', 'tasks', 'hypotheses', 'log', 'tags'];
+const isoOr = (v, fb) => { if (!v) return fb; const d = new Date(v); return isNaN(d) ? fb : d.toISOString(); };
+const strArr = (a) => (Array.isArray(a) ? a.filter((x) => x != null).map(String) : []);
+const objArr = (a) => (Array.isArray(a) ? a.filter((x) => x && typeof x === 'object' && !Array.isArray(x)) : []);
+const str = (v, fb = '') => (v == null ? fb : String(v));
+// 가져온 백업은 신뢰할 수 없는 입력이므로 모든 필드를 형식에 맞게 다시 만든다
 function normalizeCase(c) {
   for (const k of CASE_ARRAYS) if (!Array.isArray(c[k])) c[k] = [];
-  c.id ||= uid(); c.title ||= '제목 없는 사건'; c.status ||= 'active'; c.tlp ||= 'AMBER'; c.objective ??= ''; c.codename ??= '';
-  c.createdAt ||= nowISO(); c.updatedAt ||= c.createdAt;
-  if (!c.graph || typeof c.graph !== 'object') c.graph = {};
-  for (const e of c.entities) { e.tags ||= []; e.attrs ||= []; e.sourceIds ||= []; e.conf ||= 'mid'; e.label ??= ''; e.notes ??= ''; if (!ETYPES[e.type]) e.type = 'other'; }
-  for (const n of c.notes) { n.tags ||= []; n.body ??= ''; n.title ??= ''; }
-  for (const ev of c.events) { ev.entityIds ||= []; ev.sourceIds ||= []; ev.certainty ||= 'confirmed'; }
-  for (const s of c.sources) { s.attachments ||= []; s.entityIds ||= []; }
+  c.id = str(c.id) || uid(); c.title = str(c.title) || '제목 없는 사건';
+  if (!CASE_STATUS[c.status]) c.status = 'active';
+  if (!TLP[c.tlp]) c.tlp = 'AMBER';
+  c.objective = str(c.objective); c.codename = str(c.codename); c.tags = strArr(c.tags);
+  c.createdAt = isoOr(c.createdAt, nowISO()); c.updatedAt = isoOr(c.updatedAt, c.createdAt);
+  if (!c.graph || typeof c.graph !== 'object' || Array.isArray(c.graph)) c.graph = {};
+  for (const [k, v] of Object.entries(c.graph)) if (!v || !Number.isFinite(+v.x) || !Number.isFinite(+v.y)) delete c.graph[k];
+  c.entities = objArr(c.entities).filter((e) => e.value != null && String(e.value).trim());
+  for (const e of c.entities) {
+    e.id = str(e.id) || uid(); e.value = str(e.value).trim(); if (!ETYPES[e.type]) e.type = 'other'; e.label = str(e.label); if (!CONF[e.conf]) e.conf = 'mid';
+    e.tags = strArr(e.tags); e.attrs = objArr(e.attrs).map((a) => ({ k: str(a.k), v: str(a.v) })); e.sourceIds = strArr(e.sourceIds); e.notes = str(e.notes);
+    e.createdAt = isoOr(e.createdAt, c.createdAt); e.updatedAt = isoOr(e.updatedAt, e.createdAt);
+  }
+  c.links = objArr(c.links).filter((l) => l.from != null && l.to != null);
+  for (const l of c.links) { l.id = str(l.id) || uid(); l.from = str(l.from); l.to = str(l.to); l.label = str(l.label) || '관련'; l.note = str(l.note); l.createdAt = isoOr(l.createdAt, c.createdAt); }
+  c.notes = objArr(c.notes);
+  for (const n of c.notes) { n.id = str(n.id) || uid(); n.title = str(n.title); n.body = str(n.body); n.tags = strArr(n.tags); n.pinned = !!n.pinned; n.createdAt = isoOr(n.createdAt, c.createdAt); n.updatedAt = isoOr(n.updatedAt, n.createdAt); }
+  c.events = objArr(c.events);
+  for (const ev of c.events) {
+    ev.id = str(ev.id) || uid(); ev.title = str(ev.title) || '제목 없는 이벤트'; ev.description = str(ev.description); if (!CERTAINTY[ev.certainty]) ev.certainty = 'confirmed';
+    ev.createdAt = isoOr(ev.createdAt, c.createdAt); ev.at = isoOr(ev.at, ev.createdAt); ev.dateOnly = !!ev.dateOnly; ev.entityIds = strArr(ev.entityIds); ev.sourceIds = strArr(ev.sourceIds);
+  }
+  c.sources = objArr(c.sources);
+  for (const s of c.sources) {
+    s.id = str(s.id) || uid(); s.title = str(s.title); s.url = str(s.url); s.archiveUrl = str(s.archiveUrl); s.notes = str(s.notes);
+    if (!SRC_TYPES[s.type]) s.type = 'other'; if (!ADM_REL[s.reliability]) s.reliability = ''; if (!ADM_CRED[s.credibility]) s.credibility = '';
+    s.capturedAt = isoOr(s.capturedAt, c.createdAt); s.publishedAt = isoOr(s.publishedAt, ''); s.attachments = strArr(s.attachments); s.entityIds = strArr(s.entityIds);
+  }
+  c.tasks = objArr(c.tasks);
+  for (const t of c.tasks) { t.id = str(t.id) || uid(); t.text = str(t.text) || '(내용 없음)'; t.done = !!t.done; if (![1, 2, 3].includes(t.prio)) t.prio = 2; t.createdAt = isoOr(t.createdAt, c.createdAt); t.doneAt = isoOr(t.doneAt, null); }
+  c.hypotheses = objArr(c.hypotheses);
+  for (const hy of c.hypotheses) { hy.id = str(hy.id) || uid(); hy.text = str(hy.text); hy.note = str(hy.note); if (!HYP[hy.status]) hy.status = 'open'; }
+  c.log = objArr(c.log);
+  for (const l of c.log) { l.id = str(l.id) || uid(); l.at = isoOr(l.at, c.createdAt); if (!LOG_KIND[l.kind]) l.kind = 'system'; l.msg = str(l.msg); if (l.url != null) l.url = safeHref(str(l.url)) || undefined; }
   return c;
 }
 function normalizeDB(db) {
@@ -2048,12 +2081,19 @@ function normalizeDB(db) {
   db.settings = { ...DEFAULT_SETTINGS, ...(db.settings || {}) };
   if (!Array.isArray(db.cases)) db.cases = [];
   db.cases.forEach(normalizeCase);
-  db.attachments ||= {};
+  if (!db.attachments || typeof db.attachments !== 'object' || Array.isArray(db.attachments)) db.attachments = {};
+  for (const [id, a] of Object.entries(db.attachments)) {
+    if (!a || typeof a !== 'object' || !/^[a-z0-9]+$/i.test(id)) { delete db.attachments[id]; continue; }
+    Object.assign(a, { id, name: str(a.name, 'file'), type: str(a.type, 'application/octet-stream'), sha256: str(a.sha256), sha1: str(a.sha1), md5: str(a.md5), size: +a.size || 0, addedAt: isoOr(a.addedAt, nowISO()) });
+  }
+  if (!['local', 'UTC'].includes(db.settings.tz)) db.settings.tz = 'local';
+  db.settings.autoLockMin = [0, 5, 10, 15, 30, 60].includes(+db.settings.autoLockMin) ? +db.settings.autoLockMin : 15;
+  db.settings.analyst = str(db.settings.analyst);
   if (!db.cases.find((c) => c.id === db.activeCaseId)) db.activeCaseId = db.cases[0]?.id || null;
   return db;
 }
 
-const saveSoon = debounce(() => persist(), 650);
+const saveSoon = debounce(() => persist(), 800);
 function markDirty() { if (!S.db) return; S.dirty = true; updateSaveStatus(); saveSoon(); }
 async function persist() {
   if (!S.db || S.locked) return;
@@ -2499,6 +2539,7 @@ function logPivot(name, value, url) {
   if (S.view === 'log') renderView({ keepScroll: true });
 }
 function pivotLink(p, value) {
+  if (!safeHref(p.url)) return null;
   return h('a', { class: 'pv', href: p.url, target: '_blank', rel: 'noopener noreferrer nofollow', title: (p.note ? p.note + ' · ' : '') + p.url, onclick: () => logPivot(p.name, value, p.url) }, p.name, icon('ext', 11));
 }
 function pivotPanel(type, value, label) {
@@ -2536,7 +2577,7 @@ function selPopover(anchor, { k, t, v }) {
     t ? { label: '모든 피벗 도구…', icon: 'zap', onClick: () => pivotModal(t, v) } : null,
     ps.length ? { sep: true } : null,
     ps.length ? { header: '빠른 피벗 (새 탭)' } : null,
-    ...ps.map((p) => ({ label: p.name, icon: 'ext', href: p.url, hint: p.cat, onClick: () => logPivot(p.name, v, p.url) })),
+    ...ps.filter((p) => safeHref(p.url)).map((p) => ({ label: p.name, icon: 'ext', href: p.url, hint: p.cat, onClick: () => logPivot(p.name, v, p.url) })),
   ]);
 }
 
@@ -3112,7 +3153,7 @@ function noteEditor(c, n) {
   const reEsc = (x) => x.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const backs = n.title.trim() ? c.notes.filter((x) => x.id !== n.id && new RegExp('\\[\\[' + reEsc(n.title.trim()) + '(\\|[^\\]]*)?\\]\\]', 'i').test(x.body)) : [];
   const backBtn = backs.length ? h('button', { class: 'btn xs', title: '이 노트를 [[링크]]한 노트', onclick: (ev) => popMenu(ev.currentTarget, [{ header: '이 노트를 링크한 노트' }, ...backs.map((x) => ({ label: x.title || '제목 없음', icon: 'note', onClick: () => openNote(x.id) }))]) }, icon('link', 12), `백링크 ${backs.length}`) : null;
-  foot.append(stats, selBtn, backBtn, h('span', { class: 'sp' }), h('span', { class: 'hide-sm' }, `${MOD}+B 굵게 · Alt+T 시각 · Tab 들여쓰기`));
+  addKids(foot, [stats, selBtn, backBtn, h('span', { class: 'sp' }), h('span', { class: 'hide-sm' }, `${MOD}+B 굵게 · Alt+T 시각 · Tab 들여쓰기`)]);
   const updFoot = () => {
     const sels = extractUnique(n.body).filter((x) => x.t);
     stats.textContent = `${n.body.length.toLocaleString()}자 · ${n.body ? n.body.split('\n').length : 0}줄 · 수정 ${fromNow(n.updatedAt)}`;
@@ -3566,7 +3607,7 @@ function drawSource(el, c, s) {
   row('URL', s.url ? h('div', { class: 'row nw' }, h('span', { class: 'mono small break grow' }, s.url), h('button', { class: 'btn ghost icon xs', 'aria-label': 'URL 복사', onclick: () => copyText(s.url) }, icon('copy', 12))) : null);
   row('수집 시각', h('span', { class: 'mono small' }, fmtDT(s.capturedAt, { sec: true, zone: true })));
   row('원 게시 시각', s.publishedAt ? h('span', { class: 'mono small' }, fmtDT(s.publishedAt, { zone: true })) : null);
-  row('아카이브', s.archiveUrl ? h('a', { href: s.archiveUrl, target: '_blank', rel: 'noopener noreferrer', class: 'mono small break' }, s.archiveUrl) : null);
+  row('아카이브', s.archiveUrl ? (safeHref(s.archiveUrl) ? h('a', { href: safeHref(s.archiveUrl), target: '_blank', rel: 'noopener noreferrer', class: 'mono small break' }, s.archiveUrl) : h('span', { class: 'mono small break' }, s.archiveUrl)) : null);
   row('출처 신뢰도', `${s.reliability || '?'} — ${ADM_REL[s.reliability] || '미평가'}`);
   row('정보 정확성', `${s.credibility || '?'} — ${ADM_CRED[s.credibility] || '미평가'}`);
   b.append(kv);
@@ -4390,7 +4431,7 @@ VIEW_FN.log = (root, c) => {
       box.append(h('div', { class: 'log-row' },
         h('span', { class: 'lt', title: fmtDT(l.at, { sec: true, tz: 'UTC' }) + ' UTC' }, fmtDT(l.at, { sec: true })),
         h('span', { class: 'lk ' + l.kind }, LOG_KIND[l.kind] || l.kind),
-        h('span', { class: 'lm' }, l.msg, l.url ? h('a', { href: l.url, target: '_blank', rel: 'noopener noreferrer nofollow', class: 'small mono', style: 'margin-left:8px', title: l.url }, '링크') : null)));
+        h('span', { class: 'lm' }, l.msg, safeHref(l.url) ? h('a', { href: safeHref(l.url), target: '_blank', rel: 'noopener noreferrer nofollow', class: 'small mono', style: 'margin-left:8px', title: l.url }, '링크') : null)));
     }
     if (c.log.length > 1000 && rows.length === 1000) box.append(h('div', { class: 'hint', style: 'padding:10px 14px' }, '최근 1,000개만 표시합니다. 전체는 CSV로 내보내세요.'));
   };
@@ -4846,7 +4887,7 @@ VIEW_FN.tools = (root) => {
     h('div', { class: 'tools' }, nav, h('div', { class: 'col', style: 'gap:12px;min-width:0' }, sel, body)));
   TOOL_FN[cur.id](body);
 };
-const toolHead = (title, lead) => [h('h2', null, title), lead ? h('p', { class: 'lead' }, lead) : null];
+const toolHead = (title, lead) => [h('h2', null, title), lead ? h('p', { class: 'lead' }, lead) : null].filter(Boolean);
 const copyBtn = (getText, label = '복사') => h('button', { class: 'btn sm', onclick: () => copyText(typeof getText === 'function' ? getText() : getText) }, icon('copy', 13), label);
 function resItem(v, extra = [], t = null) {
   return h('div', { class: 'res-item', dataset: t ? { t } : {} }, t ? h('span', { class: 'tdot' }) : null, h('span', { class: 'v' }, v), ...extra,
@@ -4888,7 +4929,7 @@ TOOL_FN.hash = (box) => {
     if (label) out.append(h('div', { class: 'small muted' }, label));
     const want = cmp.value.trim().toLowerCase();
     for (const [k, v] of Object.entries(hs)) {
-      if (!v) { out.append(h('div', { class: 'res-item' }, h('span', { class: 'badge outline' }, k.toUpperCase()), h('span', { class: 'v muted' }, '이 환경에서는 계산할 수 없음 (보안 컨텍스트 필요)'))); continue; }
+      if (!v) { out.append(h('div', { class: 'res-item' }, h('span', { class: 'badge outline' }, k.toUpperCase()), h('span', { class: 'v muted' }, k === 'md5' ? '파일이 커서(300MB 초과) 생략' : '이 환경에서는 계산할 수 없음 (보안 컨텍스트 필요)'))); continue; }
       const hit = want && v === want;
       out.append(resItem(v, [h('span', { class: 'badge ' + (hit ? 'ok' : 'outline'), style: 'order:-1' }, hit ? '일치 · ' + k.toUpperCase() : k.toUpperCase().replace('SHA', 'SHA-'))]));
     }
@@ -5570,6 +5611,7 @@ async function fullBackup() {
 async function storeImportedAttachments(atts, idRemap = new Map()) {
   let n = 0;
   for (const [oldId, a] of Object.entries(atts || {})) {
+    if (!/^[a-z0-9]+$/i.test(oldId) || !a || typeof a.data !== 'string') continue;
     try {
       const bytes = b64ToBytes(a.data);
       let id = oldId;
