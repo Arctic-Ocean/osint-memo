@@ -3177,6 +3177,11 @@ function noteEditor(c, n) {
     if (files.length) { e.preventDefault(); attachFilesToNote(c, n, ta, files); }
   });
   pv.addEventListener('click', (e) => onPreviewClick(e, c, () => n));
+  ta.addEventListener('scroll', () => {
+    if (!body.classList.contains('m-split')) return;
+    const r = ta.scrollTop / Math.max(1, ta.scrollHeight - ta.clientHeight);
+    pv.scrollTop = r * (pv.scrollHeight - pv.clientHeight);
+  }, { passive: true });
   pv.addEventListener('change', (e) => {
     const cb = e.target.closest('input[type=checkbox][data-line]');
     if (!cb) return;
@@ -3306,6 +3311,7 @@ function bulkImportDialog(initial = '') {
 /* ======================================================================
    13. 엔티티 목록 · 편집 · 상세 패널
    ====================================================================== */
+const PAGE = 300;
 const ENT_SORTS = { updated: '최근 수정순', degree: '관계 많은 순', type: '유형순', value: '값 가나다순', conf: '신뢰도 높은 순' };
 function mentionCounter(c) {
   const bodies = c.notes.map((n) => (n.title + '\n' + n.body + '\n' + refang(n.body)).toLowerCase());
@@ -3330,8 +3336,9 @@ VIEW_FN.entities = (root, c) => {
     t !== 'all' ? h('span', { class: 'tdot' }) : null, label, h('span', { class: 'n' }, String(n)));
   root.append(h('div', { class: 'filters' }, chip('all', '전체', c.entities.length), ETYPE_KEYS.filter((t) => counts[t]).map((t) => chip(t, ETYPES[t].label, counts[t]))));
   const q = h('input', { class: 'input', id: 'ent-q', placeholder: '값·설명·태그·속성 검색', value: ui.q, autocomplete: 'off' });
-  q.addEventListener('input', debounce(() => { ui.q = q.value; drawTable(); }, 120));
-  const sort = selectEl(Object.entries(ENT_SORTS), ui.sort, { class: 'select', style: 'width:auto', 'aria-label': '정렬', onchange: (e) => { ui.sort = e.target.value; drawTable(); } });
+  q.addEventListener('input', debounce(() => { ui.q = q.value; limit = PAGE; drawTable(); }, 120));
+  const sort = selectEl(Object.entries(ENT_SORTS), ui.sort, { class: 'select', style: 'width:auto', 'aria-label': '정렬', onchange: (e) => { ui.sort = e.target.value; limit = PAGE; drawTable(); } });
+  let limit = PAGE;
   const bulk = h('div', { class: 'row', hidden: true });
   root.append(h('div', { class: 'toolbar' }, h('div', { class: 'searchbox grow', style: 'max-width:420px' }, icon('search', 15), q), sort, bulk));
   const wrap = h('div', { class: 'tbl-wrap' });
@@ -3364,10 +3371,11 @@ VIEW_FN.entities = (root, c) => {
         emptyState('users', '아직 엔티티가 없습니다', '조사 대상(인물, 계정, 도메인, IP, 지갑 주소 등)을 등록하면 관계도·타임라인·보고서에서 함께 쓰입니다.', h('div', { class: 'row', style: 'justify-content:center' }, h('button', { class: 'btn primary', onclick: () => entityDialog() }, icon('plus', 14), '엔티티 추가'), h('button', { class: 'btn', onclick: () => bulkImportDialog() }, '텍스트에서 가져오기'))));
       return;
     }
-    const all = h('input', { type: 'checkbox', 'aria-label': '전체 선택', checked: rows.every((r) => selected.has(r.id)), onchange: (e) => { rows.forEach((r) => (e.target.checked ? selected.add(r.id) : selected.delete(r.id))); drawTable(); drawBulk(); } });
+    const all = h('input', { type: 'checkbox', 'aria-label': '전체 선택 (검색 결과 전체)', checked: rows.every((r) => selected.has(r.id)), onchange: (e) => { rows.forEach((r) => (e.target.checked ? selected.add(r.id) : selected.delete(r.id))); drawTable(); drawBulk(); } });
+    const total = rows.length;
     const tbl = h('table', { class: 'tbl' }, h('thead', null, h('tr', null, h('th', { style: 'width:1%' }, all), h('th', null, '유형'), h('th', null, '값 · 설명'), h('th', null, '신뢰도'), h('th', { class: 'hide-sm' }, '태그'), h('th', { class: 'num' }, '관계'), h('th', { class: 'hide-sm num' }, '언급'), h('th', { class: 'hide-sm' }, '수정'), h('th', null, ''))));
     const tb = h('tbody');
-    for (const e of rows) {
+    for (const e of rows.slice(0, limit)) {
       const cb = h('input', { type: 'checkbox', checked: selected.has(e.id), 'aria-label': '선택', onclick: (ev) => ev.stopPropagation(), onchange: () => { if (cb.checked) selected.add(e.id); else selected.delete(e.id); drawBulk(); } });
       tb.append(h('tr', { class: 'click', onclick: () => openEntity(e.id) },
         h('td', null, cb),
@@ -3384,6 +3392,8 @@ VIEW_FN.entities = (root, c) => {
     }
     tbl.append(tb);
     wrap.append(tbl);
+    if (total > limit) wrap.append(h('div', { class: 'row', style: 'justify-content:center;padding:12px' }, h('span', { class: 'small muted num' }, `${limit.toLocaleString()} / ${total.toLocaleString()}개 표시`),
+      h('button', { class: 'btn sm', onclick: () => { limit += PAGE; drawTable(); } }, `${Math.min(PAGE, total - limit)}개 더 보기`), h('button', { class: 'btn sm ghost', onclick: () => { limit = total; drawTable(); } }, '모두 보기')));
   };
   drawTable();
   drawBulk();
@@ -3669,7 +3679,8 @@ function readGraphColors() {
 }
 function stopGraph() {
   if (G.raf) cancelAnimationFrame(G.raf);
-  G.raf = 0;
+  if (G.layoutRaf) cancelAnimationFrame(G.layoutRaf);
+  G.raf = 0; G.layoutRaf = 0; G.layingOut = false;
   G.ro?.disconnect();
   G.ro = null;
   saveGraphPos();
@@ -3677,7 +3688,7 @@ function stopGraph() {
 }
 function saveGraphPos() {
   const c = G.c;
-  if (!c || !G.nodes.length || !S.db || !S.db.cases.includes(c)) return;
+  if (!c || !G.nodes.length || !S.db || !S.db.cases.includes(c) || G.layingOut) return;
   let changed = false;
   for (const n of G.nodes) {
     const prev = c.graph[n.id];
@@ -3713,9 +3724,9 @@ function buildGraph(c) {
   G.nodes = ents.map((e, i) => {
     const saved = c.graph[e.id];
     const prev = prevPos.get(e.id);
-    const ang = (i / Math.max(1, ents.length)) * Math.PI * 2;
+    const ang = i * 2.39996, rad0 = 60 * Math.sqrt(i + 1);
     const n = { id: e.id, t: e.type, e, label: graphLabel(e), deg: deg.get(e.id) || 0,
-      x: prev?.x ?? saved?.x ?? Math.cos(ang) * 160 + (Math.random() - 0.5) * 30, y: prev?.y ?? saved?.y ?? Math.sin(ang) * 160 + (Math.random() - 0.5) * 30,
+      x: prev?.x ?? saved?.x ?? Math.cos(ang) * rad0, y: prev?.y ?? saved?.y ?? Math.sin(ang) * rad0,
       vx: 0, vy: 0, fixed: prev ? prev.fixed : !!saved?.f };
     if (saved || prev) known++;
     n.r = 8 + Math.min(n.deg, 12) * 1.5;
@@ -3723,6 +3734,8 @@ function buildGraph(c) {
     return n;
   });
   const ids = new Set(G.nodes.map((n) => n.id));
+  G.topLabels = new Set([...G.nodes].filter((n) => n.deg > 0).sort((a, b) => b.deg - a.deg).slice(0, 15).map((n) => n.id));
+  G.labelK = G.nodes.length > 150 ? 0.8 : G.nodes.length > 60 ? 0.6 : 0.42;
   G.edges = c.links.filter((l) => ids.has(l.from) && ids.has(l.to)).map((l) => ({ ...l }));
   if (ui.co) G.edges.push(...coMentionEdges(c, ids));
   return known / Math.max(1, G.nodes.length);
@@ -3752,22 +3765,37 @@ function graphLabel(e) {
   if (e.type === 'url') { try { const u = new URL(refang(v)); v = u.hostname + (u.pathname.length > 1 ? u.pathname : ''); } catch (err) { /* noop */ } }
   return v.length > 27 ? v.slice(0, 16) + '…' + v.slice(-7) : v;
 }
+const GRID = 600;
 function tickGraph() {
   const N = G.nodes, a = G.alpha;
   const REP = 7000, LEN = 150, K = 0.045, GRAV = 0.008;
+  // 반발력: 600px 격자에 나눠 담고 이웃 칸(3×3)만 비교 — 노드가 수천 개여도 거의 선형
+  const cells = new Map();
   for (let i = 0; i < N.length; i++) {
     const p = N[i];
-    for (let j = i + 1; j < N.length; j++) {
-      const q = N[j];
-      let dx = p.x - q.x, dy = p.y - q.y, d2 = dx * dx + dy * dy;
-      if (d2 > 360000) continue;
-      if (d2 < 0.5) { dx = Math.random() - 0.5; dy = Math.random() - 0.5; d2 = 0.5; }
-      const d = Math.sqrt(d2);
-      let f = REP / d2;
-      const minD = p.r + q.r + 46;
-      if (d < minD) f += (minD - d) * 0.8;
-      const fx = (dx / d) * f, fy = (dy / d) * f;
-      p.vx += fx; p.vy += fy; q.vx -= fx; q.vy -= fy;
+    p._i = i;
+    const key = Math.floor(p.x / GRID) * 100003 + Math.floor(p.y / GRID);
+    let cell = cells.get(key);
+    if (!cell) cells.set(key, (cell = []));
+    cell.push(p);
+  }
+  for (const p of N) {
+    const cx = Math.floor(p.x / GRID), cy = Math.floor(p.y / GRID);
+    for (let gx = cx - 1; gx <= cx + 1; gx++) for (let gy = cy - 1; gy <= cy + 1; gy++) {
+      const cell = cells.get(gx * 100003 + gy);
+      if (!cell) continue;
+      for (const q of cell) {
+        if (q._i <= p._i) continue;
+        let dx = p.x - q.x, dy = p.y - q.y, d2 = dx * dx + dy * dy;
+        if (d2 > 360000) continue;
+        if (d2 < 0.5) { dx = Math.random() - 0.5; dy = Math.random() - 0.5; d2 = 0.5; }
+        const d = Math.sqrt(d2);
+        let f = REP / d2;
+        const minD = p.r + q.r + 46;
+        if (d < minD) f += (minD - d) * 0.8;
+        const fx = (dx / d) * f, fy = (dy / d) * f;
+        p.vx += fx; p.vy += fy; q.vx -= fx; q.vy -= fy;
+      }
     }
   }
   for (const e of G.edges) {
@@ -3797,10 +3825,21 @@ function graphLoop() {
   if (active) G.raf = requestAnimationFrame(graphLoop);
   else saveGraphPos();
 }
-function prewarmGraph(steps = 420) {
-  for (let i = 0; i < steps; i++) { G.alpha = Math.max(0.04, 1 - i / steps); tickGraph(); }
-  for (const n of G.nodes) { n.vx = 0; n.vy = 0; }
-  G.alpha = 0;
+function prewarmGraph(steps = G.nodes.length <= 1000 ? 320 : 200) {
+  cancelAnimationFrame(G.layoutRaf);
+  const finish = () => { for (const n of G.nodes) { n.vx = 0; n.vy = 0; } G.alpha = 0; G.layingOut = false; saveGraphPos(); fitGraph(); };
+  if (G.nodes.length <= 300) { for (let i = 0; i < steps; i++) { G.alpha = Math.max(0.04, 1 - i / steps); tickGraph(); } finish(); return; }
+  // 큰 그래프는 프레임마다 14ms씩만 계산해 화면이 멈추지 않게 하고, 정리되는 모습을 보여 준다
+  let i = 0;
+  G.layingOut = true;
+  const run = () => {
+    G.layoutRaf = 0;
+    if (!G.ctx) return;
+    const t0 = performance.now();
+    while (i < steps && performance.now() - t0 < 14) { G.alpha = Math.max(0.04, 1 - i / steps); tickGraph(); i++; }
+    if (i < steps) { fitGraph(); G.layoutRaf = requestAnimationFrame(run); } else finish();
+  };
+  G.layoutRaf = requestAnimationFrame(run);
 }
 function kickGraph(alpha) { if (alpha != null) G.alpha = Math.max(G.alpha, alpha); if (!G.raf && G.ctx) G.raf = requestAnimationFrame(graphLoop); }
 function graphNeighbors(id) { const s = new Set([id]); for (const e of G.edges) { if (e.from === id) s.add(e.to); if (e.to === id) s.add(e.from); } return s; }
@@ -3862,7 +3901,7 @@ function drawGraph() {
     ctx.fillStyle = col.types[n.t] || col.muted; ctx.fill();
     ctx.lineWidth = 2; ctx.strokeStyle = col.surface; ctx.stroke();
     if (n.fixed) { ctx.beginPath(); ctx.arc(n.x + n.r * 0.7, n.y - n.r * 0.7, 3, 0, Math.PI * 2); ctx.fillStyle = col.fg; ctx.fill(); }
-    if (k > 0.42 || (nb && nb.has(n.id)) || n.deg >= 4) {
+    if (k > G.labelK || (nb && nb.has(n.id)) || G.topLabels.has(n.id)) {
       ctx.font = `${n.deg >= 3 ? 600 : 500} ${12 / ks}px ${font}`;
       ctx.textAlign = 'center'; ctx.textBaseline = 'top';
       ctx.lineWidth = 3.5 / ks; ctx.strokeStyle = col.bg; ctx.lineJoin = 'round';
@@ -3920,7 +3959,7 @@ VIEW_FN.graph = (root, c) => {
     linkBtn,
     h('span', { class: 'sp' }),
     h('span', { class: 'small muted num hide-sm' }, `노드 ${c.entities.length} · 관계 ${c.links.length}`),
-    h('button', { class: 'btn sm', title: '배치 다시 계산 (고정 노드 제외)', onclick: () => { for (const n of G.nodes) if (!n.fixed) { n.x = (Math.random() - 0.5) * 400; n.y = (Math.random() - 0.5) * 400; } prewarmGraph(); saveGraphPos(); fitGraph(); } }, icon('refresh', 13), '재배치'),
+    h('button', { class: 'btn sm', title: '배치 다시 계산 (고정 노드 제외)', onclick: () => { G.nodes.forEach((n, i) => { if (!n.fixed) { const r0 = 60 * Math.sqrt(i + 1) * (0.8 + Math.random() * 0.4), an = Math.random() * Math.PI * 2; n.x = Math.cos(an) * r0; n.y = Math.sin(an) * r0; } }); prewarmGraph(); } }, icon('refresh', 13), '재배치'),
     h('button', { class: 'btn sm', onclick: () => fitGraph() }, icon('maximize', 13), '맞춤'),
     h('button', { class: 'btn sm', onclick: () => exportGraphPNG(c) }, icon('image', 13), 'PNG'));
   const wrap = h('div', { class: 'graph-wrap' });
@@ -3954,9 +3993,8 @@ VIEW_FN.graph = (root, c) => {
   requestAnimationFrame(() => {
     if (!G.cv) return;
     resizeGraph();
-    if (knownRatio <= 0.8) { prewarmGraph(); saveGraphPos(); }
-    fitGraph();
-    G.alpha = 0;
+    if (knownRatio <= 0.8) prewarmGraph();
+    else { fitGraph(); G.alpha = 0; }
     if (ui.focus) { const n = G.byId.get(ui.focus); ui.focus = null; if (n) { fitGraph(); selectGraphNode(n); } }
     kickGraph();
   });
@@ -5418,38 +5456,38 @@ function caseMarkdown(c, { defangIOC = true, includeLog = false, includeNotes = 
   L.push(`# ${c.title}`, '');
   L.push(`**TLP:${c.tlp}** · ${st}${c.codename ? ` · 코드 \`${c.codename}\`` : ''} · 작성 ${S.db.settings.analyst || '(분석가 미기재)'} · 생성 ${fmtDT(new Date(), { zone: true })}`, '');
   L.push(`> 공유 등급 **TLP:${c.tlp}** — ${TLP[c.tlp].d}.${defangIOC ? ' 본문의 URL·도메인·IP·이메일은 오클릭 방지를 위해 디팡(defang) 처리했습니다.' : ''}`, '');
-  if (c.objective?.trim()) L.push('## 조사 목적과 범위', '', c.objective.trim(), '');
+  if (c.objective?.trim()) L.push('## 조사 목적과 범위', '', DT(c.objective.trim()), '');
   L.push('## 요약', '', `| 노트 | 엔티티 | 관계 | 이벤트 | 출처 | 남은 할 일 |`, '|---|---|---|---|---|---|', `| ${c.notes.length} | ${c.entities.length} | ${c.links.length} | ${c.events.length} | ${c.sources.length} | ${c.tasks.filter((t) => !t.done).length} |`, '');
-  if (c.hypotheses.length) { L.push('## 가설', '', '| 상태 | 가설 | 근거 |', '|---|---|---|', ...c.hypotheses.map((h2) => `| ${HYP[h2.status].l} | ${mdCell(h2.text)} | ${mdCell(h2.note)} |`), ''); }
+  if (c.hypotheses.length) { L.push('## 가설', '', '| 상태 | 가설 | 근거 |', '|---|---|---|', ...c.hypotheses.map((h2) => `| ${HYP[h2.status].l} | ${mdCell(DT(h2.text))} | ${mdCell(DT(h2.note))} |`), ''); }
   if (c.entities.length) {
     L.push('## 엔티티', '');
     for (const t of ETYPE_KEYS) {
       const es = c.entities.filter((e) => e.type === t);
       if (!es.length) continue;
       L.push(`### ${ETYPES[t].label} (${es.length})`, '', '| 값 | 설명 | 신뢰도 | 태그 | 속성 |', '|---|---|---|---|---|',
-        ...es.map((e) => `| \`${mdCell(D(e.value, e.type))}\` | ${mdCell(e.label)} | ${CONF[e.conf]} | ${mdCell(e.tags.map((x) => '#' + x).join(' '))} | ${mdCell(e.attrs.map((a) => `${a.k}: ${a.v}`).join(' · '))} |`), '');
+        ...es.map((e) => `| \`${mdCell(D(e.value, e.type))}\` | ${mdCell(DT(e.label))} | ${CONF[e.conf]} | ${mdCell(e.tags.map((x) => '#' + x).join(' '))} | ${mdCell(DT(e.attrs.map((a) => `${a.k}: ${a.v}`).join(' · ')))} |`), '');
     }
   }
   if (c.links.length) {
     L.push('## 관계', '');
-    for (const l of c.links) { const a = byId(c.entities, l.from), b = byId(c.entities, l.to); if (a && b) L.push(`- \`${D(a.value, a.type)}\` —**${l.label}**→ \`${D(b.value, b.type)}\`${l.note ? ` — ${l.note}` : ''}`); }
+    for (const l of c.links) { const a = byId(c.entities, l.from), b = byId(c.entities, l.to); if (a && b) L.push(`- \`${D(a.value, a.type)}\` —**${l.label}**→ \`${D(b.value, b.type)}\`${l.note ? ` — ${DT(l.note)}` : ''}`); }
     L.push('');
   }
   if (c.events.length) {
     L.push(`## 타임라인 (${tzLabel()})`, '', '| 일시 | 확실성 | 내용 | 관련 |', '|---|---|---|---|');
-    for (const ev of [...c.events].sort((a, b) => a.at.localeCompare(b.at))) L.push(`| ${fmtDT(ev.at, { time: !ev.dateOnly })} | ${CERTAINTY[ev.certainty].l} | **${mdCell(ev.title)}**${ev.description ? ' — ' + mdCell(DT(ev.description)) : ''} | ${mdCell(ev.entityIds.map((id) => byId(c.entities, id)).filter(Boolean).map((e) => D(e.value, e.type)).join(', '))} |`);
+    for (const ev of [...c.events].sort((a, b) => a.at.localeCompare(b.at))) L.push(`| ${fmtDT(ev.at, { time: !ev.dateOnly })} | ${CERTAINTY[ev.certainty].l} | **${mdCell(DT(ev.title))}**${ev.description ? ' — ' + mdCell(DT(ev.description)) : ''} | ${mdCell(ev.entityIds.map((id) => byId(c.entities, id)).filter(Boolean).map((e) => D(e.value, e.type)).join(', '))} |`);
     L.push('');
   }
   if (c.sources.length) {
     L.push('## 출처 (Admiralty 평가)', '', '| 평가 | 출처 | URL | 수집 | 증거 해시 (SHA-256) |', '|---|---|---|---|---|');
-    for (const s of c.sources) L.push(`| ${s.reliability || '?'}${s.credibility || '?'} | ${mdCell(s.title)} | ${s.url ? '`' + mdCell(D(s.url, 'url')) + '`' : ''} | ${fmtDT(s.capturedAt)} | ${mdCell(s.attachments.map((id) => `${attName(id)}: \`${S.db.attachments[id]?.sha256 || '?'}\``).join('<br>'))} |`);
+    for (const s of c.sources) L.push(`| ${s.reliability || '?'}${s.credibility || '?'} | ${mdCell(DT(s.title))} | ${s.url ? '`' + mdCell(D(s.url, 'url')) + '`' : ''} | ${fmtDT(s.capturedAt)} | ${mdCell(s.attachments.map((id) => `${attName(id)}: \`${S.db.attachments[id]?.sha256 || '?'}\``).join('<br>'))} |`);
     L.push('', '평가 기준: 출처 신뢰도 A(완전히 신뢰)–F(판단 불가), 정보 정확성 1(다른 출처로 확인됨)–6(판단 불가).', '');
   }
   if (includeNotes && c.notes.length) {
     L.push('## 노트', '');
-    for (const n of sortedNotes(c)) L.push(`### ${n.title || '제목 없음'}`, '', `*작성 ${fmtDT(n.createdAt)} · 수정 ${fmtDT(n.updatedAt)}${n.tags.length ? ' · ' + n.tags.map((t) => '#' + t).join(' ') : ''}*`, '', attRef(DT(n.body)).replace(/^(#{1,4}) /gm, '$1## '), '');
+    for (const n of sortedNotes(c)) L.push(`### ${DT(n.title) || '제목 없음'}`, '', `*작성 ${fmtDT(n.createdAt)} · 수정 ${fmtDT(n.updatedAt)}${n.tags.length ? ' · ' + n.tags.map((t) => '#' + t).join(' ') : ''}*`, '', attRef(DT(n.body)).replace(/^(#{1,4}) /gm, '$1## '), '');
   }
-  if (c.tasks.length) L.push('## 할 일', '', ...c.tasks.map((t) => `- [${t.done ? 'x' : ' '}] ${t.text}`), '');
+  if (c.tasks.length) L.push('## 할 일', '', ...c.tasks.map((t) => `- [${t.done ? 'x' : ' '}] ${DT(t.text)}`), '');
   if (includeLog && c.log.length) L.push('## 활동 기록', '', ...[...c.log].reverse().map((l) => `- \`${fmtDT(l.at, { sec: true })}\` [${LOG_KIND[l.kind] || l.kind}] ${DT(l.msg)}`), '');
   L.push('---', '', `*단서 OSINT 노트 v${APP_VERSION}에서 생성 · TLP:${c.tlp}*`);
   return L.join('\n');
