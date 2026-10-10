@@ -401,6 +401,29 @@ table.tbl{width:100%;border-collapse:collapse;font-size:13px}
 .mention .ms{color:var(--muted);font-size:12px;overflow-wrap:anywhere}
 .mention .ms b{background:var(--mark);color:var(--fg);font-weight:600}
 
+/* ---------- enrichment ---------- */
+.enr-card{border:1px solid var(--line);border-radius:var(--r);background:var(--surface-2);padding:8px 10px;display:flex;flex-direction:column;gap:6px;min-width:0}
+.enr-card.err{border-color:color-mix(in srgb,var(--danger) 40%,var(--line))}
+.enr-h{display:flex;align-items:center;gap:8px;min-width:0;font-size:13px}
+.enr-sum{font-size:13px;font-weight:600;overflow-wrap:anywhere}
+.enr-kv{font-size:12.5px;gap:3px 12px}
+.enr-found{display:flex;flex-wrap:wrap;gap:4px}
+.enr-found .chip{height:26px;cursor:pointer}
+.enr-found .chip input{margin:0;width:13px;height:13px;accent-color:var(--accent);flex:none}
+.enr-raw summary{cursor:pointer;font-size:12px;color:var(--muted)}
+.enr-raw .out{margin-top:6px;max-height:260px;font-size:11.5px}
+.enr-off{display:flex;flex-direction:column;gap:8px;align-items:flex-start;padding:10px 12px;border:1px dashed var(--line-strong);border-radius:var(--r)}
+.enr-alert{display:flex;gap:8px;align-items:flex-start;padding:8px 10px;border-radius:var(--r);background:var(--warn-soft);border:1px solid var(--warn);margin-bottom:8px}
+.prov-group{font-size:11px;letter-spacing:.08em;color:var(--muted);font-weight:700;margin-top:6px;font-family:var(--font-mono)}
+.prov{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:4px 12px;align-items:start;padding:10px 0;border-bottom:1px solid var(--line)}
+.prov:last-child{border-bottom:0}
+.prov .pn{font-weight:650;font-size:13.5px;display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+.prov .pd{font-size:12px;color:var(--muted);overflow-wrap:anywhere}
+.prov .pa{display:flex;flex-direction:column;gap:6px;align-items:flex-end}
+.prov .key{display:flex;gap:6px;align-items:center;margin-top:6px;flex-wrap:wrap}
+.prov .key .input{max-width:320px}
+@media (max-width: 560px){.prov{grid-template-columns:auto minmax(0,1fr)}.prov .pa{grid-column:2;align-items:flex-start;flex-direction:row;flex-wrap:wrap}}
+
 /* ---------- graph ---------- */
 .graph-wrap{position:relative;flex:1;min-height:0;background:
   radial-gradient(circle at 1px 1px,color-mix(in srgb,var(--fg) 9%,transparent) 1px,transparent 0) 0 0/22px 22px,var(--surface-2)}
@@ -457,7 +480,7 @@ table.tbl{width:100%;border-collapse:collapse;font-size:13px}
 .log-row .lm{overflow-wrap:anywhere}
 .lk{font-size:10.5px;font-weight:700;padding:1px 6px;border-radius:3px;text-align:center;font-family:var(--font-mono);letter-spacing:.03em;justify-self:start}
 .lk.create{background:var(--ok-soft);color:var(--ok)} .lk.update{background:var(--surface-3);color:var(--fg-2)} .lk.delete{background:var(--danger-soft);color:var(--danger)}
-.lk.pivot{background:var(--accent-soft);color:var(--accent)} .lk.manual{background:var(--warn-soft);color:var(--warn)} .lk.system{background:var(--surface-3);color:var(--muted)}
+.lk.pivot{background:var(--accent-soft);color:var(--accent)} .lk.enrich{background:color-mix(in srgb,var(--t-ip) 14%,transparent);color:var(--t-ip)} .lk.manual{background:var(--warn-soft);color:var(--warn)} .lk.system{background:var(--surface-3);color:var(--muted)}
 
 /* ---------- sources ---------- */
 .src-title{font-weight:650;font-size:13.5px;overflow-wrap:anywhere}
@@ -2052,6 +2075,7 @@ function normalizeCase(c) {
     e.id = str(e.id) || uid(); e.value = str(e.value).trim(); if (!ETYPES[e.type]) e.type = 'other'; e.label = str(e.label); if (!CONF[e.conf]) e.conf = 'mid';
     e.tags = strArr(e.tags); e.attrs = objArr(e.attrs).map((a) => ({ k: str(a.k), v: str(a.v) })); e.sourceIds = strArr(e.sourceIds); e.notes = str(e.notes);
     e.createdAt = isoOr(e.createdAt, c.createdAt); e.updatedAt = isoOr(e.updatedAt, e.createdAt);
+    normalizeEntityEnrichment(e);
   }
   c.links = objArr(c.links).filter((l) => l.from != null && l.to != null);
   for (const l of c.links) { l.id = str(l.id) || uid(); l.from = str(l.from); l.to = str(l.to); l.label = str(l.label) || '관련'; l.note = str(l.note); l.createdAt = isoOr(l.createdAt, c.createdAt); }
@@ -2089,6 +2113,7 @@ function normalizeDB(db) {
   if (!['local', 'UTC'].includes(db.settings.tz)) db.settings.tz = 'local';
   db.settings.autoLockMin = [0, 5, 10, 15, 30, 60].includes(+db.settings.autoLockMin) ? +db.settings.autoLockMin : 15;
   db.settings.analyst = str(db.settings.analyst);
+  db.settings.api = normalizeApi(db.settings.api);
   if (!db.cases.find((c) => c.id === db.activeCaseId)) db.activeCaseId = db.cases[0]?.id || null;
   return db;
 }
@@ -2206,12 +2231,15 @@ function addEntity(c, data, { log = true } = {}) {
   const ex = findEntity(c, type, value);
   if (ex) return { entity: ex, existed: true };
   const t = nowISO();
+  const noAuto = !!data.noAuto;
   const e = { id: uid(), type, value: type === 'username' && !value.startsWith('@') && /^[\w.]+$/.test(value) ? '@' + value : value,
-    label: '', conf: 'mid', tags: [], notes: '', attrs: [], sourceIds: [], createdAt: t, updatedAt: t, ...data };
+    label: '', conf: 'mid', tags: [], notes: '', attrs: [], sourceIds: [], enrich: {}, watch: { on: false, last: null }, alerts: [], createdAt: t, updatedAt: t, ...data };
+  delete e.noAuto;
   e.type = type;
   if (type === 'location') { const cc = parseCoords(e.value); if (cc) e.value = fmtCoord(cc.lat, cc.lon); }
   c.entities.push(e);
   if (log) addLog(c, 'create', `엔티티 추가 · ${ETYPES[type].label} ${e.value}`, { ref: e.id });
+  if (!noAuto) scheduleAuto(c, e);
   return { entity: e, existed: false };
 }
 function linksOf(c, id) { return c.links.filter((l) => l.from === id || l.to === id); }
@@ -2575,6 +2603,7 @@ function selPopover(anchor, { k, t, v }) {
     ['url', 'email', 'domain', 'ip'].includes(t) ? { label: '디팡해서 복사', icon: 'shield', hint: 'hxxp / [.]', onClick: () => copyText(defang(v, t)) } : null,
     t ? (ent ? { label: '엔티티 열기', icon: 'right', onClick: () => openEntity(ent.id) } : { label: `${ETYPES[t].label} 엔티티로 등록`, icon: 'plus', onClick: () => quickAddEntity(t, v) }) : null,
     t ? { label: '모든 피벗 도구…', icon: 'zap', onClick: () => pivotModal(t, v) } : null,
+    t ? { label: '실시간 조회 (API)…', icon: 'refresh', hint: apiSettings().enabled ? '' : '꺼짐', onClick: () => enrichPreviewModal(t, v) } : null,
     ps.length ? { sep: true } : null,
     ps.length ? { header: '빠른 피벗 (새 탭)' } : null,
     ...ps.filter((p) => safeHref(p.url)).map((p) => ({ label: p.name, icon: 'ext', href: p.url, hint: p.cat, onClick: () => logPivot(p.name, v, p.url) })),
@@ -2604,6 +2633,7 @@ function startApp() {
   S.view = VIEWS.find((v) => v.id === hv) ? hv : (VIEWS.find((v) => v.id === S.db.ui?.view) ? S.db.ui.view : 'overview');
   renderShell();
   armAutoLock();
+  armWatch();
 }
 function renderShell() {
   const app = clear($('#app'));
@@ -2694,11 +2724,14 @@ function renderSide() {
   side.append(nav);
   const encOn = !!S.meta?.enc;
   side.append(h('div', { class: 'side-foot' },
+    h('div', { class: 'row', id: 'enr-queue', hidden: true }),
     h('div', { class: 'row', id: 'save-status' }),
     h('div', { class: 'row', title: encOn ? 'AES-GCM 256 · PBKDF2 ' + (S.meta.iter || PBKDF2_ITER).toLocaleString() + '회' : '설정에서 비밀번호를 지정하면 암호화됩니다' },
       icon(encOn ? 'lock' : 'unlock', 13), h('span', null, encOn ? '암호화됨' : '암호화 안 됨'), h('span', { class: 'faint' }, '· ' + KV.label())),
+    S.db?.settings?.api?.enabled ? h('div', { class: 'row', title: '외부 API 연동이 켜져 있습니다. 설정에서 끌 수 있습니다.' }, icon('zap', 13), h('span', null, 'API 연동 켜짐')) : null,
   ));
   updateSaveStatus();
+  updateEnrQueue();
 }
 function updateSaveStatus() {
   const el = $('#save-status');
@@ -3350,6 +3383,12 @@ VIEW_FN.entities = (root, c) => {
       h('button', { class: 'btn sm', onclick: async () => { const t = await promptDialog({ title: '태그 추가', label: `선택한 ${selected.size}개 엔티티에 붙일 태그 (쉼표로 구분)` }); if (!t) return; const tags = t.split(/[,#]/).map((x) => x.trim()).filter(Boolean); for (const id of selected) { const e = byId(c.entities, id); if (e) e.tags = uniq([...e.tags, ...tags]); } commit(c); } }, icon('hash', 13), '태그'),
       h('button', { class: 'btn sm', onclick: (ev) => popMenu(ev.currentTarget, Object.entries(CONF).map(([k, l]) => ({ label: '신뢰도 ' + l, onClick: () => { for (const id of selected) { const e = byId(c.entities, id); if (e) e.conf = k; } commit(c); } }))) }, '신뢰도'),
       h('button', { class: 'btn sm', onclick: () => copyText([...selected].map((id) => byId(c.entities, id)).filter(Boolean).map((e) => defang(e.value, e.type)).join('\n'), '디팡한 목록을 복사했습니다') }, icon('shield', 13), '디팡 복사'),
+      h('button', { class: 'btn sm', title: '선택한 엔티티를 켜진 API 제공자로 조회합니다', onclick: () => {
+        if (!apiSettings().enabled) { toast('설정 › API 연동을 먼저 켜세요', { action: () => { S.ui.settingsAnchor = 'api'; go('settings'); }, actionLabel: '설정' }); return; }
+        const list = [...selected].map((id) => byId(c.entities, id)).filter(Boolean);
+        queueEnrich(c, list);
+        toast(`엔티티 ${list.length}개를 조회 대기열에 넣었습니다`);
+      } }, icon('zap', 13), '실시간 조회'),
       h('button', { class: 'btn sm danger', onclick: () => { const ids = [...selected]; withUndo(c, `엔티티 ${ids.length}개를 삭제했습니다`, () => ids.forEach((id) => removeEntity(c, id))); } }, icon('trash', 13), '삭제'));
   };
   const sorter = {
@@ -3380,7 +3419,7 @@ VIEW_FN.entities = (root, c) => {
       tb.append(h('tr', { class: 'click', onclick: () => openEntity(e.id) },
         h('td', null, cb),
         h('td', null, typeBadge(e.type)),
-        h('td', null, h('div', { class: 'ent-v' }, h('span', { class: 'v' }, e.value), e.label ? h('span', { class: 'l' }, e.label) : null)),
+        h('td', null, h('div', { class: 'ent-v' }, h('span', { class: 'v' }, e.value, e.alerts?.length ? h('span', { class: 'badge warn', style: 'margin-left:6px', title: e.alerts[e.alerts.length - 1].msg }, '변화') : null, e.watch?.on ? h('span', { class: 'faint', style: 'margin-left:6px;vertical-align:-2px', title: '감시 중' }, icon('eye', 12)) : null, Object.values(e.enrich || {}).some((r) => r.ok && !r.empty) ? h('span', { class: 'faint', style: 'margin-left:4px;vertical-align:-2px', title: '실시간 조회 결과 있음' }, icon('zap', 12)) : null), e.label ? h('span', { class: 'l' }, e.label) : null)),
         h('td', null, confLabel(e.conf)),
         h('td', { class: 'hide-sm' }, tagsView(e.tags)),
         h('td', { class: 'num mono small' }, String(deg.get(e.id) || 0)),
@@ -3582,6 +3621,7 @@ function drawEntity(el, c, e) {
     h('datalist', { id: 'rel-presets-d' }, REL_PRESETS.map((p) => h('option', { value: p })))));
   relList.append(h('button', { class: 'linkish small', style: 'align-self:flex-start', onclick: () => entityDialog(null, { linkFrom: e.id }) }, '+ 새 엔티티를 만들어 연결'));
   b.append(dsec(h('span', null, `관계 · ${rels.length}`), relList));
+  b.append(enrichSection(c, e));
   // 피벗
   b.append(h('section', { class: 'dsec' }, h('h4', null, '피벗 도구', h('span', { class: 'sp' }), h('span', { style: 'text-transform:none;letter-spacing:0;font-family:var(--font-sans)', class: 'faint' }, '새 탭에서 열림')), pivotPanel(e.type, e.value, e.label)));
   // 언급
@@ -4438,7 +4478,7 @@ VIEW_FN.tasks = (root, c) => {
 /* ======================================================================
    18. 활동 기록 (수사 과정 기록 · 피벗 이력)
    ====================================================================== */
-const LOG_KIND = { create: '생성', update: '수정', delete: '삭제', pivot: '피벗', manual: '메모', system: '시스템' };
+const LOG_KIND = { create: '생성', update: '수정', delete: '삭제', pivot: '피벗', enrich: '조회', manual: '메모', system: '시스템' };
 VIEW_FN.log = (root, c) => {
   const ui = S.ui.log;
   root.append(h('div', { class: 'vhead' },
@@ -5430,6 +5470,486 @@ TOOL_FN.codec = (box) => {
 };
 
 /* ======================================================================
+   21-B. 실시간 API 연동 · 인리치먼트
+   - 기본은 꺼짐. 켜면 아래 제공자 목록의 HTTPS 호스트로만 요청한다 (파일 상단 CSP connect-src와 같은 목록).
+   - 요청은 쿠키·리퍼러 없이(credentials: omit, no-referrer) 보내고, 제공자마다 호출 간격을 지킨다.
+   - 결과는 엔티티에 저장하며, 응답에서 발견한 셀렉터는 엔티티·관계로 추가할 수 있다.
+   ====================================================================== */
+const API_DEFAULT = { enabled: false, autoNew: false, autoAddFound: false, cacheHours: 24, timeoutSec: 15, watchMin: 60, providers: {}, custom: [] };
+const ENR_CODES = {
+  blocked: '브라우저가 요청을 차단했습니다. 이 서비스가 브라우저 직접 호출(CORS)을 허용하지 않거나, 이 화면(웹 게시본 등)에서 외부 통신이 막혀 있거나, 네트워크가 끊겼을 수 있습니다. 피벗 링크로 확인하세요.',
+  policy: '허용 목록(CSP)에 없는 주소라 호출하지 않았습니다.',
+  auth: 'API 키가 없거나 잘못되었습니다. 설정 › API 연동에서 키를 확인하세요.',
+  rate: '호출 한도를 넘었습니다. 잠시 뒤 다시 시도하세요.',
+  timeout: '응답이 제한 시간 안에 오지 않았습니다.',
+  http: '서비스가 오류를 돌려주었습니다.',
+  parse: '응답 형식을 해석하지 못했습니다.',
+  nokey: '이 제공자는 API 키가 필요합니다. 설정 › API 연동에서 키를 넣으세요.',
+  off: 'API 연동이 꺼져 있습니다.',
+  error: '조회 중 오류가 났습니다.',
+};
+const ENR = { running: new Set(), queue: [], active: 0, maxActive: 4, gates: new Map(), last: new Map(), worker: false, watchTimer: null, expanded: new Set() };
+const PROVIDERS = [/*@@PROVIDERS@@*/];
+const PROVIDER_BY_ID = () => new Map(allProviders().map((p) => [p.id, p]));
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+function apiSettings() {
+  if (!S.db) return { ...API_DEFAULT };
+  S.db.settings.api = normalizeApi(S.db.settings.api);
+  return S.db.settings.api;
+}
+function normalizeApi(a) {
+  const x = a && typeof a === 'object' && !Array.isArray(a) ? a : {};
+  const out = {
+    enabled: !!x.enabled, autoNew: !!x.autoNew, autoAddFound: !!x.autoAddFound,
+    cacheHours: [0, 1, 6, 24, 72, 168].includes(+x.cacheHours) ? +x.cacheHours : 24,
+    timeoutSec: [5, 10, 15, 30, 60].includes(+x.timeoutSec) ? +x.timeoutSec : 15,
+    watchMin: [15, 30, 60, 180, 360, 1440].includes(+x.watchMin) ? +x.watchMin : 60,
+    providers: {}, custom: [],
+  };
+  const ps = x.providers && typeof x.providers === 'object' && !Array.isArray(x.providers) ? x.providers : {};
+  for (const [id, v] of Object.entries(ps)) {
+    if (!/^[a-z0-9-]{1,48}$/.test(id) || !v || typeof v !== 'object') continue;
+    const st = v.status && typeof v.status === 'object' ? { at: isoOr(v.status.at, null), code: str(v.status.code).slice(0, 16), msg: str(v.status.msg).slice(0, 200) } : null;
+    out.providers[id] = { on: !!v.on, auto: !!v.auto, key: str(v.key).slice(0, 400), status: st };
+  }
+  for (const cu of objArr(x.custom).slice(0, 20)) {
+    const id = /^cu-[a-z0-9]{4,24}$/.test(cu.id) ? cu.id : 'cu-' + uid().slice(-10);
+    out.custom.push({ id, name: str(cu.name).slice(0, 60) || '사용자 정의', types: strArr(cu.types).filter((t) => ETYPES[t]), url: str(cu.url).slice(0, 600),
+      headerName: str(cu.headerName).slice(0, 60), headerValue: str(cu.headerValue).slice(0, 400), paths: str(cu.paths).slice(0, 600) });
+  }
+  return out;
+}
+function sanitizeEnrich(x) {
+  const out = {};
+  if (!x || typeof x !== 'object' || Array.isArray(x)) return out;
+  for (const [pid, r] of Object.entries(x)) {
+    if (!/^[a-z0-9-]{1,48}$/.test(pid) || !r || typeof r !== 'object') continue;
+    out[pid] = {
+      at: isoOr(r.at, nowISO()), ok: !!r.ok, empty: !!r.empty, code: str(r.code).slice(0, 16), msg: str(r.msg).slice(0, 300),
+      summary: str(r.summary).slice(0, 500), fp: str(r.fp).slice(0, 4000), raw: str(r.raw).slice(0, 60000), query: str(r.query).slice(0, 600),
+      fields: objArr(r.fields).slice(0, 80).map((f) => ({ k: str(f.k).slice(0, 80), v: str(f.v).slice(0, 1000), attr: !!f.attr })),
+      found: objArr(r.found).slice(0, 400).filter((f) => ETYPES[f.t] && str(f.v).trim()).map((f) => ({ t: f.t, v: str(f.v).trim().slice(0, 500), rel: str(f.rel).slice(0, 40) || '관련', dir: f.dir === 'in' ? 'in' : 'out', label: str(f.label).slice(0, 120) })),
+    };
+  }
+  return out;
+}
+function normalizeEntityEnrichment(e) {
+  e.enrich = sanitizeEnrich(e.enrich);
+  e.watch = e.watch && typeof e.watch === 'object' ? { on: !!e.watch.on, last: isoOr(e.watch.last, null) } : { on: false, last: null };
+  e.alerts = objArr(e.alerts).slice(-20).map((a) => ({ at: isoOr(a.at, nowISO()), pid: str(a.pid).slice(0, 48), msg: str(a.msg).slice(0, 400) }));
+}
+function cspConnectHosts() {
+  const m = document.querySelector('meta[http-equiv="Content-Security-Policy"]');
+  if (!m) return null;
+  const d = /connect-src\s+([^;]+)/i.exec(m.getAttribute('content') || '');
+  if (!d) return [];
+  return d[1].trim().split(/\s+/).filter((x) => /^https:\/\//i.test(x)).map((x) => x.replace(/\/+$/, '').toLowerCase());
+}
+function cspAllows(origin) {
+  const list = cspConnectHosts();
+  if (list == null) return true;
+  return list.includes(origin.toLowerCase());
+}
+const inArtifactViewer = () => typeof window.claude?.use === 'function';
+function customProvider(cu) {
+  let origin = '';
+  try { const u = new URL(cu.url.replace(/\{[a-z]+\}/g, 'x')); if (u.protocol === 'https:') origin = u.origin; } catch (e) { origin = ''; }
+  return {
+    id: cu.id, name: cu.name, group: '사용자 정의', types: cu.types.length ? cu.types : ETYPE_KEYS, hosts: origin ? [origin] : [], auth: 'none', cors: 'unknown', custom: true, minInterval: 1000,
+    desc: cu.url,
+    run: async (v, ctx) => {
+      const url = cu.url.replace(/\{value\}/g, enc(v)).replace(/\{raw\}/g, v);
+      const headers = cu.headerName && /^[A-Za-z0-9-]{1,60}$/.test(cu.headerName) ? { [cu.headerName]: cu.headerValue } : undefined;
+      const text = await ctx.text(url, { headers });
+      let data = null;
+      try { data = JSON.parse(text); } catch (e) { data = null; }
+      const fields = [];
+      if (data && typeof data === 'object') {
+        const paths = cu.paths.split(',').map((p) => p.trim()).filter(Boolean);
+        if (paths.length) for (const p of paths) fields.push({ k: p, v: fv(jget(data, p)) });
+        else for (const [k, val] of flatJSON(data).slice(0, 30)) fields.push({ k, v: fv(val) });
+      } else fields.push({ k: '응답', v: truncate(text, 600) });
+      return { summary: `${fields.length}개 항목`, fields, found: foundFromText(text, v), raw: data ?? text };
+    },
+  };
+}
+function allProviders() {
+  const api = S.db ? apiSettings() : API_DEFAULT;
+  return [...PROVIDERS, ...api.custom.map(customProvider)];
+}
+function providersFor(e) {
+  return allProviders().filter((p) => p.types.includes(e.type) && (!p.applies || p.applies(refang(e.value), e)));
+}
+function providerOn(p) {
+  const api = apiSettings();
+  const ps = api.providers[p.id];
+  return ps ? ps.on : !!(p.defaultOn || p.custom);
+}
+function providerAuto(p) { const ps = apiSettings().providers[p.id]; return ps ? ps.auto : !!p.defaultAuto; }
+function providerKey(p) { return apiSettings().providers[p.id]?.key || ''; }
+function setProvider(p, patch) {
+  const api = apiSettings();
+  api.providers[p.id] = { on: providerOn(p), auto: providerAuto(p), key: providerKey(p), status: api.providers[p.id]?.status || null, ...patch };
+  markDirty();
+}
+function enrErr(code, msg) { const e = new Error(msg || ENR_CODES[code] || code); e.code = code; return e; }
+function rateGate(p) {
+  const prev = ENR.gates.get(p.id) || Promise.resolve();
+  const next = prev.then(async () => {
+    const wait = (ENR.last.get(p.id) || 0) + (p.minInterval || 1000) - Date.now();
+    if (wait > 0) await sleep(wait);
+    ENR.last.set(p.id, Date.now());
+  });
+  ENR.gates.set(p.id, next.catch(() => {}));
+  return next;
+}
+async function readCapped(res, max = 8 * 1024 * 1024) {
+  if (!res.body || !res.body.getReader) return (await res.text()).slice(0, max);
+  const reader = res.body.getReader();
+  const chunks = [];
+  let n = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(value);
+    n += value.length;
+    if (n > max) { try { await reader.cancel(); } catch (e) { /* noop */ } break; }
+  }
+  const all = new Uint8Array(Math.min(n, max));
+  let o = 0;
+  for (const ch of chunks) { const take = Math.min(ch.length, all.length - o); all.set(ch.subarray(0, take), o); o += take; if (o >= all.length) break; }
+  return dec8.decode(all);
+}
+async function apiRequest(p, url, { method = 'GET', headers, body, timeoutSec } = {}) {
+  let u;
+  try { u = new URL(url); } catch (e) { throw enrErr('policy', '잘못된 주소'); }
+  if (u.protocol !== 'https:' || !p.hosts.includes(u.origin)) throw enrErr('policy', `허용되지 않은 호스트: ${u.host}`);
+  if (!cspAllows(u.origin)) throw enrErr('policy', `파일의 CSP connect-src에 ${u.origin} 이 없습니다.`);
+  await rateGate(p);
+  while (ENR.active >= ENR.maxActive) await sleep(120);
+  ENR.active++;
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), (timeoutSec || apiSettings().timeoutSec) * 1000);
+  let res;
+  try {
+    res = await fetch(u.href, { method, headers, body, mode: 'cors', credentials: 'omit', cache: 'no-store', referrerPolicy: 'no-referrer', redirect: 'follow', signal: ac.signal });
+  } catch (err) {
+    throw enrErr(err && err.name === 'AbortError' ? 'timeout' : 'blocked');
+  } finally { clearTimeout(timer); ENR.active--; }
+  if (res.status === 404) throw enrErr('notfound', '조회 결과 없음');
+  if (res.status === 401 || res.status === 403) throw enrErr('auth');
+  if (res.status === 429) throw enrErr('rate');
+  if (!res.ok) throw enrErr('http', `HTTP ${res.status}`);
+  return readCapped(res);
+}
+function makeCtx(p, key) {
+  return {
+    key,
+    text: (url, opts) => apiRequest(p, url, opts),
+    json: async (url, opts) => { const t = await apiRequest(p, url, opts); try { return JSON.parse(t); } catch (e) { throw enrErr('parse'); } },
+  };
+}
+// JSON 도우미: 'a.b[0].c' 경로 읽기, 평탄화, 값 표시
+function jget(o, path) {
+  let cur = o;
+  for (const part of String(path).replace(/\[(\d+)\]/g, '.$1').split('.').filter(Boolean)) { if (cur == null) return undefined; cur = cur[part]; }
+  return cur;
+}
+function flatJSON(o, pre = '', out = [], depth = 0) {
+  if (out.length > 200 || depth > 4) return out;
+  if (o && typeof o === 'object') {
+    if (Array.isArray(o) && o.every((x) => x == null || typeof x !== 'object')) { out.push([pre || '값', o]); return out; }
+    for (const [k, v] of Object.entries(o)) flatJSON(v, pre ? `${pre}.${k}` : k, out, depth + 1);
+  } else if (o !== undefined && o !== '') out.push([pre || '값', o]);
+  return out;
+}
+function fv(v) {
+  if (v == null || v === '') return '—';
+  if (Array.isArray(v)) return truncate(v.map((x) => (x && typeof x === 'object' ? JSON.stringify(x) : String(x))).join(', '), 1000);
+  if (typeof v === 'boolean') return v ? '예' : '아니오';
+  if (typeof v === 'number') return Number.isInteger(v) ? v.toLocaleString() : String(+v.toFixed(6));
+  if (typeof v === 'object') return truncate(JSON.stringify(v), 1000);
+  return truncate(String(v), 1000);
+}
+function foundFromText(text, self, rel = '관련') {
+  const selfKey = refang(self).toLowerCase();
+  return extractUnique(String(text).slice(0, 400000)).filter((x) => x.t && refang(x.v).toLowerCase() !== selfKey).slice(0, 200).map((x) => ({ t: x.t, v: x.v, rel, dir: 'out' }));
+}
+function F(k, v, attr = false) { return { k, v: fv(v), attr }; }
+function enrichRecord(p, res, query) {
+  const fields = (res.fields || []).filter((f) => f && f.k && f.v != null && f.v !== '—' && f.v !== '').slice(0, 80).map((f) => ({ k: String(f.k), v: String(f.v), attr: !!f.attr }));
+  const found = (res.found || []).filter((f) => f && ETYPES[f.t] && String(f.v || '').trim()).map((f) => ({ t: f.t, v: String(f.v).trim(), rel: f.rel || '관련', dir: f.dir === 'in' ? 'in' : 'out', label: f.label || '' }));
+  const seen = new Set();
+  const dedup = found.filter((f) => { const k = f.t + '|' + normKey(f.t, f.v); if (seen.has(k)) return false; seen.add(k); return true; }).slice(0, 400);
+  let raw = '';
+  try { raw = typeof res.raw === 'string' ? res.raw : JSON.stringify(res.raw ?? null, null, 1); } catch (e) { raw = ''; }
+  return { at: nowISO(), ok: true, empty: !!res.empty, code: 'ok', msg: '', summary: String(res.summary || (res.empty ? '조회 결과 없음' : `${fields.length}개 항목`)).slice(0, 500),
+    fields, found: dedup, fp: String(res.fp ?? '').slice(0, 4000), raw: raw.slice(0, 60000), query: String(query || '').slice(0, 600) };
+}
+const redactKey = (url, key) => (key ? String(url).split(key).join('•••') : String(url));
+function entityAlive(c, e) { return !!(S.db && S.db.cases.includes(c) && (e._tmp || c.entities.includes(e))); }
+async function runEnrich(c, e, p, { force = false, reason = 'manual' } = {}) {
+  const api = apiSettings();
+  if (!api.enabled) throw enrErr('off');
+  const key = providerKey(p);
+  if (p.auth === 'key' && !key) {
+    e.enrich ||= {};
+    e.enrich[p.id] = { at: nowISO(), ok: false, code: 'nokey', msg: ENR_CODES.nokey, summary: '', fields: [], found: [], fp: '', raw: '', query: '' };
+    renderEnrichViews(e);
+    return e.enrich[p.id];
+  }
+  const prev = e.enrich?.[p.id];
+  if (!force && prev && prev.ok && api.cacheHours > 0 && Date.now() - new Date(prev.at).getTime() < api.cacheHours * 3600e3) return prev;
+  const tag = `${e.id}:${p.id}`;
+  if (ENR.running.has(tag)) return prev;
+  ENR.running.add(tag);
+  renderEnrichViews(e);
+  const v = refang(e.value).trim();
+  let rec;
+  const queryLog = [];
+  const ctx = makeCtx(p, key);
+  const wrap = (fn) => async (url, opts) => { queryLog.push(redactKey(url, key)); return fn(url, opts); };
+  ctx.text = wrap(ctx.text);
+  ctx.json = wrap(ctx.json);
+  try {
+    const res = await p.run(v, ctx, e);
+    rec = enrichRecord(p, res || {}, queryLog.join('\n'));
+  } catch (err) {
+    const code = err && err.code ? err.code : 'error';
+    if (code === 'notfound') rec = enrichRecord(p, { empty: true, summary: '조회 결과 없음 (기록이 없거나 알려지지 않은 값)', fp: 'empty' }, queryLog.join('\n'));
+    else rec = { at: nowISO(), ok: false, code, msg: String((err && err.message) || ENR_CODES[code] || '오류').slice(0, 300), summary: '', fields: [], found: [], fp: prev?.fp || '', raw: '', query: queryLog.join('\n').slice(0, 600) };
+  } finally { ENR.running.delete(tag); }
+  if (!entityAlive(c, e)) return rec;
+  e.enrich ||= {};
+  e.enrich[p.id] = rec;
+  const ps = api.providers[p.id] || { on: providerOn(p), auto: providerAuto(p), key };
+  ps.status = { at: rec.at, code: rec.ok ? 'ok' : rec.code, msg: rec.ok ? '' : rec.msg };
+  api.providers[p.id] = ps;
+  const what = rec.ok ? rec.summary : `실패 — ${rec.msg}`;
+  addLog(c, 'enrich', `${p.name} ← ${truncate(v, 80)} · ${truncate(what, 120)}${reason === 'auto' ? ' (자동)' : reason === 'watch' ? ' (감시)' : e._tmp ? ' (미리보기)' : ''}`, e._tmp ? {} : { ref: e.id });
+  if (reason === 'watch' && rec.ok && prev?.ok && prev.fp && rec.fp && prev.fp !== rec.fp) {
+    const msg = `${p.name}: ${truncate(prev.summary, 80)} → ${truncate(rec.summary, 80)}`;
+    e.alerts = [...(e.alerts || []), { at: rec.at, pid: p.id, msg }].slice(-20);
+    addLog(c, 'enrich', `변화 감지 · ${truncate(e.value, 60)} · ${msg}`, { ref: e.id });
+    toast(`변화 감지: ${truncate(e.value, 40)} (${p.name})`, { action: () => { if (C() !== c) switchCase(c.id); openEntity(e.id); }, actionLabel: '보기', timeout: 10000 });
+  }
+  if (rec.ok && api.autoAddFound && reason !== 'watch' && rec.found.length && !e._tmp) addFound(c, e, rec.found.slice(0, 25), p);
+  touchCase(c);
+  markDirty();
+  renderEnrichViews(e);
+  return rec;
+}
+async function enrichAll(c, e, { force = false, reason = 'manual', onlyAuto = false, onlyWatch = false } = {}) {
+  const ps = providersFor(e).filter((p) => providerOn(p) && (!onlyAuto || providerAuto(p)) && (!onlyWatch || p.watch));
+  await Promise.all(ps.map((p) => runEnrich(c, e, p, { force, reason }).catch(() => null)));
+  return ps.length;
+}
+function addFound(c, e, items, p) {
+  let added = 0, linked = 0;
+  for (const it of items) {
+    if (!ETYPES[it.t]) continue;
+    const r = addEntity(c, { type: it.t, value: it.v, label: it.label || '', notes: `${p ? p.name + ' ' : ''}자동 조회로 발견 · 기준 [[${e.value}]]`, noAuto: true }, { log: true });
+    if (!r.existed) added++;
+    const before = c.links.length;
+    if (it.dir === 'in') addLink(c, r.entity.id, e.id, it.rel || '관련', p ? `${p.name} 조회` : '');
+    else addLink(c, e.id, r.entity.id, it.rel || '관련', p ? `${p.name} 조회` : '');
+    if (c.links.length > before) linked++;
+  }
+  return { added, linked };
+}
+// 자동 조회 대기열 (새 엔티티)
+function scheduleAuto(c, e) {
+  const api = apiSettings();
+  if (!api.enabled || !api.autoNew) return;
+  if (!providersFor(e).some((p) => providerOn(p) && providerAuto(p))) return;
+  ENR.queue.push({ c, e });
+  updateEnrQueue();
+  pumpQueue();
+}
+async function pumpQueue() {
+  if (ENR.worker) return;
+  ENR.worker = true;
+  try {
+    while (ENR.queue.length) {
+      if (!S.db || S.locked || !apiSettings().enabled) { ENR.queue.length = 0; break; }
+      const batch = ENR.queue.splice(0, 2);
+      await Promise.all(batch.map(({ c, e, force, reason }) => (entityAlive(c, e) ? enrichAll(c, e, { reason: reason || 'auto', onlyAuto: !reason, force }) : null)));
+      updateEnrQueue();
+    }
+  } finally { ENR.worker = false; updateEnrQueue(); }
+}
+function queueEnrich(c, entities, { force = false } = {}) {
+  for (const e of entities) ENR.queue.push({ c, e, force, reason: 'manual' });
+  updateEnrQueue();
+  pumpQueue();
+}
+function updateEnrQueue() {
+  const el = $('#enr-queue');
+  if (!el) return;
+  const n = ENR.queue.length + ENR.running.size;
+  el.hidden = !n;
+  if (n) el.replaceChildren(h('span', { class: 'status-dot busy' }), h('span', { class: 'grow' }, `API 조회 진행 중 · ${n}건`),
+    ENR.queue.length ? h('button', { class: 'linkish small', onclick: () => { ENR.queue.length = 0; updateEnrQueue(); toast('대기 중인 조회를 취소했습니다'); } }, '취소') : null);
+}
+// 감시: 켜 둔 엔티티를 주기적으로 다시 조회해 지문(fp)이 바뀌면 알린다
+function armWatch() {
+  clearInterval(ENR.watchTimer);
+  ENR.watchTimer = setInterval(() => {
+    if (!S.started || S.locked || !S.db) return;
+    const api = apiSettings();
+    if (!api.enabled) return;
+    const due = Date.now() - api.watchMin * 60000;
+    for (const c of S.db.cases) {
+      for (const e of c.entities) {
+        if (!e.watch?.on) continue;
+        if (e.watch.last && new Date(e.watch.last).getTime() > due) continue;
+        e.watch.last = nowISO();
+        enrichAll(c, e, { force: true, reason: 'watch', onlyWatch: true });
+      }
+    }
+  }, 30000);
+}
+function renderEnrichViews(e) {
+  updateEnrQueue();
+  if (S.drawer?.kind === 'entity' && S.drawer.id === e.id) renderDrawer();
+  for (const box of $$('.enr-host')) if (box._target === e && box._redraw) box._redraw();
+}
+
+/* ---------- 인리치먼트 UI ---------- */
+const ENR_CORS = { yes: ['브라우저 호출 지원', 'ok'], likely: ['브라우저 호출 가능성 높음', ''], unknown: ['브라우저 호출 미확인', 'warn'] };
+function enrichStatusBadge(rec, running) {
+  if (running) return h('span', { class: 'badge accent' }, h('span', { class: 'status-dot busy' }), '조회 중');
+  if (!rec) return h('span', { class: 'badge outline' }, '아직 안 함');
+  if (rec.ok) return h('span', { class: 'badge ' + (rec.empty ? '' : 'ok'), title: fmtDT(rec.at, { sec: true, zone: true }) }, rec.empty ? '결과 없음' : '조회됨', ' · ', fromNow(rec.at));
+  return h('span', { class: 'badge danger', title: rec.msg }, { blocked: '차단됨', auth: '인증 실패', nokey: '키 필요', rate: '한도 초과', timeout: '시간 초과', policy: '허용 안 됨', parse: '형식 오류', off: '꺼짐' }[rec.code] || '오류');
+}
+function enrichCard(c, target, p, { onSaveFound, transient = false } = {}) {
+  const rec = target.enrich?.[p.id];
+  const running = ENR.running.has(`${target.id}:${p.id}`);
+  const on = providerOn(p);
+  const card = h('div', { class: 'enr-card' + (rec && !rec.ok ? ' err' : '') });
+  const runBtn = h('button', { class: 'btn xs', disabled: running || !on, title: on ? '지금 조회 (캐시 무시)' : '설정에서 이 제공자를 켜세요',
+    onclick: () => runEnrich(c, target, p, { force: true }) }, icon('refresh', 12), rec ? '다시' : '조회');
+  const head = h('div', { class: 'enr-h' }, h('b', { class: 'grow trunc', title: p.desc || p.name }, p.name), enrichStatusBadge(rec, running), runBtn);
+  card.append(head);
+  if (!rec) return card;
+  if (!rec.ok) {
+    card.append(h('div', { class: 'small', style: 'color:var(--danger)' }, rec.msg || ENR_CODES[rec.code]));
+    if (rec.code === 'blocked' || rec.code === 'policy') {
+      const pv = pivotsFor(target.type, target.value).slice(0, 3);
+      if (pv.length) card.append(h('div', { class: 'pv-links' }, pv.map((x) => pivotLink(x, target.value))));
+    }
+    return card;
+  }
+  card.append(h('div', { class: 'enr-sum' }, rec.summary));
+  if (rec.fields.length) {
+    const xk = `${target.id}:${p.id}`;
+    const showAll = ENR.expanded.has(xk);
+    const fs = showAll ? rec.fields : rec.fields.slice(0, 8);
+    card.append(h('dl', { class: 'kv enr-kv' }, fs.flatMap((f) => [h('dt', null, f.k), h('dd', { class: /^[\w.:/@-]{12,}$/.test(f.v) ? 'mono small' : '' }, f.v)])));
+    const btns = h('div', { class: 'row', style: 'gap:4px' });
+    if (rec.fields.length > 8) btns.append(h('button', { class: 'btn xs ghost', onclick: () => { if (showAll) ENR.expanded.delete(xk); else ENR.expanded.add(xk); renderEnrichViews(target); } }, showAll ? '접기' : `항목 ${rec.fields.length}개 모두`));
+    const attrs = rec.fields.filter((f) => f.attr);
+    if (attrs.length && !transient) btns.append(h('button', { class: 'btn xs', title: '핵심 항목을 엔티티 속성에 저장합니다', onclick: () => {
+      let n = 0;
+      for (const f of attrs) { const k = `${f.k}`; const ex = target.attrs.find((a) => a.k === k); if (ex) { if (ex.v !== f.v) { ex.v = f.v; n++; } } else { target.attrs.push({ k, v: f.v }); n++; } }
+      target.updatedAt = nowISO();
+      addLog(c, 'update', `속성 반영 · ${p.name} → ${truncate(target.value, 50)} (${n}개)`, { ref: target.id });
+      commit(c);
+      toast(n ? `속성 ${n}개를 저장했습니다` : '이미 같은 값입니다');
+    } }, icon('plus', 11), '핵심 항목을 속성으로'));
+    if (btns.children.length) card.append(btns);
+  }
+  if (rec.found.length) {
+    const checks = [];
+    const list = h('div', { class: 'enr-found' });
+    for (const f of rec.found.slice(0, 60)) {
+      const ex = c ? findEntity(c, f.t, f.v) : null;
+      const linked = ex && c.links.some((l) => (l.from === target.id && l.to === ex.id) || (l.to === target.id && l.from === ex.id));
+      const cb = h('input', { type: 'checkbox', checked: !linked, disabled: !!linked || transient });
+      checks.push({ cb, f });
+      list.append(h('label', { class: 'chip', dataset: { t: f.t }, title: `${ETYPES[f.t].label} · ${f.rel}${linked ? ' · 이미 연결됨' : ex ? ' · 등록된 엔티티' : ''}` },
+        transient ? null : cb, h('span', { class: 'tdot' }), h('span', { class: 'v mono' }, truncate(f.v, 44)), h('span', { class: 'faint small' }, f.rel)));
+    }
+    card.append(h('div', { class: 'small muted', style: 'margin-top:4px' }, `발견한 셀렉터 ${rec.found.length}개${rec.found.length > 60 ? ' (60개까지 표시)' : ''}`), list);
+    if (!transient) {
+      card.append(h('div', { class: 'row', style: 'gap:4px' },
+        h('button', { class: 'btn xs primary', onclick: () => {
+          const pick = checks.filter((x) => x.cb.checked && !x.cb.disabled).map((x) => x.f);
+          if (!pick.length) { toast('추가할 항목을 고르세요'); return; }
+          const r = addFound(c, target, pick, p);
+          commit(c);
+          toast(`엔티티 ${r.added}개 추가 · 관계 ${r.linked}개 연결`);
+          onSaveFound?.();
+        } }, icon('plus', 11), '선택 항목을 엔티티·관계로'),
+        h('button', { class: 'btn xs ghost', onclick: () => copyText(rec.found.map((f) => f.v).join('\n')) }, icon('copy', 11), '목록 복사')));
+    }
+  }
+  const more = h('details', { class: 'enr-raw' }, h('summary', null, '원본 응답·요청 주소'),
+    rec.query ? h('pre', { class: 'out', style: 'max-height:120px' }, rec.query) : null,
+    h('pre', { class: 'out' }, rec.raw || '(없음)'));
+  card.append(more);
+  return card;
+}
+function enrichSection(c, e) {
+  const api = apiSettings();
+  const ps = providersFor(e);
+  const sec = h('section', { class: 'dsec' });
+  const onPs = ps.filter((p) => providerOn(p));
+  const head = h('h4', null, `실시간 조회 · ${onPs.length}/${ps.length}`, h('span', { class: 'sp' }));
+  sec.append(head);
+  if (!ps.length) { sec.append(h('div', { class: 'hint' }, '이 유형에 맞는 조회 제공자가 없습니다. 피벗 링크를 쓰세요.')); return sec; }
+  if (!api.enabled) {
+    sec.append(h('div', { class: 'enr-off' }, h('div', { class: 'small' }, `${ps.map((p) => p.name).slice(0, 4).join(', ')}${ps.length > 4 ? ` 외 ${ps.length - 4}곳` : ''}에서 이 값을 자동으로 조회할 수 있습니다. 외부 서비스로 값이 전송되므로 기본은 꺼져 있습니다.`),
+      h('button', { class: 'btn sm', onclick: () => { S.ui.settingsAnchor = 'api'; go('settings'); } }, icon('zap', 13), 'API 연동 설정')));
+    return sec;
+  }
+  if (e.alerts?.length) {
+    sec.append(h('div', { class: 'enr-alert' }, icon('alert', 14), h('div', { class: 'grow col', style: 'gap:2px' }, e.alerts.slice(-3).map((a) => h('div', { class: 'small' }, h('span', { class: 'mono faint' }, fmtDT(a.at) + ' '), a.msg))),
+      h('button', { class: 'btn xs', onclick: () => { e.alerts = []; markDirty(); renderDrawer(); } }, '확인')));
+  }
+  const watchable = onPs.some((p) => p.watch);
+  head.append(
+    watchable ? h('button', { class: 'btn xs' + (e.watch?.on ? ' on' : ''), title: `켜면 ${api.watchMin}분마다 다시 조회해 바뀐 점을 알립니다 (앱이 열려 있을 때)`, onclick: () => {
+      e.watch = { on: !e.watch?.on, last: e.watch?.last || null };
+      addLog(c, 'update', `감시 ${e.watch.on ? '시작' : '중지'} · ${truncate(e.value, 60)}`, { ref: e.id });
+      markDirty();
+      renderDrawer();
+    } }, icon('eye', 11), e.watch?.on ? '감시 중' : '감시') : null,
+    h('button', { class: 'btn xs primary', disabled: !onPs.length, onclick: () => enrichAll(c, e, { force: true }) }, icon('zap', 11), '모두 조회'));
+  const list = h('div', { class: 'col', style: 'gap:8px' });
+  for (const p of onPs) list.append(enrichCard(c, e, p, { onSaveFound: () => renderDrawer() }));
+  const offPs = ps.filter((p) => !providerOn(p));
+  if (offPs.length) list.append(h('div', { class: 'small faint' }, `꺼진 제공자 ${offPs.length}곳: ${offPs.map((p) => p.name).join(', ')} — `, h('button', { class: 'linkish small', onclick: () => { S.ui.settingsAnchor = 'api'; go('settings'); } }, '설정')));
+  sec.append(list);
+  return sec;
+}
+// 엔티티로 등록하지 않고 셀렉터를 바로 조회해 보는 창
+function enrichPreviewModal(t, v) {
+  const c = C();
+  if (!c) return;
+  const api = apiSettings();
+  const ex = findEntity(c, t, v);
+  if (ex) { openEntity(ex.id); if (api.enabled) enrichAll(c, ex, {}); return; }
+  const tmp = { id: 'tmp-' + uid(), _tmp: true, type: t, value: refang(v), label: '', attrs: [], tags: [], enrich: {} };
+  const host = h('div', { class: 'col enr-host', style: 'gap:8px' });
+  host._target = tmp;
+  const ps = providersFor(tmp).filter((p) => providerOn(p));
+  const draw = () => { clear(host); if (!ps.length) host.append(h('div', { class: 'hint' }, api.enabled ? '이 유형에 켜진 조회 제공자가 없습니다.' : 'API 연동이 꺼져 있습니다. 설정 › API 연동에서 켜세요.')); for (const p of ps) host.append(enrichCard(c, tmp, p, { transient: true })); };
+  host._redraw = draw;
+  draw();
+  const m = modal({ title: '실시간 조회', ic: 'zap', wide: true, body: [
+    h('div', { class: 'row' }, typeBadge(t), h('span', { class: 'mono break', style: 'font-weight:650' }, refang(v))),
+    h('div', { class: 'hint' }, '결과는 이 창에만 표시됩니다. 엔티티로 저장하면 결과와 발견한 셀렉터를 사건에 남길 수 있습니다.'), host],
+  foot: [h('button', { class: 'btn', onclick: () => m.close() }, '닫기'), h('button', { class: 'btn primary', onclick: () => {
+    const r = addEntity(c, { type: t, value: tmp.value, noAuto: true });
+    r.entity.enrich = { ...(r.entity.enrich || {}), ...tmp.enrich };
+    m.close(); commit(c); openEntity(r.entity.id);
+  } }, icon('plus', 14), '엔티티로 저장 (결과 포함)')] });
+  if (api.enabled) Promise.all(ps.map((p) => runEnrich(c, tmp, p, { force: true }).catch(() => null))).then(() => { if (host.isConnected) draw(); });
+}
+
+/* ======================================================================
    22. 내보내기 · 보고서 · STIX · 백업 · 가져오기
    ====================================================================== */
 const csvCell = (v) => { const s = String(v ?? ''); return /[",\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
@@ -5487,6 +6007,10 @@ function caseMarkdown(c, { defangIOC = true, includeLog = false, includeNotes = 
     L.push('## 노트', '');
     for (const n of sortedNotes(c)) L.push(`### ${DT(n.title) || '제목 없음'}`, '', `*작성 ${fmtDT(n.createdAt)} · 수정 ${fmtDT(n.updatedAt)}${n.tags.length ? ' · ' + n.tags.map((t) => '#' + t).join(' ') : ''}*`, '', attRef(DT(n.body)).replace(/^(#{1,4}) /gm, '$1## '), '');
   }
+  const enrRows = [];
+  const pmap = PROVIDER_BY_ID();
+  for (const e of c.entities) for (const [pid, r] of Object.entries(e.enrich || {})) if (r.ok) enrRows.push(`| \`${mdCell(D(e.value, e.type))}\` | ${mdCell(pmap.get(pid)?.name || pid)} | ${fmtDT(r.at)} | ${mdCell(DT(r.summary))} |`);
+  if (enrRows.length) L.push('## 실시간 조회(인리치먼트) 기록', '', '| 엔티티 | 제공자 | 조회 시각 | 결과 요약 |', '|---|---|---|---|', ...enrRows, '', '조회 결과는 해당 시점 외부 서비스의 응답이며, 다른 출처로 교차 확인이 필요합니다.', '');
   if (c.tasks.length) L.push('## 할 일', '', ...c.tasks.map((t) => `- [${t.done ? 'x' : ' '}] ${DT(t.text)}`), '');
   if (includeLog && c.log.length) L.push('## 활동 기록', '', ...[...c.log].reverse().map((l) => `- \`${fmtDT(l.at, { sec: true })}\` [${LOG_KIND[l.kind] || l.kind}] ${DT(l.msg)}`), '');
   L.push('---', '', `*단서 OSINT 노트 v${APP_VERSION}에서 생성 · TLP:${c.tlp}*`);
@@ -5607,7 +6131,7 @@ async function backupPassFlow(obj, filename) {
     download(filename.replace(/\.json$/, p1.value ? '.enc.json' : '.json'), text, 'application/json');
     toast(`백업 파일을 만들었습니다 (${fmtBytes(text.length)})`, { action: () => textModal('백업 내용', text, { filename }), actionLabel: '내용 보기' });
   };
-  const m = modal({ title: '백업 파일 암호화', ic: 'lock', narrow: true, body: [h('p', { class: 'hint', style: 'margin:0' }, '백업에는 사건 전체가 평문으로 들어갑니다. 파일을 다른 곳에 보관한다면 비밀번호로 암호화하세요. 비밀번호를 잊으면 열 수 없습니다.'), p1, p2, err],
+  const m = modal({ title: '백업 파일 암호화', ic: 'lock', narrow: true, body: [h('p', { class: 'hint', style: 'margin:0' }, '백업에는 사건 전체가 평문으로 들어갑니다. 파일을 다른 곳에 보관한다면 비밀번호로 암호화하세요. 비밀번호를 잊으면 열 수 없습니다. API 키는 백업에 넣지 않습니다.'), p1, p2, err],
     foot: [h('button', { class: 'btn', onclick: () => m.close() }, '취소'), h('button', { class: 'btn primary', onclick: go2 }, icon('download', 14), '백업 만들기')] });
 }
 function exportCaseModal(c = C()) {
@@ -5642,7 +6166,12 @@ function exportCaseModal(c = C()) {
 }
 async function fullBackup() {
   const atts = await collectAttachments(Object.keys(S.db.attachments));
-  backupPassFlow({ format: 'danseo-backup', version: 1, app: 'danseo', exportedAt: nowISO(), db: S.db, attachments: atts }, `danseo_backup_${fmtDT(new Date(), { time: false, tz: undefined })}.json`);
+  const db = JSON.parse(JSON.stringify(S.db));
+  if (db.settings?.api) {
+    for (const ps of Object.values(db.settings.api.providers || {})) ps.key = '';
+    for (const cu of db.settings.api.custom || []) cu.headerValue = '';
+  }
+  backupPassFlow({ format: 'danseo-backup', version: 1, app: 'danseo', exportedAt: nowISO(), db, attachments: atts }, `danseo_backup_${fmtDT(new Date(), { time: false, tz: undefined })}.json`);
   for (const c of S.db.cases) addLog(c, 'system', '전체 백업 내보내기');
   markDirty();
 }
@@ -5855,6 +6384,7 @@ VIEW_FN.settings = (root) => {
       row('분석가 이름·호출부호', '보고서와 STIX 번들의 작성자로 들어갑니다', (() => { const i = h('input', { class: 'input', id: 'set-analyst', value: s.analyst, placeholder: '예: 분석관 K', style: 'max-width:240px' }); i.addEventListener('input', debounce(() => set('analyst', i.value.trim()), 300)); return i; })()),
       row('피벗 링크 기록', '피벗 링크를 누를 때마다 활동 기록에 “서비스 ← 값”을 남겨 조사 방법을 문서화합니다', switchEl(s.logPivots, '', (v) => set('logPivots', v), 'set-logpivot')),
       row('암호화 안내 배너', '상단의 암호화 권유 배너를 다시 표시합니다', h('button', { class: 'btn sm', onclick: () => { s.hideEncBanner = false; markDirty(); renderBanners(); } }, '다시 표시'))),
+    apiSettingsSection(row),
     sec('데이터', '데이터는 이 브라우저·이 파일 위치에 묶입니다. 다른 브라우저나 기기로 옮길 때는 백업 파일을 쓰세요.',
       row('저장 공간', null, h('div', { class: 'row' }, storeInfo, persistBtn)),
       row('전체 백업', '모든 사건과 첨부를 JSON 한 파일로 (비밀번호 암호화 선택)', h('div', { class: 'row' }, h('button', { class: 'btn sm', onclick: fullBackup }, icon('download', 13), '내보내기'), h('button', { class: 'btn sm', onclick: importDialog }, icon('upload', 13), '가져오기'))),
@@ -5863,13 +6393,134 @@ VIEW_FN.settings = (root) => {
     sec('단축키와 안내', null,
       h('div', { class: 'tbl-wrap' }, h('table', { class: 'tbl' }, h('tbody', null, SHORTCUTS.map(([k, d]) => h('tr', null, h('td', { class: 'nowrap', style: 'width:1%' }, h('span', { class: 'kbd' }, k)), h('td', null, d)))))),
       h('ul', { class: 'small', style: 'margin:0;padding-left:1.2em;line-height:1.8;color:var(--fg-2)' },
-        h('li', null, '이 파일에는 콘텐츠 보안 정책(CSP)이 걸려 있어 원격 이미지·스크립트·네트워크 요청이 차단됩니다. 노트에 붙인 외부 이미지도 불러오지 않습니다.'),
+        h('li', null, '이 파일에는 콘텐츠 보안 정책(CSP)이 걸려 있어 원격 이미지·스크립트가 차단되고, 네트워크 요청은 API 연동 제공자 목록의 HTTPS 주소로만 나갈 수 있습니다. API 연동을 켜지 않으면 아무 요청도 보내지 않습니다.'),
         h('li', null, '피벗 링크를 누르는 순간에만 해당 서비스로 값이 전송됩니다. 조사용 브라우저 프로필과 네트워크에서 여세요.'),
         h('li', null, '링크는 리퍼러 없이(noreferrer) 새 탭으로 열려 이 파일의 위치가 상대에게 전달되지 않습니다.'),
         h('li', null, '여러 탭에서 동시에 편집하면 나중에 저장한 쪽이 이깁니다. 다른 탭의 저장을 감지하면 경고합니다.'),
         h('li', null, '증거 파일은 첨부하는 순간 SHA-256·SHA-1·MD5를 기록합니다. 출처 화면의 “무결성 검증”으로 언제든 다시 확인할 수 있습니다.'))),
   );
+  if (S.ui.settingsAnchor) { const t = document.getElementById('set-' + S.ui.settingsAnchor); S.ui.settingsAnchor = null; if (t) requestAnimationFrame(() => t.scrollIntoView({ block: 'start' })); }
 };
+function apiSettingsSection(row) {
+  const api = apiSettings();
+  const sec = h('section', { class: 'set-sec', id: 'set-api' });
+  const body = h('div', { class: 'sb' });
+  sec.append(h('div', { class: 'sh' }, h('h3', null, '실시간 API 연동'), h('p', null, '엔티티 값을 외부 서비스에 자동으로 조회해 DNS·등록 정보·IP 소유자·평판·지갑 잔액 등을 붙여 넣고, 응답에서 새 셀렉터를 찾아 관계도에 이어 줍니다. 켜는 순간부터 조회한 값이 해당 서비스로 전송됩니다.')), body);
+  const redraw = () => sec.replaceWith(apiSettingsSection(row));
+  if (inArtifactViewer()) body.append(h('div', { class: 'enr-alert' }, icon('alert', 14), h('div', { class: 'small' }, '지금은 claude.ai 웹 게시본에서 열려 있어 외부 통신이 막힙니다. 실시간 조회는 osint-memo.html 파일을 내려받아 브라우저로 직접 열었을 때 동작합니다.')));
+  if (!HAS_SUBTLE && !inArtifactViewer()) body.append(h('div', { class: 'hint' }, '보안 컨텍스트가 아니어서 API 키를 암호화해 둘 수 없습니다.'));
+  body.append(row('API 연동 사용', api.enabled ? '켜짐 — 아래에서 켠 제공자로만 요청합니다' : '꺼짐 — 외부로 아무 요청도 보내지 않습니다',
+    switchEl(api.enabled, '', async (v) => {
+      if (v) {
+        const ok = await confirmDialog('API 연동을 켜면 엔티티 값(도메인·IP·이메일·주소 등)이 아래 목록의 외부 서비스로 전송되고, 그 서비스의 기록에 남을 수 있습니다. 조사 대상이 알아챌 수 있는 서비스는 목록에 넣지 않았지만, 조사용 네트워크(VPN 등)에서 쓰는 것을 권장합니다.', { title: 'API 연동 켜기', ok: '켜기' });
+        if (!ok) { redraw(); return; }
+      }
+      api.enabled = v;
+      for (const c of S.db.cases) addLog(c, 'system', `API 연동 ${v ? '켬' : '끔'}`);
+      markDirty();
+      if (!v) ENR.queue.length = 0;
+      renderSide();
+      redraw();
+    }, 'set-api-on')));
+  const sel = (k, opts, label, desc) => row(label, desc, selectEl(opts, api[k], { class: 'select', style: 'width:auto', onchange: (e) => { api[k] = +e.target.value; markDirty(); if (k === 'watchMin') armWatch(); } }));
+  body.append(
+    row('새 엔티티 자동 조회', '엔티티를 등록하면 “자동” 표시한 제공자로 바로 조회합니다 (대기열로 천천히 처리)', switchEl(api.autoNew, '', (v) => { api.autoNew = v; markDirty(); }, 'set-api-auto')),
+    row('발견한 셀렉터 자동 추가', '조회 응답에서 찾은 IP·도메인 등을 엔티티·관계로 바로 추가합니다 (조회 1건당 최대 25개)', switchEl(api.autoAddFound, '', (v) => { api.autoAddFound = v; markDirty(); }, 'set-api-found')),
+    sel('cacheHours', [[0, '항상 새로 조회'], [1, '1시간'], [6, '6시간'], [24, '24시간'], [72, '3일'], [168, '7일']], '결과 재사용', '이 시간 안에 조회한 결과가 있으면 다시 묻지 않습니다 (“다시” 버튼은 무시)'),
+    sel('timeoutSec', [[5, '5초'], [10, '10초'], [15, '15초'], [30, '30초'], [60, '60초']], '응답 제한 시간', null),
+    sel('watchMin', [[15, '15분'], [30, '30분'], [60, '1시간'], [180, '3시간'], [360, '6시간'], [1440, '하루']], '감시 주기', '“감시”를 켠 엔티티를 이 간격으로 다시 조회해 바뀐 점을 알립니다 (앱이 열려 있는 동안)'),
+  );
+  const hasKey = Object.values(api.providers).some((x) => x.key) || api.custom.some((x) => x.headerValue);
+  if (hasKey && !S.meta?.enc) body.append(h('div', { class: 'enr-alert' }, icon('key', 14), h('div', { class: 'small grow' }, 'API 키가 이 브라우저에 평문으로 저장되어 있습니다. 저장소 암호화를 켜면 키도 함께 암호화됩니다. (백업 파일에는 키를 넣지 않습니다)'),
+    HAS_SUBTLE ? h('button', { class: 'btn xs', onclick: () => encryptionDialog('enable') }, '암호화 켜기') : null));
+  // 제공자 목록
+  const list = h('div', { class: 'col', style: 'gap:0' });
+  let group = null;
+  const allP = allProviders();
+  for (const p of allP) {
+    if (p.group !== group) { group = p.group; list.append(h('div', { class: 'prov-group' }, group)); }
+    list.append(providerRow(p, redraw));
+  }
+  body.append(h('div', { class: 'col', style: 'gap:6px' }, h('b', { style: 'font-size:13.5px' }, `제공자 ${allP.length}곳`),
+    h('div', { class: 'hint' }, '“브라우저 호출 미확인” 제공자는 서비스가 CORS를 허용하지 않으면 “차단됨”으로 표시됩니다. 연결 테스트로 이 환경에서 되는지 먼저 확인하세요.'), list));
+  // 사용자 정의 제공자
+  body.append(customProviderEditor(redraw));
+  const hosts = cspConnectHosts();
+  body.append(h('details', null, h('summary', { style: 'cursor:pointer;font-size:13px;font-weight:600' }, `허용 목록 (CSP connect-src) · ${hosts ? hosts.length : '제한 없음'}`),
+    h('div', { class: 'hint', style: 'margin:6px 0' }, '이 파일이 통신할 수 있는 주소는 HTML 첫 부분의 Content-Security-Policy connect-src에 고정되어 있습니다. 사용자 정의 제공자를 쓰려면 그 줄에 호스트(https://…)를 직접 추가하세요.'),
+    h('pre', { class: 'out' }, hosts ? hosts.join('\n') || '(없음)' : 'CSP 메타 태그가 없습니다 (웹 게시본은 호스트 쪽 정책을 따릅니다)')));
+  return sec;
+}
+function providerRow(p, redraw) {
+  const ps = apiSettings().providers[p.id];
+  const on = providerOn(p);
+  const keyIn = p.auth !== 'none' ? h('input', { class: 'input sm mono', type: 'password', autocomplete: 'off', placeholder: p.keyName || 'API 키', value: providerKey(p), 'aria-label': `${p.name} API 키` }) : null;
+  if (keyIn) keyIn.addEventListener('change', () => { setProvider(p, { key: keyIn.value.trim() }); });
+  const st = ps?.status;
+  const stEl = h('span', { class: 'small' }, st ? enrichStatusBadge({ ok: st.code === 'ok', code: st.code, msg: st.msg, at: st.at }) : h('span', { class: 'faint' }, '테스트 안 함'));
+  const corsInfo = ENR_CORS[p.cors] || ENR_CORS.unknown;
+  const cspBad = p.hosts.some((o) => !cspAllows(o));
+  const testBtn = h('button', { class: 'btn xs', disabled: !p.test && !p.custom, title: '예시 값으로 한 번 조회해 이 환경에서 되는지 확인합니다', onclick: async () => {
+    const api = apiSettings();
+    if (!api.enabled) { toast('API 연동을 먼저 켜세요'); return; }
+    const c = C();
+    if (!c) { toast('열린 사건이 있어야 테스트 기록을 남길 수 있습니다'); return; }
+    const t = p.test || { type: p.types[0], value: { ip: '8.8.8.8', domain: 'example.com', email: 'test@example.com', url: 'https://example.com/', username: 'github', hash: '44d88612fea8a8f36de82e1278abb02f', crypto: 'bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh', location: '37.5665, 126.978' }[p.types[0]] || 'example' };
+    const tmp = { id: 'tmp-' + uid(), _tmp: true, type: t.type, value: t.value, attrs: [], tags: [], enrich: {} };
+    testBtn.disabled = true;
+    stEl.replaceChildren(enrichStatusBadge(null, true));
+    const rec = await runEnrich(c, tmp, p, { force: true }).catch((err) => ({ ok: false, code: err.code || 'error', msg: err.message, at: nowISO() }));
+    testBtn.disabled = false;
+    stEl.replaceChildren(enrichStatusBadge(rec));
+    toast(rec?.ok ? `${p.name}: 연결 성공 — ${truncate(rec.summary, 60)}` : `${p.name}: ${rec?.msg || '실패'}`, { err: !rec?.ok, timeout: 5000 });
+  } }, '연결 테스트');
+  return h('div', { class: 'prov' },
+    switchEl(on, '', (v) => { setProvider(p, { on: v }); redraw(); }, 'prov-' + p.id),
+    h('div', { style: 'min-width:0' },
+      h('div', { class: 'pn' }, p.name, ...p.types.slice(0, 6).map((t) => h('span', { class: 'badge etype', dataset: { t } }, ETYPES[t].label)),
+        p.auth === 'key' ? h('span', { class: 'badge warn' }, '키 필요') : p.auth === 'optional' ? h('span', { class: 'badge outline' }, '키 선택') : null,
+        h('span', { class: 'badge ' + corsInfo[1], title: p.corsNote || '' }, corsInfo[0]),
+        cspBad ? h('span', { class: 'badge danger', title: '파일 CSP에 이 호스트가 없어 호출할 수 없습니다' }, 'CSP 미허용') : null),
+      h('div', { class: 'pd' }, p.desc || '', p.limit ? ` · 한도: ${p.limit}` : ''),
+      keyIn ? h('div', { class: 'key' }, keyIn, p.keyUrl && safeHref(p.keyUrl) ? h('a', { class: 'small', href: p.keyUrl, target: '_blank', rel: 'noopener noreferrer' }, '키 발급') : null, p.keyNote ? h('span', { class: 'hint' }, p.keyNote) : null) : null,
+      h('div', { class: 'row small', style: 'margin-top:4px;gap:6px' }, stEl)),
+    h('div', { class: 'pa' },
+      h('label', { class: 'check small', title: '새 엔티티 자동 조회에 포함' }, h('input', { type: 'checkbox', checked: providerAuto(p), onchange: (e) => setProvider(p, { auto: e.target.checked }) }), '자동'),
+      testBtn));
+}
+function customProviderEditor(redraw) {
+  const api = apiSettings();
+  const box = h('div', { class: 'col', style: 'gap:8px' });
+  box.append(h('b', { style: 'font-size:13.5px' }, `사용자 정의 제공자 · ${api.custom.length}`),
+    h('div', { class: 'hint' }, '사내 위협 정보 API 같은 JSON 서비스를 직접 등록합니다. 주소의 {value}는 조회 값(URL 인코딩)으로 바뀝니다. 응답 JSON에서 볼 항목 경로(예: data.asn, result[0].country)를 쉼표로 적고, 비우면 상위 항목을 자동으로 보여 줍니다. 응답 속 IP·도메인 등은 자동으로 셀렉터로 찾습니다.'));
+  for (const cu of api.custom) {
+    box.append(h('div', { class: 'res-item' }, h('span', { class: 'grow col', style: 'gap:2px;min-width:0' }, h('b', { class: 'small' }, cu.name), h('span', { class: 'mono small muted break' }, cu.url)),
+      h('button', { class: 'btn xs danger', onclick: () => { api.custom = api.custom.filter((x) => x !== cu); delete api.providers[cu.id]; markDirty(); redraw(); } }, icon('trash', 11), '삭제')));
+  }
+  const name = h('input', { class: 'input sm', placeholder: '이름 (예: 사내 TI)' });
+  const url = h('input', { class: 'input sm mono', placeholder: 'https://ti.example.org/api/lookup?q={value}' });
+  const hn = h('input', { class: 'input sm mono', placeholder: '헤더 이름 (선택, 예: X-API-Key)' });
+  const hv = h('input', { class: 'input sm mono', type: 'password', placeholder: '헤더 값 (선택)', autocomplete: 'off' });
+  const paths = h('input', { class: 'input sm mono', placeholder: '항목 경로 (선택, 쉼표로)' });
+  const types = new Set(['domain', 'ip']);
+  const typeBox = h('div', { class: 'row', style: 'gap:4px' }, ETYPE_KEYS.map((t) => { const b = h('button', { type: 'button', class: 'fchip' + (types.has(t) ? ' on' : ''), dataset: { t }, onclick: () => { if (types.has(t)) types.delete(t); else types.add(t); b.classList.toggle('on'); } }, h('span', { class: 'tdot' }), ETYPES[t].label); return b; }));
+  const err = h('div', { class: 'hint', style: 'color:var(--danger)' });
+  box.append(h('details', null, h('summary', { style: 'cursor:pointer;font-size:13px' }, '+ 제공자 추가'),
+    h('div', { class: 'col', style: 'gap:6px;margin-top:8px' }, h('div', { class: 'grid2' }, name, url), h('div', { class: 'grid3' }, hn, hv, paths), typeBox, err,
+      h('div', null, h('button', { class: 'btn sm primary', onclick: () => {
+        let u;
+        try { u = new URL(url.value.trim().replace(/\{[a-z]+\}/g, 'x')); } catch (e) { err.textContent = '주소 형식이 올바르지 않습니다.'; return; }
+        if (u.protocol !== 'https:') { err.textContent = 'https 주소만 쓸 수 있습니다.'; return; }
+        if (!/\{(value|raw)\}/.test(url.value)) { err.textContent = '주소에 {value} 자리를 넣으세요.'; return; }
+        if (hn.value.trim() && !/^[A-Za-z0-9-]{1,60}$/.test(hn.value.trim())) { err.textContent = '헤더 이름은 영문·숫자·하이픈만 쓸 수 있습니다.'; return; }
+        if (!types.size) { err.textContent = '적용할 유형을 하나 이상 고르세요.'; return; }
+        api.custom.push({ id: 'cu-' + uid().slice(-10), name: name.value.trim() || u.host, types: [...types], url: url.value.trim(), headerName: hn.value.trim(), headerValue: hv.value, paths: paths.value.trim() });
+        markDirty();
+        if (!cspAllows(u.origin)) toast(`${u.origin} 은(는) 파일 CSP에 없어 호출되지 않습니다. 허용 목록 안내를 보세요.`, { err: true, timeout: 8000 });
+        redraw();
+      } }, icon('plus', 13), '추가')))));
+  return box;
+}
 async function wipeAll() {
   const ok = await confirmDialog('이 브라우저에 저장된 모든 사건, 첨부 파일, 설정, 암호화 정보를 지웁니다. 백업이 없다면 복구할 수 없습니다.', { title: '모든 데이터 삭제', danger: true, ok: '전부 삭제', typeToConfirm: '전체 삭제' });
   if (!ok) return;
@@ -5905,7 +6556,14 @@ function openPalette(initial = '') {
     ['새 사건', 'folder', newCaseDialog], ['사건 관리', 'folder', openCaseManager], ['전체 백업 내보내기', 'save', fullBackup], ['백업 가져오기', 'upload', importDialog],
     ['테마 바꾸기', themeIcon(), cycleTheme], [`시간대 바꾸기 (현재 ${tzLabel()})`, 'globe', () => { S.db.settings.tz = S.db.settings.tz === 'UTC' ? 'local' : 'UTC'; markDirty(); refresh(); toast('시간대: ' + tzLabel()); }],
     [S.meta?.enc ? '지금 잠그기' : '화면 가리기', S.meta?.enc ? 'lock' : 'eyeoff', () => lockNow()], ['키보드 단축키', 'terminal', shortcutsModal],
-  ].map(([label, ic, run]) => ({ g: '명령', label, ic, run, needCase: !['새 사건', '사건 관리', '백업 가져오기', '테마 바꾸기', '키보드 단축키', '화면 가리기', '지금 잠그기'].includes(label) }));
+    ['API 연동 설정', 'zap', () => { S.ui.settingsAnchor = 'api'; go('settings'); }],
+    ['사건의 모든 엔티티 실시간 조회', 'refresh', async () => {
+      const cc = C();
+      if (!apiSettings().enabled) { toast('설정 › API 연동을 먼저 켜세요'); return; }
+      const ok = await confirmDialog(`엔티티 ${cc.entities.length}개를 켜진 제공자로 조회합니다. 각 값이 해당 서비스로 전송되며, 캐시가 남아 있는 결과는 다시 묻지 않습니다.`, { title: '사건 전체 조회', ok: '조회 시작' });
+      if (ok) queueEnrich(cc, [...cc.entities]);
+    }],
+  ].map(([label, ic, run]) => ({ g: '명령', label, ic, run, needCase: !['새 사건', '사건 관리', '백업 가져오기', '테마 바꾸기', '키보드 단축키', '화면 가리기', '지금 잠그기', 'API 연동 설정'].includes(label) }));
   const build = () => {
     const raw = inp.value.trim();
     let mode = '';
@@ -6057,6 +6715,7 @@ async function lock(reason = '') {
   if (!S.db || S.locked) return;
   try { saveSoon.cancel(); if (S.dirty || S.saving) { while (S.saving) await new Promise((r) => setTimeout(r, 30)); await persist(); } } catch (e) { /* 저장 실패해도 잠금은 진행 */ }
   stopGraph();
+  ENR.queue.length = 0;
   while (OVL.length) closeTopOverlay();
   $('#drawer')?.remove();
   revokeAttURLs();
