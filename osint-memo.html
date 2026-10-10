@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; media-src data: blob:; font-src data:; connect-src 'none'; frame-src 'none'; object-src 'none'; worker-src blob:; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; media-src data: blob:; font-src data:; connect-src https://dns.google https://cloudflare-dns.com https://security.cloudflare-dns.com https://rdap.org https://rdap.verisign.com https://rdap.publicinterestregistry.org https://rdap.identitydigital.services https://pubapi.registry.google https://crt.sh https://api.certspotter.com https://index.commoncrawl.org https://archive.org https://haveibeenpwned.com https://stat.ripe.net https://ipwho.is https://ipinfo.io https://internetdb.shodan.io https://onionoo.torproject.org https://otx.alienvault.com https://isc.sans.edu https://api.stopforumspam.org https://raw.githubusercontent.com https://cdn.jsdelivr.net https://mempool.space https://blockstream.info https://eth.blockscout.com https://api.trongrid.io https://nominatim.openstreetmap.org https://photon.komoot.io https://archive-api.open-meteo.com https://api.open-meteo.com https://api.github.com https://gitlab.com https://public.api.bsky.app https://mastodon.social https://api.gravatar.com https://hacker-news.firebaseio.com https://www.wikidata.org https://keys.openpgp.org https://api.pwnedpasswords.com https://api.xposedornot.com; frame-src 'none'; object-src 'none'; worker-src blob:; base-uri 'none'; form-action 'none'">
 <title>단서 OSINT 노트</title>
 <meta name="referrer" content="no-referrer">
 <meta name="color-scheme" content="light dark">
@@ -5488,13 +5488,21 @@ const ENR_CODES = {
   off: 'API 연동이 꺼져 있습니다.',
   error: '조회 중 오류가 났습니다.',
 };
-const ENR = { running: new Set(), queue: [], active: 0, maxActive: 4, gates: new Map(), last: new Map(), worker: false, watchTimer: null, expanded: new Set() };
-const PROVIDERS = [/*@@PROVIDERS@@*/];
+const ENR = { running: new Set(), queue: [], active: 0, maxActive: 4, gates: new Map(), last: new Map(), worker: false, watchTimer: null, expanded: new Set(), lists: new Map(), listJobs: new Map(), cspHits: [] };
+// CSP가 막은 요청(주로 허용 목록 밖으로의 리디렉션)을 기억해 두었다가 '차단됨' 대신 정확한 이유를 보여 준다
+document.addEventListener('securitypolicyviolation', (ev) => {
+  if (!/^connect-src/.test(ev.effectiveDirective || ev.violatedDirective || '')) return;
+  ENR.cspHits.push({ at: Date.now(), uri: String(ev.blockedURI || '') });
+  if (ENR.cspHits.length > 20) ENR.cspHits.shift();
+});
 const PROVIDER_BY_ID = () => new Map(allProviders().map((p) => [p.id, p]));
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// 한 번만 정규화하고 같은 객체를 돌려준다 (호출할 때마다 새 객체를 만들면, 앞서 받아 둔 참조에 쓴 변경이 사라진다)
+const API_NORMALIZED = new WeakSet();
 function apiSettings() {
-  if (!S.db) return { ...API_DEFAULT };
-  S.db.settings.api = normalizeApi(S.db.settings.api);
+  if (!S.db) return { ...API_DEFAULT, providers: {}, custom: [] };
+  const cur = S.db.settings.api;
+  if (!cur || !API_NORMALIZED.has(cur)) { S.db.settings.api = normalizeApi(cur); API_NORMALIZED.add(S.db.settings.api); }
   return S.db.settings.api;
 }
 function normalizeApi(a) {
@@ -5629,24 +5637,48 @@ async function apiRequest(p, url, { method = 'GET', headers, body, timeoutSec } 
   while (ENR.active >= ENR.maxActive) await sleep(120);
   ENR.active++;
   const ac = new AbortController();
-  const timer = setTimeout(() => ac.abort(), (timeoutSec || apiSettings().timeoutSec) * 1000);
+  const timer = setTimeout(() => ac.abort(), (timeoutSec || Math.max(apiSettings().timeoutSec, p.timeoutSec || 0)) * 1000);
+  const started = Date.now();
   let res;
   try {
     res = await fetch(u.href, { method, headers, body, mode: 'cors', credentials: 'omit', cache: 'no-store', referrerPolicy: 'no-referrer', redirect: 'follow', signal: ac.signal });
   } catch (err) {
-    throw enrErr(err && err.name === 'AbortError' ? 'timeout' : 'blocked');
+    if (err && err.name === 'AbortError') throw enrErr('timeout');
+    await sleep(30);
+    const hit = ENR.cspHits.find((x) => x.at >= started - 50);
+    if (hit) throw enrErr('policy', `요청(또는 리디렉션 대상${hit.uri && !hit.uri.startsWith(u.origin) ? ` ${truncate(hit.uri, 80)}` : ''})이 파일의 허용 목록(CSP connect-src)에 없어 브라우저가 막았습니다.`);
+    throw enrErr('blocked');
   } finally { clearTimeout(timer); ENR.active--; }
-  if (res.status === 404) throw enrErr('notfound', '조회 결과 없음');
-  if (res.status === 401 || res.status === 403) throw enrErr('auth');
-  if (res.status === 429) throw enrErr('rate');
-  if (!res.ok) throw enrErr('http', `HTTP ${res.status}`);
+  if (res.status === 404 || res.status === 410) throw enrErr('notfound', '조회 결과 없음');
+  if (res.status === 429 || (res.status === 403 && res.headers.get('x-ratelimit-remaining') === '0')) throw enrErr('rate');
+  if ((res.status === 401 || res.status === 403) && p.auth !== 'none' && providerKey(p)) throw enrErr('auth');
+  if (!res.ok) {
+    const er = enrErr('http', `HTTP ${res.status}${res.status === 401 || res.status === 403 ? ' — 서비스가 이 요청을 거부했습니다' : res.status >= 500 ? ' — 서비스 쪽 오류' : ''}`);
+    er.status = res.status;
+    throw er;
+  }
   return readCapped(res);
 }
-function makeCtx(p, key) {
+function makeCtx(p, key, c = null) {
   return {
-    key,
+    key, c,
     text: (url, opts) => apiRequest(p, url, opts),
     json: async (url, opts) => { const t = await apiRequest(p, url, opts); try { return JSON.parse(t); } catch (e) { throw enrErr('parse'); } },
+    // 통째로 받아 이 브라우저에서 대조하는 목록: 세션 동안 메모리에 두고 같은 주소를 동시에 두 번 받지 않는다
+    list: async (url, ttlH = 6, parse = (t) => t) => {
+      const hit = ENR.lists.get(url);
+      if (hit && Date.now() - hit.at < ttlH * 3600e3) return hit.val;
+      if (!ENR.listJobs.has(url)) {
+        ENR.listJobs.set(url, (async () => {
+          const t = await apiRequest(p, url);
+          let val;
+          try { val = parse(t); } catch (e) { throw enrErr('parse'); }
+          ENR.lists.set(url, { at: Date.now(), val });
+          return val;
+        })().finally(() => ENR.listJobs.delete(url)));
+      }
+      return ENR.listJobs.get(url);
+    },
   };
 }
 // JSON 도우미: 'a.b[0].c' 경로 읽기, 평탄화, 값 표시
@@ -5707,10 +5739,11 @@ async function runEnrich(c, e, p, { force = false, reason = 'manual' } = {}) {
   const v = refang(e.value).trim();
   let rec;
   const queryLog = [];
-  const ctx = makeCtx(p, key);
-  const wrap = (fn) => async (url, opts) => { queryLog.push(redactKey(url, key)); return fn(url, opts); };
+  const ctx = makeCtx(p, key, c);
+  const wrap = (fn) => async (url, ...a) => { queryLog.push(redactKey(url, key)); return fn(url, ...a); };
   ctx.text = wrap(ctx.text);
   ctx.json = wrap(ctx.json);
+  ctx.list = wrap(ctx.list);
   try {
     const res = await p.run(v, ctx, e);
     rec = enrichRecord(p, res || {}, queryLog.join('\n'));
@@ -5814,6 +5847,1260 @@ function renderEnrichViews(e) {
   if (S.drawer?.kind === 'entity' && S.drawer.id === e.id) renderDrawer();
   for (const box of $$('.enr-host')) if (box._target === e && box._redraw) box._redraw();
 }
+
+/* ---------- 제공자 (PROVIDERS) ---------- */
+/* ---------- 제공자 공통 도우미 ---------- */
+const soft = (pr) => pr.catch(() => null);
+const FD = (t, v, rel, dir = 'out', label = '') => ({ t, v: String(v ?? '').trim(), rel, dir, label });
+const fpOf = (...parts) => parts.map((x) => (Array.isArray(x) ? [...x].map(String).sort().join(',') : String(x ?? ''))).join('|').slice(0, 4000);
+const fpHash = (arr) => md5Hex([...arr].map(String).sort().join('\n'));
+const isV4 = (s) => /^(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)$/.test(s);
+const isIPaddr = (s) => isV4(s) || (s.includes(':') && validIPv6(s));
+const isHostName = (s) => /^(?:[a-z0-9_](?:[a-z0-9_-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{0,62}$/i.test(s) && s.length <= 253;
+const dOnly = (s) => (s ? fmtDT(s, { time: false }) : '');
+const unixISO = (sec) => (Number.isFinite(+sec) && +sec > 0 ? new Date(+sec * 1000).toISOString() : '');
+const stripDot = (s) => String(s ?? '').trim().replace(/\.$/, '').toLowerCase();
+const userName = (v) => String(v).trim().replace(/^@/, '');
+const emailOk = (s) => /^[^\s@<>"]+@[^\s@<>"]+\.[a-z]{2,}$/i.test(String(s || ''));
+const notPlaceholderEmail = (s) => emailOk(s) && !/redacted|privacy|proxy|whoisguard|withheld|protect|anonymi[sz]ed|contact-?form|domainsbyproxy|not\s*disclosed/i.test(s);
+/** 엔티티 값에서 조회할 호스트 이름 (URL이면 호스트 부분) */
+function hostOf(v, e) {
+  if (e?.type === 'url') { try { return new URL(v).hostname.replace(/^\[|\]$/g, '').toLowerCase(); } catch (err) { return ''; } }
+  return stripDot(v);
+}
+const hostIsName = (v, e) => { const x = hostOf(v, e); return !!x && isHostName(x) && !isV4(x); };
+/** HTML 조각 → 일반 텍스트 (DOMParser 문서는 스크립트를 실행하거나 리소스를 불러오지 않는다) */
+function htmlText(s) {
+  if (!s) return '';
+  try { return (new DOMParser().parseFromString(String(s).replace(/<br\s*\/?>|<\/p>/gi, '\n'), 'text/html').body.textContent || '').trim(); } catch (e) { return String(s); }
+}
+function htmlHrefs(s) {
+  try { return [...new DOMParser().parseFromString(String(s || ''), 'text/html').querySelectorAll('a[href]')].map((a) => a.getAttribute('href')).filter((x) => /^https?:\/\//i.test(x)); } catch (e) { return []; }
+}
+function expandV6(s) {
+  s = s.toLowerCase().split('%')[0];
+  if (s.includes('.')) {
+    const i = s.lastIndexOf(':');
+    const q = s.slice(i + 1).split('.').map(Number);
+    s = s.slice(0, i + 1) + ((q[0] << 8) | q[1]).toString(16) + ':' + ((q[2] << 8) | q[3]).toString(16);
+  }
+  const [a, b] = s.split('::');
+  const A = a ? a.split(':') : [];
+  const B = b !== undefined ? (b ? b.split(':') : []) : null;
+  const g = B ? [...A, ...Array(Math.max(0, 8 - A.length - B.length)).fill('0'), ...B] : A;
+  return g.map((x) => x.padStart(4, '0')).join('');
+}
+const ptrName = (ip) => (isV4(ip) ? ip.split('.').reverse().join('.') + '.in-addr.arpa' : expandV6(ip).split('').reverse().join('.') + '.ip6.arpa');
+const v4num = (ip) => ip.split('.').reduce((a, b) => a * 256 + +b, 0);
+/** 큰 정수 문자열(최소 단위)을 소수점 표기로 (예: wei → ETH) */
+function fmtUnits(s, dec) {
+  try {
+    const b = BigInt(String(s).split('.')[0] || '0');
+    const neg = b < 0n;
+    const a = neg ? -b : b;
+    const d = 10n ** BigInt(dec);
+    const f = (a % d).toString().padStart(dec, '0').slice(0, 8).replace(/0+$/, '');
+    return (neg ? '-' : '') + (a / d).toLocaleString() + (f ? '.' + f : '');
+  } catch (e) { return String(s); }
+}
+const sats = (n) => fmtUnits(Math.round(+n || 0), 8);
+const otherSLD = /^(co|com|net|org|ac|go|or|ne|gov|edu|re|pe|ltd|plc|nic|mil|gen|biz|info)$/;
+/** 등록 단위 도메인 추정 (예: mail.example.co.kr → example.co.kr). 공개 접미사 목록 없이 흔한 2단계 국가 도메인만 고려한다 */
+function apexOf(d) {
+  const L = d.split('.');
+  const n = L.length >= 3 && L[L.length - 1].length === 2 && otherSLD.test(L[L.length - 2]) ? 3 : 2;
+  return L.slice(-n).join('.');
+}
+
+/* ---------- DNS ---------- */
+const DNS_T = { 1: 'A', 2: 'NS', 5: 'CNAME', 6: 'SOA', 12: 'PTR', 15: 'MX', 16: 'TXT', 28: 'AAAA', 33: 'SRV', 65: 'HTTPS', 257: 'CAA' };
+const DNS_RCODE = { 0: 'NOERROR', 1: 'FORMERR', 2: 'SERVFAIL', 3: 'NXDOMAIN', 5: 'REFUSED' };
+const unquoteTXT = (s) => { s = String(s ?? '').trim(); return /^".*"$/s.test(s) ? s.slice(1, -1).replace(/"\s+"/g, '') : s; };
+async function dohQuery(ctx, kind, name, type) {
+  let r;
+  if (kind === 'google') r = await ctx.json(`https://dns.google/resolve?name=${enc(name)}&type=${type}&edns_client_subnet=0.0.0.0/0`);
+  else {
+    const host = kind === 'cf-sec' ? 'https://security.cloudflare-dns.com' : 'https://cloudflare-dns.com';
+    try { r = await ctx.json(`${host}/dns-query?name=${enc(name)}&type=${type}&ct=application/dns-json`); }
+    catch (err) { if (err.code !== 'parse' && err.code !== 'http') throw err; r = await ctx.json(`${host}/dns-query?name=${enc(name)}&type=${type}`, { headers: { accept: 'application/dns-json' } }); }
+  }
+  if (!r || typeof r !== 'object' || typeof r.Status !== 'number') throw enrErr('parse');
+  r.Answer = Array.isArray(r.Answer) ? r.Answer : [];
+  return r;
+}
+const dnsData = (r, t) => (r ? r.Answer.filter((a) => DNS_T[a.type] === t).map((a) => (t === 'TXT' ? unquoteTXT(a.data) : String(a.data ?? '').trim())) : []);
+/** SOA RNAME(hostmaster.example.com.) → 이메일 */
+const soaMail = (rname) => { const s = stripDot(rname); const i = s.search(/(?<!\\)\./); return i > 0 ? s.slice(0, i).replace(/\\\./g, '.') + '@' + s.slice(i + 1) : ''; };
+function dnsProvider(kind) {
+  const google = kind === 'google';
+  return {
+    id: google ? 'dns-google' : 'dns-cloudflare', name: google ? 'Google DNS (DoH)' : 'Cloudflare DNS (DoH)', group: 'DNS·도메인',
+    types: ['domain', 'url', 'ip'], hosts: google ? ['https://dns.google'] : ['https://cloudflare-dns.com'], auth: 'none', cors: 'likely', watch: true,
+    defaultOn: google, defaultAuto: google, minInterval: 60,
+    desc: google ? 'A·AAAA·CNAME·NS·MX·TXT·SOA·CAA·DMARC 레코드, IP의 역방향(PTR). 권한 서버에 내 대역이 전달되지 않게 ECS를 끈 채로 묻습니다.' : 'Google DNS와 같은 조회를 Cloudflare 1.1.1.1로 (예비).',
+    test: { type: 'domain', value: 'example.com' },
+    applies: (v, e) => (e.type === 'ip' ? isIPaddr(v.trim()) : e.type === 'url' ? hostIsName(v.trim(), e) || isIPaddr(hostOf(v.trim(), e)) : hostIsName(v.trim(), e)),
+    run: async (v, ctx, e) => {
+      const host = hostOf(v, e);
+      if (e.type === 'ip' || isIPaddr(host)) {
+        const ip = e.type === 'ip' ? v : host;
+        const r = await dohQuery(ctx, kind, ptrName(ip), 'PTR');
+        const ptr = dnsData(r, 'PTR').map(stripDot);
+        return { summary: ptr.length ? `역방향 DNS: ${ptr.join(', ')}` : `역방향 DNS 없음 (${DNS_RCODE[r.Status] || r.Status})`, empty: !ptr.length,
+          fields: [F('PTR', ptr.join(', ') || '없음', !!ptr.length)], found: ptr.map((x) => FD('domain', x, '역방향 DNS(PTR)')), fp: fpOf(ptr), raw: r };
+      }
+      const d = host;
+      const T = ['A', 'AAAA', 'CNAME', 'NS', 'MX', 'TXT', 'SOA', 'CAA'];
+      const rs = await Promise.all(T.map((t, i) => (i === 0 ? dohQuery(ctx, kind, d, t) : soft(dohQuery(ctx, kind, d, t)))));
+      const R = Object.fromEntries(T.map((t, i) => [t, rs[i]]));
+      if (R.A.Status === 3) return { empty: true, summary: 'NXDOMAIN — 존재하지 않는(또는 삭제된) 도메인', fields: [F('응답', 'NXDOMAIN')], fp: 'nxdomain', raw: R.A };
+      const dmarc = await soft(dohQuery(ctx, kind, '_dmarc.' + d, 'TXT'));
+      const A = dnsData(R.A, 'A'), AAAA = dnsData(R.AAAA, 'AAAA');
+      const CN = uniq([...dnsData(R.A, 'CNAME'), ...dnsData(R.CNAME, 'CNAME')].map(stripDot));
+      const NS = dnsData(R.NS, 'NS').map(stripDot);
+      const MX = dnsData(R.MX, 'MX').map((x) => { const m = /^(\d+)\s+(\S+)$/.exec(x); return m ? { pri: +m[1], host: stripDot(m[2]) } : { pri: 0, host: stripDot(x) }; }).sort((a, b) => a.pri - b.pri);
+      const TXT = dnsData(R.TXT, 'TXT');
+      const SOA = dnsData(R.SOA, 'SOA')[0] || (R.SOA?.Authority || []).filter((a) => a.type === 6).map((a) => a.data)[0] || '';
+      const CAA = dnsData(R.CAA, 'CAA');
+      const DM = dnsData(dmarc, 'TXT').filter((x) => /^v=DMARC1/i.test(x));
+      const found = [];
+      for (const ip of A) found.push(FD('ip', ip, '확인된 IP(A)'));
+      for (const ip of AAAA) found.push(FD('ip', ip, '확인된 IP(AAAA)'));
+      for (const x of CN) found.push(FD('domain', x, '별칭(CNAME)'));
+      for (const x of NS) found.push(FD('domain', x, '네임서버'));
+      for (const x of MX) if (x.host) found.push(FD('domain', x.host, '메일 서버(MX)'));
+      const tokens = [];
+      for (const t of TXT) {
+        if (/^v=spf1/i.test(t)) {
+          for (const m of t.matchAll(/\b(?:include|redirect|exists|a|mx)[:=]([a-z0-9._-]+\.[a-z]{2,})/gi)) found.push(FD('domain', stripDot(m[1]), 'SPF 포함 도메인'));
+          for (const m of t.matchAll(/\bip[46]:([0-9a-f.:]+)(?:\/(\d+))?/gi)) if (!m[2] || m[2] === '32' || m[2] === '128') { if (isIPaddr(m[1])) found.push(FD('ip', m[1], 'SPF 허용 IP')); }
+        } else if (/^[a-z0-9_-]*(?:verification|verify|validation|site-verification)[a-z0-9_-]*[=:]\s*\S{8,}/i.test(t) || /^(?:MS=ms\d+|apple-domain-verification=|atlassian-domain-verification=|docusign=|globalsign-domain-verification=)/i.test(t)) {
+          tokens.push(t.slice(0, 200));
+          found.push(FD('other', t.slice(0, 200), '사이트 인증 토큰(TXT)', 'out', '같은 토큰을 쓰는 다른 도메인은 같은 소유자일 수 있음'));
+        }
+      }
+      for (const t of DM) for (const m of t.matchAll(/mailto:([^,;!\s]+)/gi)) if (emailOk(m[1])) found.push(FD('email', m[1].toLowerCase(), 'DMARC 보고 주소'));
+      for (const t of CAA) { const m = /iodef\s+"?mailto:([^"\s]+)/i.exec(t); if (m && emailOk(m[1])) found.push(FD('email', m[1].toLowerCase(), 'CAA 보고 주소')); }
+      const soaParts = String(SOA).split(/\s+/);
+      const rmail = soaParts.length >= 2 ? soaMail(soaParts[1]) : '';
+      if (emailOk(rmail)) found.push(FD('email', rmail, 'SOA 관리자'));
+      const fields = [
+        F('A', A.join(', '), true), F('AAAA', AAAA.join(', ')), F('CNAME', CN.join(', ')), F('NS', NS.join(', '), true),
+        F('MX', MX.map((x) => `${x.pri} ${x.host}`).join(', '), true), F('TXT', TXT.map((t) => truncate(t, 160)).join(' ⏐ ')),
+        F('DMARC', DM.join(' ')), F('SOA', SOA), F('CAA', CAA.join(', ')), F('인증 토큰', tokens.join(' ⏐ ')),
+        F('DNSSEC 검증', R.A.AD ? '예 (AD)' : '아니오'),
+      ];
+      return { summary: `A ${A.length} · AAAA ${AAAA.length} · NS ${NS.length} · MX ${MX.length} · TXT ${TXT.length}${CN.length ? ` · CNAME → ${CN[0]}` : ''}`,
+        fields, found, fp: fpOf(A, AAAA, CN, NS, MX.map((x) => x.host)), raw: { ...R, DMARC: dmarc } };
+    },
+  };
+}
+
+/* ---------- RDAP (도메인 등록 정보) ---------- */
+// 자주 쓰는 gTLD는 등록소 RDAP로 바로, 나머지는 rdap.org가 IANA 부트스트랩대로 리디렉션한다 (리디렉션 대상도 CSP에 있어야 함)
+const RDAP_BASE = {
+  com: 'https://rdap.verisign.com/com/v1/', net: 'https://rdap.verisign.com/net/v1/', org: 'https://rdap.publicinterestregistry.org/rdap/',
+  info: 'https://rdap.identitydigital.services/rdap/',
+};
+for (const t of 'app dev page new how foo zip mov dad phd prof esq ing meme boo day rsvp channel'.split(' ')) RDAP_BASE[t] = 'https://pubapi.registry.google/rdap/';
+const RDAP_HOSTS = ['https://rdap.org', 'https://rdap.verisign.com', 'https://rdap.publicinterestregistry.org', 'https://rdap.identitydigital.services', 'https://pubapi.registry.google'];
+function jcard(ent) {
+  const rows = Array.isArray(ent?.vcardArray?.[1]) ? ent.vcardArray[1] : [];
+  const all = (k) => rows.filter((r) => Array.isArray(r) && r[0] === k);
+  const txt = (x) => (Array.isArray(x) ? x.filter((y) => y && typeof y === 'string').join(' ') : typeof x === 'string' ? x : '');
+  const adr = all('adr')[0];
+  const country = adr ? (adr[1]?.cc || (Array.isArray(adr[3]) ? adr[3][6] : '') || '') : '';
+  return {
+    fn: txt(all('fn')[0]?.[3]), org: txt(all('org')[0]?.[3]),
+    email: all('email').map((r) => txt(r[3]).replace(/^mailto:/i, '')).filter(Boolean),
+    tel: all('tel').map((r) => txt(r[3]).replace(/^tel:/i, '')).filter(Boolean),
+    adr: adr ? (adr[1]?.label || (Array.isArray(adr[3]) ? adr[3].flat().filter((y) => typeof y === 'string' && y).join(', ') : '')) : '',
+    country: typeof country === 'string' ? country : '',
+  };
+}
+function rdapEntities(list, depth = 0, out = []) {
+  if (!Array.isArray(list) || depth > 3) return out;
+  for (const ent of list) {
+    if (!ent || typeof ent !== 'object') continue;
+    out.push({ roles: Array.isArray(ent.roles) ? ent.roles.map(String) : [], ent, card: jcard(ent), depth });
+    rdapEntities(ent.entities, depth + 1, out);
+  }
+  return out;
+}
+const rdapEvent = (o, act) => (Array.isArray(o?.events) ? o.events.find((x) => x && x.eventAction === act)?.eventDate : '') || '';
+const rdapProvider = {
+  id: 'rdap', name: 'RDAP 등록 정보 (WHOIS 후속)', group: 'DNS·도메인', types: ['domain', 'url'], hosts: RDAP_HOSTS, auth: 'none', cors: 'yes', watch: true, defaultOn: true, defaultAuto: true, minInterval: 1100,
+  desc: '등록일·만료일·상태·등록대행자·네임서버·남용 신고 연락처. gTLD 등록소는 브라우저 호출(CORS)을 의무로 허용합니다. 그 밖의 TLD는 rdap.org를 거치며, 그 등록소가 허용 목록에 없으면 차단됩니다.',
+  corsNote: 'ICANN gTLD RDAP 기술 지침(2024-02)이 Access-Control-Allow-Origin: * 를 요구. 국가 도메인(ccTLD)은 해당 없음.',
+  test: { type: 'domain', value: 'example.com' },
+  applies: (v, e) => hostIsName(v.trim(), e),
+  run: async (v, ctx, e) => {
+    const host = hostOf(v, e);
+    const used = apexOf(host);
+    const base = RDAP_BASE[used.split('.').pop()] || 'https://rdap.org/';
+    const r = await ctx.json(`${base}domain/${enc(used)}`);
+    if (!r || typeof r !== 'object' || (!r.ldhName && !r.handle)) throw enrErr('parse');
+    const ents = rdapEntities(r.entities);
+    const role = (x) => ents.filter((z) => z.roles.includes(x));
+    const registrar = role('registrar')[0];
+    const ianaId = registrar ? (registrar.ent.publicIds || []).find((x) => /iana/i.test(x?.type || ''))?.identifier : '';
+    const abuse = ents.filter((z) => z.roles.includes('abuse'));
+    const registrant = role('registrant')[0];
+    const ns = (Array.isArray(r.nameservers) ? r.nameservers : []).map((n) => stripDot(n?.ldhName || n?.unicodeName || '')).filter(Boolean);
+    const rel = (Array.isArray(r.links) ? r.links : []).find((l) => l && l.rel === 'related' && /rdap\+json/i.test(l.type || '') && /^https:\/\//i.test(l.href || ''));
+    const redacted = (Array.isArray(r.redacted) ? r.redacted : []).map((x) => x?.name?.description || x?.name?.type || '').filter(Boolean);
+    const regName = registrar ? registrar.card.fn || registrar.card.org : '';
+    const abuseMail = uniq(abuse.flatMap((z) => z.card.email)).filter(emailOk);
+    const abuseTel = uniq(abuse.flatMap((z) => z.card.tel));
+    const rtOrg = registrant ? registrant.card.org || registrant.card.fn : '';
+    const rtMail = registrant ? registrant.card.email.filter(notPlaceholderEmail) : [];
+    const status = Array.isArray(r.status) ? r.status.map(String) : [];
+    const created = rdapEvent(r, 'registration'), expires = rdapEvent(r, 'expiration'), changed = rdapEvent(r, 'last changed');
+    const found = [
+      ...ns.map((x) => FD('domain', x, '네임서버')),
+      regName ? FD('organization', regName, '등록대행자', 'in', ianaId ? `IANA ID ${ianaId}` : '') : null,
+      ...abuseMail.map((x) => FD('email', x.toLowerCase(), '등록대행자 남용 신고')),
+      ...abuseTel.map((x) => FD('phone', x, '등록대행자 남용 신고')),
+      rtOrg && !/redacted|privacy|proxy|withheld|not disclosed/i.test(rtOrg) ? FD('organization', rtOrg, '등록인', 'in') : null,
+      ...rtMail.map((x) => FD('email', x.toLowerCase(), '등록인 이메일', 'in')),
+    ].filter(Boolean);
+    const age = created ? Math.floor((Date.now() - Date.parse(created)) / 86400000) : null;
+    return {
+      summary: `${used}${created ? ` · 등록 ${dOnly(created)}` : ''}${age != null && age < 90 ? ` (등록 ${age}일째 — 신규 도메인)` : ''}${regName ? ` · ${regName}` : ''}`,
+      fields: [
+        F('조회 도메인', used !== host ? `${used} (입력: ${host})` : used), F('등록일', dOnly(created), true), F('만료일', dOnly(expires), true), F('최종 변경', dOnly(changed)),
+        F('상태', status.join(', ')), F('등록대행자', regName + (ianaId ? ` (IANA ${ianaId})` : ''), true), F('네임서버', ns.join(', '), true),
+        F('DNSSEC', r.secureDNS ? (r.secureDNS.delegationSigned ? '서명됨' : '서명 안 됨') : ''),
+        F('등록인', [rtOrg, registrant?.card.country].filter(Boolean).join(' · ')), F('등록인 이메일', rtMail.join(', ')),
+        F('남용 신고', [...abuseMail, ...abuseTel].join(', ')), F('비공개 처리 항목', redacted.length ? `${redacted.length}개 (${truncate(redacted.join(', '), 160)})` : ''),
+        F('등록대행자 RDAP', rel ? rel.href : ''),
+      ],
+      found, fp: fpOf(regName, expires, status, ns), raw: r,
+    };
+  },
+};
+
+/* ---------- 인증서 투명성·보존 ---------- */
+const crtshProvider = {
+  id: 'crtsh', name: 'crt.sh 인증서 기록', group: 'DNS·도메인', types: ['domain'], hosts: ['https://crt.sh'], auth: 'none', cors: 'likely', watch: true, defaultOn: true, defaultAuto: false, minInterval: 12000, timeoutSec: 45,
+  desc: '인증서 투명성(CT) 로그에서 하위 도메인·발급 이력·인증서 속 이메일을 찾습니다. 느리고 자주 장애가 나서 자동 조회에서는 뺐습니다.', limit: '분당 약 5회',
+  test: { type: 'domain', value: 'example.com' },
+  applies: (v, e) => hostIsName(v.trim(), e),
+  run: async (v, ctx) => {
+    const d = stripDot(v);
+    const rows = await ctx.json(`https://crt.sh/?q=${enc('%.' + d)}&output=json`);
+    if (!Array.isArray(rows)) throw enrErr('parse');
+    if (!rows.length) throw enrErr('notfound');
+    const subs = new Set(), mails = new Set(), issuers = new Map();
+    let first = '', last = '';
+    for (const r of rows) {
+      for (const n of String(r.name_value || '').split(/\n/)) {
+        const x = n.trim().toLowerCase().replace(/^\*\./, '');
+        if (x.includes('@')) { if (emailOk(x)) mails.add(x); } else if (x === d || x.endsWith('.' + d)) subs.add(x);
+      }
+      const nb = String(r.not_before || '');
+      if (nb && (!first || nb < first)) first = nb;
+      if (nb && nb > last) last = nb;
+      const o = /O=("?)([^,"]+)\1/.exec(String(r.issuer_name || ''))?.[2] || String(r.issuer_name || '').slice(0, 40);
+      issuers.set(o, (issuers.get(o) || 0) + 1);
+    }
+    subs.delete(d);
+    const list = [...subs].sort();
+    const top = [...issuers].sort((a, b) => b[1] - a[1]).slice(0, 3).map(([k, n]) => `${k} (${n})`);
+    return {
+      summary: `인증서 ${rows.length.toLocaleString()}건 · 하위 도메인 ${list.length}개${first ? ` · 최초 ${dOnly(first + 'Z')}` : ''}`,
+      fields: [F('인증서 기록', rows.length), F('하위 도메인 수', list.length, true), F('최초 발급', dOnly(first && first + 'Z')), F('최근 발급', dOnly(last && last + 'Z')),
+        F('주요 발급자', top.join(', ')), F('인증서 속 이메일', [...mails].join(', ')), F('하위 도메인', truncate(list.join(', '), 900))],
+      found: [...list.slice(0, 150).map((x) => FD('domain', x, '인증서 하위 도메인')), ...[...mails].map((x) => FD('email', x, '인증서 속 이메일'))],
+      fp: fpHash(list), raw: `${rows.length}건 중 앞 50건\n` + JSON.stringify(rows.slice(0, 50), null, 1),
+    };
+  },
+};
+const certspotterProvider = {
+  id: 'certspotter', name: 'Cert Spotter 인증서', group: 'DNS·도메인', types: ['domain'], hosts: ['https://api.certspotter.com'], auth: 'none', cors: 'unknown', watch: true, defaultOn: false, defaultAuto: false, minInterval: 6000,
+  desc: '유효한(만료 전) 인증서의 DNS 이름으로 하위 도메인을 찾습니다. crt.sh 장애 때 예비. 비인증 호출 수가 적습니다.', limit: '시간당 소수',
+  test: { type: 'domain', value: 'example.com' },
+  applies: (v, e) => hostIsName(v.trim(), e),
+  run: async (v, ctx) => {
+    const d = stripDot(v);
+    const rows = await ctx.json(`https://api.certspotter.com/v1/issuances?domain=${enc(d)}&include_subdomains=true&match_wildcards=true&expand=dns_names&expand=issuer`);
+    if (!Array.isArray(rows)) throw enrErr('parse');
+    if (!rows.length) throw enrErr('notfound');
+    const subs = new Set();
+    for (const r of rows) for (const n of r.dns_names || []) { const x = String(n).toLowerCase().replace(/^\*\./, ''); if (x !== d && x.endsWith('.' + d)) subs.add(x); }
+    const list = [...subs].sort();
+    const iss = uniq(rows.map((r) => r.issuer?.friendly_name || r.issuer?.name).filter(Boolean)).slice(0, 4);
+    return { summary: `유효 인증서 ${rows.length}건 · 하위 도메인 ${list.length}개`, fields: [F('유효 인증서', rows.length), F('하위 도메인 수', list.length), F('발급자', iss.join(', ')), F('하위 도메인', truncate(list.join(', '), 900))],
+      found: list.slice(0, 150).map((x) => FD('domain', x, '인증서 하위 도메인')), fp: fpHash(list), raw: rows.slice(0, 60) };
+  },
+};
+const commoncrawlProvider = {
+  id: 'commoncrawl', name: 'Common Crawl 수집 기록', group: 'DNS·도메인', types: ['domain'], hosts: ['https://index.commoncrawl.org'], auth: 'none', cors: 'likely', watch: false, defaultOn: false, defaultAuto: false, minInterval: 3000, timeoutSec: 45,
+  desc: '가장 최근 크롤에서 이 도메인과 하위 도메인의 수집된 URL을 최대 500개 가져와 하위 도메인·과거 경로를 찾습니다.', limit: '느림 · 엄격한 호출 제한',
+  test: { type: 'domain', value: 'example.com' },
+  applies: (v, e) => hostIsName(v.trim(), e),
+  run: async (v, ctx) => {
+    const d = stripDot(v);
+    const info = await ctx.list('https://index.commoncrawl.org/collinfo.json', 24, JSON.parse);
+    const api = Array.isArray(info) ? String(info[0]?.['cdx-api'] || '') : '';
+    if (!api.startsWith('https://index.commoncrawl.org/')) throw enrErr('parse');
+    const txt = await ctx.text(`${api}?url=${enc('*.' + d)}&output=json&fl=url,timestamp,status,mime&limit=500`);
+    const rows = txt.split('\n').map((l) => { try { return JSON.parse(l); } catch (e) { return null; } }).filter((x) => x && x.url);
+    if (!rows.length) throw enrErr('notfound');
+    const subs = new Set();
+    for (const r of rows) { try { const hn = new URL(r.url).hostname.toLowerCase(); if (hn !== d && hn.endsWith('.' + d)) subs.add(hn); } catch (e) { /* noop */ } }
+    const ts = rows.map((r) => String(r.timestamp || '')).filter(Boolean).sort();
+    const iso = (t) => (t.length >= 8 ? `${t.slice(0, 4)}-${t.slice(4, 6)}-${t.slice(6, 8)}` : '');
+    return { summary: `${info[0].id} · URL ${rows.length}개 · 하위 도메인 ${subs.size}개`, fields: [F('크롤', info[0].id), F('수집 URL', rows.length), F('수집 기간', ts.length ? `${iso(ts[0])} ~ ${iso(ts[ts.length - 1])}` : ''),
+      F('하위 도메인', truncate([...subs].sort().join(', '), 900)), F('URL 예시', truncate(uniq(rows.map((r) => r.url)).slice(0, 25).join('\n'), 1000))],
+    found: [...subs].sort().slice(0, 100).map((x) => FD('domain', x, '수집된 하위 도메인')), fp: fpHash([...subs]), raw: rows.slice(0, 200) };
+  },
+};
+const waybackProvider = {
+  id: 'wayback', name: 'Wayback Machine 보존 여부', group: 'DNS·도메인', types: ['url', 'domain'], hosts: ['https://archive.org'], auth: 'none', cors: 'unknown', watch: false, defaultOn: false, defaultAuto: false, minInterval: 2000,
+  desc: '인터넷 아카이브에 이 주소의 스냅샷이 있는지와 가장 가까운 보존 시점을 확인합니다. 보존돼 있어도 비어 있게 답할 때가 있습니다.',
+  test: { type: 'url', value: 'https://example.com/' },
+  applies: (v, e) => (e.type === 'url' ? /^https?:\/\//i.test(v.trim()) : hostIsName(v.trim(), e)),
+  run: async (v, ctx) => {
+    const r = await ctx.json(`https://archive.org/wayback/available?url=${enc(v)}`);
+    const s = r?.archived_snapshots?.closest;
+    if (!s || !s.available) return { empty: true, summary: '보존된 스냅샷 없음 (또는 아카이브가 응답하지 않음)', fp: 'none', raw: r };
+    const t = String(s.timestamp || '');
+    const when = t.length >= 8 ? `${t.slice(0, 4)}-${t.slice(4, 6)}-${t.slice(6, 8)}${t.length >= 12 ? ` ${t.slice(8, 10)}:${t.slice(10, 12)} UTC` : ''}` : t;
+    return { summary: `가장 가까운 스냅샷 ${when} (HTTP ${s.status || '?'})`, fields: [F('스냅샷 시각', when), F('당시 상태', s.status), F('스냅샷', s.url)], fp: t, raw: r };
+  },
+};
+const hibpDomainProvider = {
+  id: 'hibp-domain', name: 'HIBP 유출 사고 (도메인)', group: 'DNS·도메인', types: ['domain'], hosts: ['https://haveibeenpwned.com'], auth: 'none', cors: 'yes', watch: true, defaultOn: true, defaultAuto: true, minInterval: 1600,
+  desc: '이 도메인(서비스)이 알려진 데이터 유출 사고를 겪었는지. 누가 유출됐는지는 알려 주지 않습니다.',
+  test: { type: 'domain', value: 'adobe.com' },
+  applies: (v, e) => hostIsName(v.trim(), e),
+  run: async (v, ctx) => {
+    const rows = await ctx.json(`https://haveibeenpwned.com/api/v3/breaches?domain=${enc(stripDot(v))}`);
+    if (!Array.isArray(rows)) throw enrErr('parse');
+    if (!rows.length) return { empty: true, summary: '알려진 유출 사고 없음', fp: 'none', raw: rows };
+    const total = rows.reduce((a, b) => a + (+b.PwnCount || 0), 0);
+    return {
+      summary: `유출 사고 ${rows.length}건 · 계정 ${total.toLocaleString()}개`,
+      fields: [F('사고 수', rows.length, true), ...rows.slice(0, 12).map((b) => F(`${b.Title || b.Name} (${b.BreachDate || ''})`, `${(+b.PwnCount || 0).toLocaleString()}개 · ${(b.DataClasses || []).slice(0, 8).join(', ')}${b.IsVerified === false ? ' · 미검증' : ''}${b.IsFabricated ? ' · 조작 의심' : ''}`))],
+      fp: fpOf(rows.map((b) => b.Name)), raw: rows,
+    };
+  },
+};
+
+/* ---------- IP·네트워크 ---------- */
+const rs = (call, res) => `https://stat.ripe.net/data/${call}/data.json?resource=${enc(res)}&sourceapp=osint-memo`;
+const isASN = (v) => /^AS\d{1,10}$/i.test(String(v).trim());
+function whoisPick(data) {
+  const recs = (Array.isArray(data?.records) ? data.records : []).flat().filter((x) => x && x.key);
+  const get = (...keys) => { const k = keys.map((x) => x.toLowerCase()); return recs.filter((x) => k.includes(String(x.key).toLowerCase())).map((x) => String(x.value || '').trim()).filter(Boolean); };
+  return { get, recs };
+}
+const ripestatProvider = {
+  id: 'ripestat', name: 'RIPEstat (대역·AS·소유자)', group: 'IP·네트워크', types: ['ip', 'other'], hosts: ['https://stat.ripe.net'], auth: 'none', cors: 'likely', watch: true, defaultOn: true, defaultAuto: true, minInterval: 250,
+  desc: 'IP가 속한 라우팅 대역(프리픽스)과 AS 번호·운영사, WHOIS 등록 조직·국가, 남용 신고 메일, 역방향 DNS. 모든 대륙(RIR)을 다룹니다. AS 번호(예: AS15169)를 “기타” 엔티티로 넣으면 AS 개요를 봅니다.',
+  test: { type: 'ip', value: '193.0.6.139' },
+  applies: (v, e) => (e.type === 'ip' ? isIPaddr(v.trim()) : isASN(v)),
+  run: async (v, ctx, e) => {
+    if (e.type === 'other') {
+      const asn = v.trim().toUpperCase();
+      const [ov, ab, pf] = await Promise.all([ctx.json(rs('as-overview', asn)), soft(ctx.json(rs('abuse-contact-finder', asn))), soft(ctx.json(rs('announced-prefixes', asn)))]);
+      const d = ov?.data || {};
+      const prefixes = (pf?.data?.prefixes || []).map((x) => x.prefix).filter(Boolean);
+      const abuse = (ab?.data?.abuse_contacts || []).filter(emailOk);
+      return {
+        summary: `${asn} · ${d.holder || '소유자 미상'}${d.announced ? ' · 공지 중' : ''} · 프리픽스 ${prefixes.length}개`,
+        fields: [F('AS 소유자', d.holder, true), F('공지 여부', d.announced), F('할당 블록', [d.block?.resource, d.block?.desc].filter(Boolean).join(' · ')),
+          F('공지 프리픽스 수', prefixes.length), F('프리픽스 (앞 40개)', prefixes.slice(0, 40).join(', ')), F('남용 신고', abuse.join(', '), true)],
+        found: [d.holder ? FD('organization', d.holder, 'AS 운영사', 'in') : null, ...abuse.map((x) => FD('email', x.toLowerCase(), '남용 신고 연락처'))].filter(Boolean),
+        fp: fpOf(d.holder, prefixes.length), raw: { overview: ov, abuse: ab, prefixes: prefixes.slice(0, 200) },
+      };
+    }
+    const ip = v.trim();
+    const [ni, po, ab, wh, rd] = await Promise.all([ctx.json(rs('network-info', ip)), soft(ctx.json(rs('prefix-overview', ip))), soft(ctx.json(rs('abuse-contact-finder', ip))), soft(ctx.json(rs('whois', ip))), soft(ctx.json(rs('reverse-dns-ip', ip)))]);
+    const prefix = ni?.data?.prefix || '';
+    const asns = (ni?.data?.asns || []).map(String);
+    const holders = (po?.data?.asns || []).map((a) => ({ asn: String(a.asn), holder: a.holder || '' }));
+    const holderOf = (n) => holders.find((x) => x.asn === n)?.holder || '';
+    const W = whoisPick(wh?.data);
+    const netname = W.get('netname', 'NetName')[0] || '';
+    const org = W.get('org-name', 'OrgName', 'descr', 'owner')[0] || '';
+    const country = W.get('country', 'Country')[0] || '';
+    const range = W.get('inetnum', 'inet6num', 'NetRange', 'CIDR')[0] || '';
+    const created = W.get('created', 'RegDate')[0] || '';
+    const modified = W.get('last-modified', 'Updated')[0] || '';
+    const abuse = uniq([...(ab?.data?.abuse_contacts || []), ...W.get('abuse-mailbox', 'OrgAbuseEmail')]).filter(emailOk).map((x) => x.toLowerCase());
+    const rr = rd?.data?.result;
+    const ptr = (Array.isArray(rr) ? rr : rr ? [rr] : []).map((x) => stripDot(typeof x === 'string' ? x : x?.name || '')).filter((x) => x && isHostName(x));
+    const found = [
+      ...asns.map((n) => FD('other', 'AS' + n, '소속 AS', 'out', holderOf(n))),
+      ...asns.map(holderOf).filter(Boolean).map((hd) => FD('organization', hd, 'AS 운영사', 'in')),
+      org && !holders.some((x) => x.holder.toLowerCase().includes(org.toLowerCase())) ? FD('organization', org, '네트워크 등록 조직', 'in') : null,
+      ...abuse.map((x) => FD('email', x, '남용 신고 연락처')),
+      ...ptr.map((x) => FD('domain', x, '역방향 DNS(PTR)')),
+    ].filter(Boolean);
+    return {
+      summary: `${prefix || '프리픽스 미상'}${asns.length ? ` · AS${asns.join(', AS')}` : ''}${holderOf(asns[0]) ? ` ${holderOf(asns[0])}` : ''}${country ? ` · ${country}` : ''}`,
+      empty: !prefix && !asns.length && !netname,
+      fields: [
+        F('프리픽스', prefix, true), F('ASN', asns.map((n) => 'AS' + n).join(', '), true), F('AS 운영사', uniq(asns.map(holderOf).filter(Boolean)).join(', '), true),
+        F('네트워크 이름', netname), F('등록 조직', org, true), F('국가', country, true), F('할당 범위', range), F('남용 신고', abuse.join(', '), true),
+        F('역방향 DNS', ptr.join(', ')), F('등록', created), F('변경', modified), F('공지 여부', po?.data ? po.data.announced : ''),
+        F('관리 RIR', ab?.data?.authoritative_rir || ''),
+      ],
+      found, fp: fpOf(prefix, asns, ptr), raw: { network: ni?.data, prefix: po?.data, abuse: ab?.data, whois: wh?.data, rdns: rd?.data },
+    };
+  },
+};
+const ipwhoisProvider = {
+  id: 'ipwhois', name: 'ipwho.is (위치·ISP)', group: 'IP·네트워크', types: ['ip'], hosts: ['https://ipwho.is'], auth: 'none', cors: 'yes', watch: false, defaultOn: true, defaultAuto: true, minInterval: 600,
+  desc: 'IP 지리 추정(국가·도시·좌표), ASN, ISP, 조직, ISP 도메인, 시간대. 지리 위치는 추정치이며 VPN·모바일망에서는 크게 어긋납니다.', limit: '하루 약 1,000회',
+  test: { type: 'ip', value: '8.8.8.8' },
+  applies: (v) => isIPaddr(v.trim()),
+  run: async (v, ctx) => {
+    const r = await ctx.json(`https://ipwho.is/${enc(v.trim())}`);
+    if (!r || r.success === false) return { empty: true, summary: `조회 불가: ${r?.message || '알 수 없음'}`, fp: 'none', raw: r };
+    const cn = r.connection || {};
+    const where = [r.city, r.region, r.country].filter(Boolean).join(', ');
+    const found = [
+      cn.domain && isHostName(cn.domain) ? FD('domain', cn.domain.toLowerCase(), 'ISP 도메인') : null,
+      cn.org ? FD('organization', cn.org, 'IP 사용 조직', 'in') : null,
+      cn.isp && cn.isp !== cn.org ? FD('organization', cn.isp, 'ISP', 'in') : null,
+      Number.isFinite(+r.latitude) && Number.isFinite(+r.longitude) && (r.latitude || r.longitude) ? FD('location', fmtCoord(r.latitude, r.longitude), 'IP 지리 추정', 'out', `${where} (IP 기반 추정)`) : null,
+    ].filter(Boolean);
+    return {
+      summary: `${where || '위치 미상'}${cn.isp ? ` · ${cn.isp}` : ''}${cn.asn ? ` · AS${cn.asn}` : ''}`,
+      fields: [F('국가', `${r.country || ''}${r.country_code ? ` (${r.country_code})` : ''}`, true), F('지역', r.region), F('도시', r.city, true), F('우편번호', r.postal),
+        F('좌표(추정)', r.latitude != null ? fmtCoord(r.latitude, r.longitude) : ''), F('ASN', cn.asn ? 'AS' + cn.asn : ''), F('조직', cn.org, true), F('ISP', cn.isp, true), F('ISP 도메인', cn.domain),
+        F('시간대', [r.timezone?.id, r.timezone?.utc].filter(Boolean).join(' ')), F('유형', r.type)],
+      found, fp: fpOf(r.country_code, cn.asn, cn.org), raw: r,
+    };
+  },
+};
+const ipinfoProvider = {
+  id: 'ipinfo', name: 'IPinfo', group: 'IP·네트워크', types: ['ip'], hosts: ['https://ipinfo.io'], auth: 'optional', keyName: '토큰 (선택)', keyUrl: 'https://ipinfo.io/signup', keyNote: '토큰 없이도 동작하지만 한도가 낮습니다',
+  cors: 'yes', watch: false, defaultOn: true, defaultAuto: false, minInterval: 800,
+  desc: '호스트 이름(PTR), 도시 단위 위치, 조직(ASN), 애니캐스트 여부.', limit: '무료 토큰 월 5만 회',
+  test: { type: 'ip', value: '8.8.8.8' },
+  applies: (v) => isIPaddr(v.trim()),
+  run: async (v, ctx) => {
+    const r = await ctx.json(`https://ipinfo.io/${enc(v.trim())}/json${ctx.key ? `?token=${enc(ctx.key)}` : ''}`);
+    if (!r || typeof r !== 'object') throw enrErr('parse');
+    if (r.bogon) return { empty: true, summary: '사설·예약 대역(bogon)', fields: [F('bogon', true)], fp: 'bogon', raw: r };
+    const m = /^AS(\d+)\s+(.+)$/.exec(r.org || '');
+    const found = [
+      r.hostname && isHostName(r.hostname) ? FD('domain', stripDot(r.hostname), '호스트 이름') : null,
+      m ? FD('other', 'AS' + m[1], '소속 AS', 'out', m[2]) : null,
+      m ? FD('organization', m[2], 'AS 운영사', 'in') : null,
+    ].filter(Boolean);
+    return {
+      summary: [r.hostname, [r.city, r.region, r.country].filter(Boolean).join(', '), r.org].filter(Boolean).join(' · '),
+      fields: [F('호스트 이름', r.hostname, true), F('도시', r.city), F('지역', r.region), F('국가', r.country), F('좌표(추정)', r.loc), F('조직', r.org, true), F('우편번호', r.postal), F('시간대', r.timezone), F('애니캐스트', r.anycast ? '예' : '')],
+      found, fp: fpOf(r.hostname, r.org), raw: r,
+    };
+  },
+};
+const internetdbProvider = {
+  id: 'internetdb', name: 'Shodan InternetDB', group: 'IP·네트워크', types: ['ip'], hosts: ['https://internetdb.shodan.io'], auth: 'none', cors: 'likely', watch: true, defaultOn: true, defaultAuto: true, minInterval: 1000,
+  desc: '열린 포트, 호스트 이름, 태그(vpn·tor·c2·honeypot 등), 알려진 취약점(CVE), 소프트웨어(CPE). 주 1회 갱신되는 Shodan 스캔 요약입니다 — 대상 서버에 직접 접속하지 않습니다.',
+  test: { type: 'ip', value: '8.8.8.8' },
+  applies: (v) => isIPaddr(v.trim()),
+  run: async (v, ctx) => {
+    const r = await ctx.json(`https://internetdb.shodan.io/${enc(v.trim())}`);
+    if (!r || typeof r !== 'object') throw enrErr('parse');
+    if (r.detail && !r.ports) return { empty: true, summary: '스캔 기록 없음', fp: 'none', raw: r };
+    const A = (x) => (Array.isArray(x) ? x.map(String) : []);
+    const ports = A(r.ports).map(Number).sort((a, b) => a - b), hosts = A(r.hostnames).map(stripDot), tags = A(r.tags), vulns = A(r.vulns), cpes = A(r.cpes);
+    return {
+      summary: `포트 ${ports.length ? ports.join(', ') : '없음'}${tags.length ? ` · 태그 ${tags.join(', ')}` : ''}${vulns.length ? ` · CVE ${vulns.length}개` : ''}`,
+      fields: [F('열린 포트', ports.join(', '), true), F('호스트 이름', hosts.join(', ')), F('태그', tags.join(', '), true), F('취약점', vulns.join(', ')), F('CPE', cpes.join(', '))],
+      found: [...hosts.filter(isHostName).map((x) => FD('domain', x, '호스트 이름(Shodan)')), ...vulns.slice(0, 40).map((x) => FD('other', x.toUpperCase(), '알려진 취약점'))],
+      fp: fpOf(ports, tags, vulns, hosts), raw: r,
+    };
+  },
+};
+const onionooProvider = {
+  id: 'onionoo', name: 'Tor 릴레이 (Onionoo)', group: 'IP·네트워크', types: ['ip'], hosts: ['https://onionoo.torproject.org'], auth: 'none', cors: 'yes', watch: true, defaultOn: true, defaultAuto: true, minInterval: 1000,
+  desc: 'Tor 프로젝트 공식 목록에서 이 IP가 최근 1주 안에 동작한 Tor 릴레이·출구 노드인지, 운영자 연락처와 같은 운영자의 다른 릴레이(family)를 봅니다.',
+  test: { type: 'ip', value: '8.8.8.8' },
+  applies: (v) => isIPaddr(v.trim()),
+  run: async (v, ctx) => {
+    const ip = v.trim();
+    const r = await ctx.json(`https://onionoo.torproject.org/details?search=${enc(ip)}&fields=nickname,fingerprint,or_addresses,exit_addresses,contact,flags,running,first_seen,last_seen,as,as_name,country,effective_family`);
+    // or_addresses는 "1.2.3.4:9001" / "[2001:db8::1]:9001", exit_addresses는 포트 없이 온다. search=는 앞부분 일치라 정확히 다시 거른다
+    const addrOf = (a) => { a = String(a); const m = /^\[([^\]]+)\](?::\d+)?$/.exec(a); if (m) return expandV6(m[1]); if (/^[\d.]+(?::\d+)?$/.test(a)) return a.replace(/:\d+$/, ''); return validIPv6(a) ? expandV6(a) : a; };
+    const key = isV4(ip) ? ip : expandV6(ip);
+    const relays = (r?.relays || []).filter((x) => [...(x.or_addresses || []), ...(x.exit_addresses || [])].some((a) => addrOf(a) === key));
+    if (!relays.length) return { empty: true, summary: 'Tor 릴레이 아님 (최근 1주 기준)', fields: [F('Tor 릴레이', '아님')], fp: 'none', raw: r };
+    const isExit = relays.some((x) => (x.flags || []).includes('Exit') || (x.exit_addresses || []).length);
+    const contacts = uniq(relays.map((x) => x.contact).filter(Boolean));
+    return {
+      summary: `Tor ${isExit ? '출구 노드' : '릴레이'} · ${relays.map((x) => x.nickname).join(', ')}${relays.some((x) => x.running) ? ' · 동작 중' : ''}`,
+      fields: [F('Tor 릴레이', isExit ? '출구 노드(Exit)' : '중계 릴레이', true), ...relays.slice(0, 3).flatMap((x) => [
+        F(`${x.nickname} 지문`, x.fingerprint), F(`${x.nickname} 플래그`, (x.flags || []).join(', ')), F(`${x.nickname} 처음/마지막`, `${x.first_seen || ''} ~ ${x.last_seen || ''}`),
+        F(`${x.nickname} 운영자 연락처`, x.contact), F(`${x.nickname} 같은 운영자 릴레이`, (x.effective_family || []).length)]),
+      F('AS', relays[0].as ? `${relays[0].as} ${relays[0].as_name || ''}` : '')],
+      found: contacts.flatMap((c) => foundFromText(c, ip, 'Tor 운영자 연락처')),
+      fp: fpOf(relays.map((x) => x.fingerprint), isExit, relays.some((x) => x.running)), raw: r,
+    };
+  },
+};
+
+/* ---------- 위협 정보 ---------- */
+const OTX_HOST = 'https://otx.alienvault.com';
+function otxType(v, e) {
+  if (e.type === 'ip') return isV4(v) ? 'IPv4' : 'IPv6';
+  if (e.type === 'url') return 'url';
+  if (e.type === 'hash') return 'file';
+  const d = stripDot(v);
+  return apexOf(d) === d ? 'domain' : 'hostname';
+}
+const otxProvider = {
+  id: 'otx', name: 'AlienVault OTX', group: '위협 정보', types: ['ip', 'domain', 'url', 'hash'], hosts: [OTX_HOST], auth: 'optional', keyName: 'OTX API 키 (선택)', keyUrl: 'https://otx.alienvault.com/api', keyNote: '키가 있으면 도메인 패시브 DNS도 봅니다',
+  cors: 'likely', watch: true, defaultOn: true, defaultAuto: true, minInterval: 1500,
+  desc: '커뮤니티 위협 보고(펄스)에 이 값이 몇 번 나왔는지, 관련 악성코드 계열·공격 그룹·ATT&CK 기법, 알려진 정상 목록(오탐 방지) 여부. IP는 패시브 DNS도 봅니다.', limit: '익명 시간당 약 100회',
+  test: { type: 'ip', value: '8.8.8.8' },
+  applies: (v, e) => (e.type === 'hash' ? /^([a-f0-9]{32}|[a-f0-9]{40}|[a-f0-9]{64})$/i.test(v.trim()) : e.type === 'ip' ? isIPaddr(v.trim()) : e.type === 'url' ? /^https?:\/\//i.test(v.trim()) : hostIsName(v.trim(), e)),
+  run: async (v, ctx, e) => {
+    const val = e.type === 'domain' ? stripDot(v) : v.trim();
+    const ty = otxType(val, e);
+    const base = `${OTX_HOST}/api/v1/indicators/${ty}/${enc(val)}`;
+    const g = await ctx.json(`${base}/general`);
+    const pi = g?.pulse_info || {};
+    const pulses = Array.isArray(pi.pulses) ? pi.pulses : [];
+    const names = (arr, f) => uniq(arr.flatMap(f).map((x) => (typeof x === 'string' ? x : x?.display_name || x?.name || '')).filter(Boolean));
+    const malware = uniq([...names(pulses, (p) => p.malware_families || []), ...names([pi.related?.alienvault || {}, pi.related?.other || {}], (r) => r.malware_families || [])]);
+    const adv = uniq([...pulses.map((p) => p.adversary).filter(Boolean), ...names([pi.related?.alienvault || {}, pi.related?.other || {}], (r) => r.adversary || [])]);
+    const attack = names(pulses, (p) => p.attack_ids || []);
+    const tags = uniq(pulses.flatMap((p) => p.tags || [])).slice(0, 15);
+    const valid = (Array.isArray(g?.validation) ? g.validation : []).map((x) => x?.message || x?.name || '').filter(Boolean);
+    let pdns = null, analysis = null;
+    const keyHdr = ctx.key ? { headers: { 'X-OTX-API-KEY': ctx.key } } : undefined;
+    if (ty === 'IPv4' || ty === 'IPv6' || (keyHdr && (ty === 'domain' || ty === 'hostname'))) pdns = await soft(ctx.json(`${base}/passive_dns`, ty.startsWith('IP') ? undefined : keyHdr));
+    if (ty === 'file') analysis = await soft(ctx.json(`${base}/analysis`));
+    const pd = Array.isArray(pdns?.passive_dns) ? pdns.passive_dns : [];
+    const found = [];
+    if (ty.startsWith('IP')) for (const x of pd.slice(0, 60)) { const hn = stripDot(x.hostname || ''); if (isHostName(hn)) found.push(FD('domain', hn, 'OTX 패시브 DNS', 'in', x.last ? `마지막 ${String(x.last).slice(0, 10)}` : '')); }
+    else for (const x of pd.slice(0, 60)) { const a = String(x.address || ''); if (isIPaddr(a)) found.push(FD('ip', a, 'OTX 패시브 DNS', 'out', x.last ? `마지막 ${String(x.last).slice(0, 10)}` : '')); }
+    const ai = analysis?.analysis?.info?.results || {};
+    for (const k of ['md5', 'sha1', 'sha256']) if (ai[k] && ai[k].toLowerCase() !== val.toLowerCase()) found.push(FD('hash', ai[k].toLowerCase(), '같은 파일의 다른 해시'));
+    for (const a of adv.slice(0, 10)) found.push(FD('organization', a, '관련 공격 그룹(OTX)', 'in'));
+    const n = +pi.count || 0;
+    return {
+      summary: `${n ? `위협 보고(펄스) ${n}건` : '위협 보고 없음'}${malware.length ? ` · 악성코드 ${malware.slice(0, 3).join(', ')}` : ''}${adv.length ? ` · 그룹 ${adv.slice(0, 2).join(', ')}` : ''}${valid.length ? ' · 정상 목록 등재' : ''}`,
+      fields: [F('펄스 수', n, true), F('펄스', pulses.slice(0, 6).map((p) => p.name).join(' ⏐ ')), F('악성코드 계열', malware.join(', '), true), F('공격 그룹', adv.join(', '), true),
+        F('ATT&CK', attack.slice(0, 12).join(', ')), F('태그', tags.join(', ')), F('정상 목록(오탐 방지)', valid.join(' ⏐ ')), F('평판', g?.reputation || ''),
+        F('국가', g?.country_name || ''), F('ASN', g?.asn || ''), F('패시브 DNS', pd.length ? `${pd.length}건` : ''),
+        F('파일 유형', ai.file_type || ''), F('파일 크기', ai.filesize || '')],
+      found, fp: fpOf(n, malware, adv), raw: { general: g, passive_dns: pd.slice(0, 100), analysis: analysis?.analysis?.info || null },
+    };
+  },
+};
+const iscProvider = {
+  id: 'isc', name: 'SANS ISC DShield', group: '위협 정보', types: ['ip'], hosts: ['https://isc.sans.edu'], auth: 'none', cors: 'likely', watch: true, defaultOn: true, defaultAuto: true, minInterval: 3000,
+  desc: '전 세계 센서(허니팟·방화벽)에 이 IP의 공격 시도가 보고된 횟수·기간, 소속 AS와 남용 신고 메일, 위협 피드 등재.',
+  test: { type: 'ip', value: '8.8.8.8' },
+  applies: (v) => isV4(v.trim()),
+  run: async (v, ctx) => {
+    const r = await ctx.json(`https://isc.sans.edu/api/ip/${enc(v.trim())}?json`);
+    const x = r?.ip || r;
+    if (!x || typeof x !== 'object') throw enrErr('parse');
+    const feeds = x.threatfeeds && typeof x.threatfeeds === 'object' ? Object.keys(x.threatfeeds) : [];
+    const n = +x.count || 0;
+    const mail = emailOk(x.asabusecontact) ? String(x.asabusecontact).toLowerCase() : '';
+    return {
+      summary: `${n ? `공격 보고 ${n.toLocaleString()}건 · 대상 ${(+x.attacks || 0).toLocaleString()}곳` : '공격 보고 없음'}${feeds.length ? ` · 피드 ${feeds.join(', ')}` : ''}`,
+      fields: [F('보고 수', n, true), F('공격 대상 수', x.attacks), F('최초 보고', x.mindate), F('최근 보고', x.maxdate, true), F('위험도', x.maxrisk), F('위협 피드', feeds.join(', '), true),
+        F('AS', [x.as, x.asname, x.ascountry].filter(Boolean).join(' · ')), F('네트워크', x.network), F('남용 신고', mail), F('메모', x.comment)],
+      found: [mail ? FD('email', mail, '남용 신고 연락처') : null].filter(Boolean), fp: fpOf(n, x.maxdate, feeds), raw: r,
+    };
+  },
+};
+const sfsProvider = {
+  id: 'sfs', name: 'StopForumSpam', group: '위협 정보', types: ['ip', 'email', 'username'], hosts: ['https://api.stopforumspam.org'], auth: 'none', cors: 'likely', watch: true, defaultOn: true, defaultAuto: true, minInterval: 1000,
+  desc: '포럼·게시판 스팸 가입 신고 기록. 이메일은 원문 대신 MD5 해시로 보냅니다.', limit: '하루 2만 회',
+  test: { type: 'ip', value: '8.8.8.8' },
+  applies: (v, e) => (e.type === 'ip' ? isIPaddr(v.trim()) : e.type === 'email' ? emailOk(v.trim()) : !!userName(v)),
+  run: async (v, ctx, e) => {
+    const q = e.type === 'ip' ? `ip=${enc(v.trim())}` : e.type === 'email' ? `emailhash=${md5Hex(v.trim().toLowerCase())}` : `username=${enc(userName(v))}`;
+    const r = await ctx.json(`https://api.stopforumspam.org/api?${q}&json`);
+    if (!r || !r.success) throw enrErr('http', r?.error || '서비스 오류');
+    const x = r[e.type === 'ip' ? 'ip' : e.type === 'email' ? 'emailhash' : 'username'] || {};
+    const hit = +x.appears === 1;
+    return {
+      summary: hit ? `스팸 신고 ${x.frequency}회 · 신뢰도 ${x.confidence ?? '?'}% · 마지막 ${String(x.lastseen || '').slice(0, 10)}` : '신고 기록 없음',
+      fields: [F('신고 여부', hit, true), F('신고 횟수', x.frequency), F('마지막 신고', x.lastseen), F('신뢰도(%)', x.confidence), F('Tor 출구', x.torexit ? '예' : ''), F('국가', x.country), F('ASN', x.asn)],
+      fp: fpOf(hit, x.frequency, x.lastseen), raw: r,
+    };
+  },
+};
+const cfSecurityProvider = {
+  id: 'cf-security', name: 'Cloudflare 보안 DNS 판정', group: '위협 정보', types: ['domain', 'url'], hosts: ['https://security.cloudflare-dns.com', 'https://cloudflare-dns.com'], auth: 'none', cors: 'likely', watch: true, defaultOn: true, defaultAuto: true, minInterval: 100,
+  desc: '악성코드·피싱 차단 리졸버(1.1.1.2)가 이 도메인을 막는지 일반 리졸버와 비교해 판정합니다.',
+  test: { type: 'domain', value: 'example.com' },
+  applies: (v, e) => hostIsName(v.trim(), e),
+  run: async (v, ctx, e) => {
+    const d = hostOf(v.trim(), e);
+    const [sec, plain] = await Promise.all([dohQuery(ctx, 'cf-sec', d, 'A'), soft(dohQuery(ctx, 'cf', d, 'A'))]);
+    const sA = dnsData(sec, 'A'), pA = dnsData(plain, 'A');
+    const blocked = sA.includes('0.0.0.0') && pA.some((x) => x !== '0.0.0.0');
+    const filtered = /filter|block|censor/i.test(String(sec.Comment || ''));
+    if (sec.Status === 3 && (!plain || plain.Status === 3)) return { empty: true, summary: 'NXDOMAIN — 존재하지 않는 도메인', fp: 'nxdomain', raw: { security: sec, plain } };
+    return {
+      summary: blocked || filtered ? '악성(멀웨어·피싱)으로 분류되어 차단됨' : '차단 목록에 없음',
+      fields: [F('판정', blocked || filtered ? '차단됨' : '통과', true), F('보안 리졸버 응답', sA.join(', ') || DNS_RCODE[sec.Status]), F('일반 리졸버 응답', pA.join(', ') || (plain ? DNS_RCODE[plain.Status] : '조회 실패')), F('설명', sec.Comment || '')],
+      fp: blocked || filtered ? 'blocked' : 'clean', raw: { security: sec, plain },
+    };
+  },
+};
+
+/* ---------- 로컬 대조 (값을 밖으로 보내지 않음) ---------- */
+const FH = 'https://raw.githubusercontent.com/firehol/blocklist-ipsets/master/';
+const IP_LISTS = [
+  ['Spamhaus DROP', FH + 'spamhaus_drop.netset'], ['DShield 상위 공격 대역', FH + 'dshield.netset'], ['FireHOL Level 1', FH + 'firehol_level1.netset'],
+  ['Tor 출구 노드', FH + 'tor_exits.ipset'], ['IPsum (3개 이상 목록 등재)', 'https://raw.githubusercontent.com/stamparm/ipsum/master/levels/3.txt'],
+];
+const PHISH_LIST = ['OpenPhish 피싱 URL', 'https://raw.githubusercontent.com/openphish/public_feed/refs/heads/main/feed.txt'];
+function parseNetset(text) {
+  const st = [], en = [];
+  let date = '';
+  for (const line of text.split('\n')) {
+    const l = line.trim();
+    if (!l) continue;
+    if (l[0] === '#') { const m = /^#\s*Source File Date:\s*(.+)$/i.exec(l); if (m) date = m[1].trim(); continue; }
+    const m = /^(\d{1,3}(?:\.\d{1,3}){3})(?:\/(\d{1,2}))?/.exec(l);
+    if (!m || !isV4(m[1])) continue;
+    const bits = m[2] ? +m[2] : 32;
+    const base = v4num(m[1]);
+    const size = 2 ** (32 - bits);
+    const s = Math.floor(base / size) * size;
+    st.push(s); en.push(s + size - 1);
+  }
+  return { st: Float64Array.from(st), en: Float64Array.from(en), n: st.length, date };
+}
+const listIPProvider = {
+  id: 'list-ip', name: '차단·피싱 목록 대조', group: '로컬 대조 (값을 보내지 않음)', types: ['ip', 'url', 'domain'],
+  hosts: ['https://raw.githubusercontent.com'], auth: 'none', cors: 'yes', watch: true, defaultOn: true, defaultAuto: true, minInterval: 300, timeoutSec: 60,
+  desc: 'Spamhaus DROP·DShield·FireHOL·Tor 출구·IPsum(IPv4)과 OpenPhish 피싱 URL 목록을 통째로 받아 이 브라우저 안에서 대조합니다. 조사 대상 값은 어디에도 전송되지 않습니다.',
+  test: { type: 'ip', value: '8.8.8.8' },
+  applies: (v, e) => (e.type === 'ip' ? isV4(v.trim()) : e.type === 'url' ? /^https?:\/\//i.test(v.trim()) : hostIsName(v.trim(), e)),
+  run: async (v, ctx, e) => {
+    if (e.type === 'ip') {
+      const ip = v4num(v.trim());
+      const res = await Promise.all(IP_LISTS.map(async ([name, url]) => {
+        try { const L = await ctx.list(url, 6, parseNetset); let hit = false; for (let i = 0; i < L.n; i++) if (ip >= L.st[i] && ip <= L.en[i]) { hit = true; break; } return { name, hit, n: L.n, date: L.date }; }
+        catch (err) { return { name, err: err.code || 'error' }; }
+      }));
+      const ok = res.filter((x) => !x.err);
+      if (!ok.length) throw enrErr(res[0]?.err || 'blocked');
+      const hits = ok.filter((x) => x.hit);
+      return {
+        summary: hits.length ? `${hits.length}개 목록에 등재: ${hits.map((x) => x.name).join(', ')}` : `${ok.length}개 목록 모두 해당 없음`,
+        fields: res.map((x) => F(x.name, x.err ? `받기 실패 (${x.err})` : `${x.hit ? '등재됨' : '없음'} · ${x.n.toLocaleString()}개 항목${x.date ? ` · ${x.date}` : ''}`, x.hit)),
+        fp: fpOf(hits.map((x) => x.name)), raw: res,
+      };
+    }
+    const feed = await ctx.list(PHISH_LIST[1], 6, (t) => t.split('\n').map((x) => x.trim()).filter((x) => /^https?:\/\//i.test(x)));
+    const normU = (u) => { try { const x = new URL(u); return (x.host.toLowerCase() + x.pathname.replace(/\/+$/, '') + x.search).toLowerCase(); } catch (err) { return u.toLowerCase(); } };
+    const host = hostOf(v.trim(), e);
+    const same = feed.filter((u) => { try { const hn = new URL(u).hostname.toLowerCase(); return hn === host || hn.endsWith('.' + host); } catch (err) { return false; } });
+    const exact = e.type === 'url' ? feed.filter((u) => normU(u) === normU(v.trim())) : [];
+    const hit = exact.length || same.length;
+    return {
+      summary: exact.length ? 'OpenPhish 피싱 URL 목록에 이 주소가 있음' : same.length ? `같은 호스트의 피싱 URL ${same.length}개` : `피싱 목록(${feed.length.toLocaleString()}개)에 없음`,
+      fields: [F('OpenPhish 일치', exact.length ? '이 URL 등재' : same.length ? `호스트 일치 ${same.length}개` : '없음', !!hit), F('일치 URL', truncate(same.slice(0, 15).join('\n'), 1000))],
+      found: same.slice(0, 20).map((u) => FD('url', u, 'OpenPhish 피싱 URL')), fp: fpOf(hit ? same.length : 0), raw: same.slice(0, 50),
+    };
+  },
+};
+const disposableProvider = {
+  id: 'list-disposable', name: '일회용 메일 도메인 대조', group: '로컬 대조 (값을 보내지 않음)', types: ['email', 'domain'], hosts: ['https://cdn.jsdelivr.net', 'https://raw.githubusercontent.com'], auth: 'none', cors: 'yes', watch: false, defaultOn: true, defaultAuto: true, minInterval: 300,
+  desc: '임시·일회용 메일 서비스 도메인 목록(disposable-email-domains)을 받아 이 브라우저 안에서 대조합니다.',
+  test: { type: 'email', value: 'test@mailinator.com' },
+  applies: (v, e) => (e.type === 'email' ? emailOk(v.trim()) : hostIsName(v.trim(), e)),
+  run: async (v, ctx, e) => {
+    const parse = (t) => new Set(t.split('\n').map((x) => x.trim().toLowerCase()).filter((x) => x && !x.startsWith('#')));
+    let set;
+    try { set = await ctx.list('https://cdn.jsdelivr.net/gh/disposable-email-domains/disposable-email-domains@main/disposable_email_blocklist.conf', 24, parse); }
+    catch (err) { set = await ctx.list('https://raw.githubusercontent.com/disposable-email-domains/disposable-email-domains/main/disposable_email_blocklist.conf', 24, parse); }
+    const d = e.type === 'email' ? v.trim().toLowerCase().split('@').pop() : stripDot(v);
+    const L = d.split('.');
+    const hit = L.map((_, i) => L.slice(i).join('.')).filter((x) => x.includes('.')).find((x) => set.has(x));
+    return { summary: hit ? `일회용(임시) 메일 도메인 — ${hit}` : `일회용 메일 목록(${set.size.toLocaleString()}개)에 없음`, fields: [F('일회용 메일', hit ? `예 (${hit})` : '아니오', !!hit)], fp: hit ? 'hit' : 'none', raw: { domain: d, match: hit || null } };
+  },
+};
+const OFAC_ASSETS = { btc: ['XBT'], eth: ['ETH', 'USDT', 'USDC'], trx: ['TRX', 'USDT'], xmr: ['XMR'] };
+const ofacProvider = {
+  id: 'list-ofac', name: 'OFAC 제재 주소 대조', group: '로컬 대조 (값을 보내지 않음)', types: ['crypto'], hosts: ['https://raw.githubusercontent.com'], auth: 'none', cors: 'yes', watch: true, defaultOn: true, defaultAuto: true, minInterval: 300,
+  desc: '미국 재무부 OFAC SDN 목록의 가상자산 주소(0xB10C 정리본)를 받아 이 브라우저 안에서 대조합니다.',
+  test: { type: 'crypto', value: 'bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh' },
+  applies: (v) => !!OFAC_ASSETS[cryptoChain(v.trim())],
+  run: async (v, ctx) => {
+    const a = v.trim();
+    const chain = cryptoChain(a);
+    const key = chain === 'eth' ? a.toLowerCase() : a;
+    const res = await Promise.all(OFAC_ASSETS[chain].map(async (asset) => {
+      try {
+        const set = await ctx.list(`https://raw.githubusercontent.com/0xB10C/ofac-sanctioned-digital-currency-addresses/lists/sanctioned_addresses_${asset}.json`, 24,
+          (t) => new Set((JSON.parse(t) || []).map((x) => (/^0x/i.test(x) ? String(x).toLowerCase() : String(x)))));
+        return { asset, hit: set.has(key), n: set.size };
+      } catch (err) { return { asset, err: err.code || 'error' }; }
+    }));
+    const ok = res.filter((x) => !x.err);
+    if (!ok.length) throw enrErr(res[0]?.err || 'blocked');
+    const hits = ok.filter((x) => x.hit);
+    return { summary: hits.length ? `OFAC 제재 대상 주소 (${hits.map((x) => x.asset).join(', ')} 목록)` : '제재 목록에 없음',
+      fields: res.map((x) => F(`OFAC ${x.asset}`, x.err ? `받기 실패 (${x.err})` : `${x.hit ? '등재됨' : '없음'} · ${x.n}개 주소`, x.hit)), fp: hits.length ? 'sanctioned' : 'clean', raw: res };
+  },
+};
+
+/* ---------- 가상자산 ---------- */
+function esploraProvider(id, name, base, on) {
+  return {
+    id, name, group: '가상자산', types: ['crypto'], hosts: [new URL(base).origin], auth: 'none', cors: 'likely', watch: true, defaultOn: on, defaultAuto: on, minInterval: 700,
+    desc: on ? '비트코인 주소의 잔액·총 입출금·거래 수와 최근 거래, 거래 상대 주소(추정).' : '같은 조회를 Blockstream Esplora로 (예비).',
+    test: { type: 'crypto', value: 'bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh' },
+    applies: (v) => cryptoChain(v.trim()) === 'btc',
+    run: async (v, ctx) => {
+      const a = v.trim();
+      const [st, txs] = await Promise.all([ctx.json(`${base}/address/${enc(a)}`), soft(ctx.json(`${base}/address/${enc(a)}/txs`))]);
+      const cs = st?.chain_stats || {}, ms = st?.mempool_stats || {};
+      if (!st || typeof cs.tx_count !== 'number') throw enrErr('parse');
+      const bal = (cs.funded_txo_sum || 0) - (cs.spent_txo_sum || 0);
+      const list = Array.isArray(txs) ? txs : [];
+      const cp = new Map();
+      for (const t of list) {
+        const ins = (t.vin || []).map((x) => x.prevout?.scriptpubkey_address).filter(Boolean);
+        const outs = (t.vout || []).map((x) => x.scriptpubkey_address).filter(Boolean);
+        const sending = ins.includes(a);
+        for (const x of sending ? outs : ins) if (x !== a && !cp.has(x)) cp.set(x, sending ? 'out' : 'in');
+      }
+      const times = list.map((t) => t.status?.block_time).filter(Boolean).sort((x, y) => x - y);
+      return {
+        summary: `잔액 ${sats(bal)} BTC · 거래 ${cs.tx_count.toLocaleString()}건${ms.tx_count ? ` (+미확정 ${ms.tx_count})` : ''} · 총 입금 ${sats(cs.funded_txo_sum)} BTC`,
+        empty: !cs.tx_count && !ms.tx_count,
+        fields: [F('잔액(BTC)', sats(bal), true), F('총 입금(BTC)', sats(cs.funded_txo_sum), true), F('총 출금(BTC)', sats(cs.spent_txo_sum)), F('확정 거래', cs.tx_count, true),
+          F('미확정 거래', ms.tx_count || ''), F('최근 거래 범위', times.length ? `${dOnly(unixISO(times[0]))} ~ ${dOnly(unixISO(times[times.length - 1]))} (최근 ${list.length}건 기준)` : ''),
+          F('최근 거래', list.slice(0, 5).map((t) => `${t.txid.slice(0, 16)}… ${t.status?.block_time ? dOnly(unixISO(t.status.block_time)) : '미확정'}`).join('\n'))],
+        found: [...cp].slice(0, 30).map(([x, dir]) => FD('crypto', x, dir === 'out' ? '송금 대상(추정)' : '입금 출처(추정)', dir)),
+        fp: fpOf(cs.tx_count + (ms.tx_count || 0), bal), raw: { stats: st, recent_txs: list.slice(0, 10) },
+      };
+    },
+  };
+}
+const blockscoutProvider = {
+  id: 'blockscout', name: 'Blockscout (이더리움)', group: '가상자산', types: ['crypto'], hosts: ['https://eth.blockscout.com'], auth: 'none', cors: 'likely', watch: true, defaultOn: true, defaultAuto: true, minInterval: 300,
+  desc: '이더리움 주소의 ETH 잔액, 컨트랙트 여부·이름, ENS 이름, 공개 태그(거래소 등), 생성자, 거래 수와 최근 거래 상대.',
+  test: { type: 'crypto', value: '0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045' },
+  applies: (v) => cryptoChain(v.trim()) === 'eth',
+  run: async (v, ctx) => {
+    const a = v.trim();
+    const B = 'https://eth.blockscout.com/api/v2/addresses/' + enc(a);
+    const [ad, cn, tx] = await Promise.all([ctx.json(B), soft(ctx.json(B + '/counters')), soft(ctx.json(B + '/transactions'))]);
+    if (!ad || typeof ad !== 'object') throw enrErr('parse');
+    const tags = uniq([...(ad.metadata?.tags || []).map((t) => t?.name), ...(ad.public_tags || []).map((t) => t?.display_name || t?.label)].filter(Boolean));
+    const creator = ad.creator_address_hash || '';
+    const items = Array.isArray(tx?.items) ? tx.items : [];
+    const me = a.toLowerCase();
+    const cp = new Map();
+    for (const t of items) {
+      const f = String(t.from?.hash || '').toLowerCase(), to = String(t.to?.hash || '').toLowerCase();
+      if (f === me && to && to !== me && !cp.has(to)) cp.set(to, ['out', t.to?.name || t.to?.ens_domain_name || '']);
+      if (to === me && f && f !== me && !cp.has(f)) cp.set(f, ['in', t.from?.name || t.from?.ens_domain_name || '']);
+    }
+    const nTx = cn?.transactions_count ?? '';
+    return {
+      summary: `잔액 ${fmtUnits(ad.coin_balance || '0', 18)} ETH${ad.is_contract ? ' · 컨트랙트' : ''}${ad.name ? ` · ${ad.name}` : ''}${ad.ens_domain_name ? ` · ${ad.ens_domain_name}` : ''}${tags.length ? ` · ${tags.slice(0, 3).join(', ')}` : ''}`,
+      fields: [F('잔액(ETH)', fmtUnits(ad.coin_balance || '0', 18), true), F('컨트랙트', !!ad.is_contract), F('이름', ad.name), F('ENS', ad.ens_domain_name, true), F('공개 태그', tags.join(', '), true),
+        F('검증된 코드', ad.is_contract ? !!ad.is_verified : ''), F('생성자', creator), F('생성 거래', ad.creation_transaction_hash || ad.creation_tx_hash || ''),
+        F('거래 수', nTx, true), F('토큰 전송 수', cn?.token_transfers_count ?? ''), F('최근 거래', items.slice(0, 5).map((t) => `${String(t.hash).slice(0, 18)}… ${String(t.timestamp || '').slice(0, 10)} ${t.method || ''}`).join('\n'))],
+      found: [creator ? FD('crypto', creator, '컨트랙트 생성자', 'in') : null, ad.ens_domain_name ? FD('other', ad.ens_domain_name, 'ENS 이름') : null,
+        ...[...cp].slice(0, 30).map(([x, [dir, label]]) => FD('crypto', x, dir === 'out' ? '송금 대상' : '입금 출처', dir, label))].filter(Boolean),
+      fp: fpOf(ad.coin_balance, nTx), raw: { address: ad, counters: cn, recent: items.slice(0, 10) },
+    };
+  },
+};
+const USDT_TRC20 = 'TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t';
+const trongridProvider = {
+  id: 'trongrid', name: 'TronGrid (트론·USDT)', group: '가상자산', types: ['crypto'], hosts: ['https://api.trongrid.io'], auth: 'none', cors: 'likely', watch: true, defaultOn: true, defaultAuto: true, minInterval: 1200,
+  desc: '트론 주소의 TRX·USDT(TRC20) 잔액, 계정 생성일·최근 활동, 최근 TRC20 전송과 거래 상대. 스캠 자금 흐름에서 자주 쓰이는 체인입니다.', limit: '키 없이 쓰면 자주 제한됨',
+  test: { type: 'crypto', value: USDT_TRC20 },
+  applies: (v) => cryptoChain(v.trim()) === 'trx',
+  run: async (v, ctx) => {
+    const a = v.trim();
+    const [acc, tr] = await Promise.all([ctx.json(`https://api.trongrid.io/v1/accounts/${enc(a)}`), soft(ctx.json(`https://api.trongrid.io/v1/accounts/${enc(a)}/transactions/trc20?limit=50&only_confirmed=true`))]);
+    const d = Array.isArray(acc?.data) ? acc.data[0] : null;
+    if (!d) return { empty: true, summary: '활성화되지 않은 주소 (온체인 기록 없음)', fp: 'inactive', raw: acc };
+    const trc = Object.assign({}, ...(Array.isArray(d.trc20) ? d.trc20 : []));
+    const usdt = trc[USDT_TRC20];
+    const xs = Array.isArray(tr?.data) ? tr.data : [];
+    const cp = new Map();
+    for (const t of xs) { const o = t.from === a ? t.to : t.from; if (o && o !== a && !cp.has(o)) cp.set(o, [t.from === a ? 'out' : 'in', t.token_info?.symbol || '']); }
+    const msISO = (x) => (+x > 0 ? new Date(+x).toISOString() : '');
+    const fmtT = (t) => `${dOnly(msISO(t.block_timestamp))} ${t.from === a ? '→' : '←'} ${fmtUnits(t.value, +t.token_info?.decimals || 0)} ${t.token_info?.symbol || ''} ${t.from === a ? t.to : t.from}`;
+    return {
+      summary: `TRX ${fmtUnits(d.balance || 0, 6)}${usdt != null ? ` · USDT ${fmtUnits(usdt, 6)}` : ''} · 생성 ${dOnly(msISO(d.create_time))}`,
+      fields: [F('TRX 잔액', fmtUnits(d.balance || 0, 6), true), F('USDT 잔액', usdt != null ? fmtUnits(usdt, 6) : '0', true), F('기타 TRC20 토큰', Object.keys(trc).filter((k) => k !== USDT_TRC20).length),
+        F('계정 생성', dOnly(msISO(d.create_time)), true), F('최근 활동', dOnly(msISO(d.latest_opration_time))), F('최근 TRC20 전송', xs.slice(0, 6).map(fmtT).join('\n'))],
+      found: [...cp].slice(0, 30).map(([x, [dir, sym]]) => FD('crypto', x, dir === 'out' ? `송금 대상 (${sym || 'TRC20'})` : `입금 출처 (${sym || 'TRC20'})`, dir)),
+      fp: fpOf(d.balance, usdt, d.latest_opration_time), raw: { account: d, trc20: xs.slice(0, 20) },
+    };
+  },
+};
+
+/* ---------- 위치 ---------- */
+const WMO = { 0: '맑음', 1: '대체로 맑음', 2: '구름 조금', 3: '흐림', 45: '안개', 48: '서리 안개', 51: '약한 이슬비', 53: '이슬비', 55: '강한 이슬비', 56: '어는 이슬비', 57: '강한 어는 이슬비',
+  61: '약한 비', 63: '비', 65: '강한 비', 66: '어는 비', 67: '강한 어는 비', 71: '약한 눈', 73: '눈', 75: '강한 눈', 77: '싸락눈', 80: '약한 소나기', 81: '소나기', 82: '강한 소나기',
+  85: '약한 소낙눈', 86: '강한 소낙눈', 95: '뇌우', 96: '우박 동반 뇌우', 99: '강한 우박 동반 뇌우' };
+const osmProvider = {
+  id: 'osm-geo', name: 'OpenStreetMap 지오코딩', group: '위치', types: ['location'], hosts: ['https://nominatim.openstreetmap.org', 'https://photon.komoot.io'], auth: 'none', cors: 'likely', watch: false, defaultOn: true, defaultAuto: true, minInterval: 1100,
+  desc: '좌표면 주소(역지오코딩), 주소·지명이면 좌표 후보(지오코딩). Nominatim이 막히면 Photon으로 다시 묻습니다. 초당 1회로 제한합니다.', limit: '초당 1회',
+  test: { type: 'location', value: '37.5665, 126.978' },
+  applies: (v) => !!v.trim(),
+  run: async (v, ctx) => {
+    const c = parseCoords(v);
+    const N = 'https://nominatim.openstreetmap.org', P = 'https://photon.komoot.io';
+    const fallback = (err) => ['blocked', 'http', 'auth', 'rate', 'timeout', 'parse'].includes(err.code);
+    if (c) {
+      let r, src = 'Nominatim';
+      try { r = await ctx.json(`${N}/reverse?format=jsonv2&lat=${c.lat}&lon=${c.lon}&zoom=18&addressdetails=1&accept-language=ko,en`); if (r?.error) throw enrErr('notfound'); }
+      catch (err) {
+        if (!fallback(err)) throw err;
+        const p = await ctx.json(`${P}/reverse?lat=${c.lat}&lon=${c.lon}&limit=1`);
+        const f = p?.features?.[0]?.properties;
+        if (!f) throw enrErr('notfound');
+        src = 'Photon';
+        r = { display_name: [f.name, f.housenumber, f.street, f.district, f.city, f.county, f.state, f.postcode, f.country].filter(Boolean).join(', '), name: f.name, category: f.osm_key, type: f.osm_value, osm_type: f.osm_type, osm_id: f.osm_id,
+          address: { road: f.street, house_number: f.housenumber, suburb: f.district, city: f.city, county: f.county, state: f.state, postcode: f.postcode, country: f.country, country_code: f.countrycode } };
+      }
+      const ad = r.address || {};
+      const addr = String(r.display_name || '');
+      return {
+        summary: addr || '주소 없음',
+        fields: [F('주소', addr, true), F('장소명', r.name), F('도로', [ad.road, ad.house_number].filter(Boolean).join(' ')), F('동네', ad.suburb || ad.neighbourhood || ad.quarter),
+          F('시·군·구', ad.city || ad.town || ad.village || ad.county || ad.borough, true), F('시·도', ad.state || ad.province), F('우편번호', ad.postcode), F('국가', ad.country, true),
+          F('분류', [r.category, r.type].filter(Boolean).join(' / ')), F('OSM', r.osm_type && r.osm_id ? `${r.osm_type}/${r.osm_id}` : ''), F('출처', src)],
+        found: addr ? [FD('location', truncate(addr, 300), '역지오코딩 주소')] : [], fp: fpOf(addr), raw: r,
+      };
+    }
+    const q = v.trim();
+    let list, src = 'Nominatim';
+    try {
+      const r = await ctx.json(`${N}/search?q=${enc(q)}&format=jsonv2&limit=5&addressdetails=1&accept-language=ko,en`);
+      list = (Array.isArray(r) ? r : []).map((x) => ({ name: x.display_name, lat: +x.lat, lon: +x.lon, kind: [x.category, x.type].filter(Boolean).join('/') }));
+    } catch (err) {
+      if (!fallback(err)) throw err;
+      const p = await ctx.json(`${P}/api/?q=${enc(q)}&limit=5`);
+      src = 'Photon';
+      list = (p?.features || []).map((f) => ({ name: [f.properties?.name, f.properties?.street, f.properties?.city, f.properties?.state, f.properties?.country].filter(Boolean).join(', '), lat: +f.geometry?.coordinates?.[1], lon: +f.geometry?.coordinates?.[0], kind: [f.properties?.osm_key, f.properties?.osm_value].filter(Boolean).join('/') }));
+    }
+    list = list.filter((x) => Number.isFinite(x.lat) && Number.isFinite(x.lon));
+    if (!list.length) throw enrErr('notfound');
+    return {
+      summary: `후보 ${list.length}곳 · 1순위 ${truncate(list[0].name, 80)} (${fmtCoord(list[0].lat, list[0].lon)})`,
+      fields: [...list.map((x, i) => F(`후보 ${i + 1}`, `${x.name} · ${fmtCoord(x.lat, x.lon)}${x.kind ? ` · ${x.kind}` : ''}`)), F('출처', src)],
+      found: list.map((x, i) => FD('location', fmtCoord(x.lat, x.lon), i ? `지오코딩 후보 ${i + 1}` : '지오코딩 1순위', 'out', truncate(x.name, 110))), fp: fpOf(list.map((x) => fmtCoord(x.lat, x.lon))), raw: list,
+    };
+  },
+};
+const weatherProvider = {
+  id: 'weather', name: '과거 날씨 (Open-Meteo)', group: '위치', types: ['location'], hosts: ['https://archive-api.open-meteo.com', 'https://api.open-meteo.com'], auth: 'none', cors: 'likely', watch: false, defaultOn: true, defaultAuto: false, minInterval: 400,
+  desc: '이 좌표의 그날 날씨(기온·강수·바람·일출·일몰)를 재분석 자료로 봅니다. 이 장소와 연결된 타임라인 이벤트 날짜를 쓰고, 이벤트에 시각이 있으면 그 시각의 날씨도 봅니다 — 사진·영상 속 날씨와 맞는지 검증용.',
+  test: { type: 'location', value: '37.5665, 126.978' },
+  applies: (v) => !!parseCoords(v),
+  run: async (v, ctx, e) => {
+    const c = parseCoords(v);
+    const evs = (ctx.c?.events || []).filter((ev) => ev.entityIds.includes(e.id)).sort((x, y) => y.at.localeCompare(x.at));
+    const D = 'daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_sum,wind_speed_10m_max,sunrise,sunset';
+    const H = 'hourly=temperature_2m,cloud_cover,precipitation,weather_code';
+    const loc = `latitude=${c.lat}&longitude=${c.lon}&timezone=auto`;
+    const recentCut = Date.now() - 6 * 86400000;
+    const fields = [];
+    const raws = [];
+    const lineFor = (r, i) => { const d = r.daily; return `${WMO[d.weather_code?.[i]] ?? d.weather_code?.[i] ?? '?'} · ${d.temperature_2m_min?.[i]}~${d.temperature_2m_max?.[i]}°C · 강수 ${d.precipitation_sum?.[i]}mm · 최대 풍속 ${d.wind_speed_10m_max?.[i]}km/h · 일출 ${String(d.sunrise?.[i] || '').slice(11)} 일몰 ${String(d.sunset?.[i] || '').slice(11)}`; };
+    if (evs.length) {
+      for (const ev of evs.slice(0, 3)) {
+        const t = Date.parse(ev.at);
+        if (!Number.isFinite(t)) continue;
+        // 장소 기준 날짜는 응답의 utc_offset으로 다시 맞춘다 (우선 UTC 날짜로 앞뒤 하루를 받는다)
+        const d0 = new Date(t - 86400000).toISOString().slice(0, 10), d1 = new Date(t + 86400000).toISOString().slice(0, 10);
+        const base = t < recentCut ? 'https://archive-api.open-meteo.com/v1/archive' : 'https://api.open-meteo.com/v1/forecast';
+        const r = await ctx.json(`${base}?${loc}&start_date=${d0}&end_date=${d1}&${D}${ev.dateOnly ? '' : '&' + H}`);
+        raws.push(r);
+        if (!r?.daily?.time) throw enrErr('parse');
+        const localISO = new Date(t + (+r.utc_offset_seconds || 0) * 1000).toISOString();
+        const day = ev.dateOnly ? ev.at.slice(0, 10) : localISO.slice(0, 10);
+        const i = r.daily.time.indexOf(day);
+        if (i < 0) continue;
+        let line = `${day} — ${lineFor(r, i)}`;
+        if (!ev.dateOnly && r.hourly?.time) {
+          const j = r.hourly.time.indexOf(localISO.slice(0, 13) + ':00');
+          if (j >= 0) line += `\n${localISO.slice(11, 16)} 무렵 (현지): ${WMO[r.hourly.weather_code?.[j]] ?? '?'} · ${r.hourly.temperature_2m?.[j]}°C · 구름 ${r.hourly.cloud_cover?.[j]}% · 강수 ${r.hourly.precipitation?.[j]}mm`;
+        }
+        fields.push(F(`「${truncate(ev.title, 30)}」`, line));
+      }
+    }
+    if (!fields.length) {
+      const r = await ctx.json(`https://api.open-meteo.com/v1/forecast?${loc}&past_days=7&forecast_days=1&${D}`);
+      raws.push(r);
+      if (!r?.daily?.time) throw enrErr('parse');
+      r.daily.time.forEach((day, i) => fields.push(F(day, lineFor(r, i))));
+      fields.unshift(F('기준', '연결된 타임라인 이벤트가 없어 최근 7일을 보여 줍니다'));
+    }
+    return { summary: fields[0].k === '기준' ? `최근 7일 · ${fields[fields.length - 1].v.split(' · ')[0]}` : truncate(`${fields[0].k} ${String(fields[0].v).split('\n')[0]}`, 160), fields: fields.map((f) => ({ ...f, v: String(f.v) })), fp: '', raw: raws };
+  },
+};
+
+/* ---------- 계정·신원 ---------- */
+const GH = 'https://api.github.com';
+const ghOK = (u) => /^[a-z\d](?:[a-z\d]|-(?=[a-z\d])){0,38}$/i.test(u);
+const githubProvider = {
+  id: 'github', name: 'GitHub 프로필', group: '계정·신원', types: ['username'], hosts: [GH], auth: 'none', cors: 'yes', watch: true, defaultOn: true, defaultAuto: true, minInterval: 400,
+  desc: '같은 이름의 GitHub 계정: 이름·소속·위치·웹사이트·공개 이메일·X 계정·가입일, 연결된 소셜 계정, GPG 키에 적힌 이메일.', limit: '시간당 60회 (조회 1번에 3회)',
+  test: { type: 'username', value: 'github' },
+  applies: (v) => ghOK(userName(v)),
+  run: async (v, ctx) => {
+    const u = userName(v);
+    const [p, so, gpg] = await Promise.all([ctx.json(`${GH}/users/${enc(u)}`), soft(ctx.json(`${GH}/users/${enc(u)}/social_accounts`)), soft(ctx.json(`${GH}/users/${enc(u)}/gpg_keys`))]);
+    if (!p || !p.login) throw enrErr('parse');
+    const social = (Array.isArray(so) ? so : []).filter((x) => /^https?:\/\//i.test(x?.url || ''));
+    const gk = Array.isArray(gpg) ? gpg : [];
+    const gmails = uniq(gk.flatMap((k) => (k.emails || []).map((m) => String(m.email || '').toLowerCase()))).filter(emailOk);
+    const blog = String(p.blog || '').trim();
+    const blogUrl = blog ? (/^https?:\/\//i.test(blog) ? blog : 'https://' + blog) : '';
+    const found = [
+      p.name ? FD('person', p.name, 'GitHub 표시 이름', 'in') : null,
+      emailOk(p.email) ? FD('email', p.email.toLowerCase(), 'GitHub 공개 이메일') : null,
+      blogUrl ? FD('url', blogUrl, 'GitHub 웹사이트') : null,
+      p.twitter_username ? FD('username', '@' + p.twitter_username, '연결된 X 계정', 'out', 'X') : null,
+      p.company ? FD('organization', String(p.company).replace(/^@/, ''), 'GitHub 소속') : null,
+      p.location ? FD('location', p.location, 'GitHub 표시 위치') : null,
+      ...social.map((x) => FD('url', x.url, `연결 계정 (${x.provider})`)),
+      ...gmails.map((x) => FD('email', x, 'GPG 키 이메일')),
+    ].filter(Boolean);
+    return {
+      summary: `${p.login}${p.name ? ` (${p.name})` : ''} · ${p.type === 'Organization' ? '조직' : '사용자'} · 가입 ${dOnly(p.created_at)} · 저장소 ${p.public_repos}`,
+      fields: [F('GitHub 계정 ID', p.id, true), F('로그인', p.login), F('유형', p.type), F('표시 이름', p.name, true), F('회사', p.company, true), F('웹사이트', blog), F('위치', p.location, true),
+        F('공개 이메일', p.email, true), F('소개', p.bio), F('X 계정', p.twitter_username), F('공개 저장소', p.public_repos), F('팔로워', p.followers), F('팔로잉', p.following),
+        F('GitHub 가입일', dOnly(p.created_at), true), F('최근 갱신', dOnly(p.updated_at)), F('프로필 URL', p.html_url), F('연결 계정', social.map((x) => x.url).join(', ')),
+        F('GPG 키', gk.map((k) => k.key_id).join(', ')), F('GPG 이메일', gmails.join(', '))],
+      found, fp: fpOf(p.name, p.company, p.location, blog, p.email, p.bio, p.twitter_username, social.map((x) => x.url), gmails), raw: { user: p, social_accounts: so, gpg_keys: gk.map((k) => ({ key_id: k.key_id, emails: k.emails, created_at: k.created_at })) },
+    };
+  },
+};
+const githubCommitsProvider = {
+  id: 'github-commits', name: 'GitHub 커밋 이메일', group: '계정·신원', types: ['username', 'email'], hosts: [GH], auth: 'none', cors: 'yes', watch: true, defaultOn: true, defaultAuto: false, minInterval: 6500,
+  desc: '계정이면 그 사람이 쓴 공개 커밋에 남은 작성자 이메일·이름을, 이메일이면 그 이메일로 커밋한 GitHub 계정을 찾습니다. 프로필에 이메일을 숨겨도 커밋 기록에는 남는 경우가 많습니다.', limit: '분당 10회',
+  test: { type: 'username', value: 'torvalds' },
+  applies: (v, e) => (e.type === 'email' ? emailOk(v.trim()) : ghOK(userName(v))),
+  run: async (v, ctx, e) => {
+    if (e.type === 'email') {
+      const m = v.trim().toLowerCase();
+      const r = await ctx.json(`${GH}/search/commits?q=${enc('author-email:' + m)}&sort=author-date&order=desc&per_page=30`);
+      const items = Array.isArray(r?.items) ? r.items : [];
+      if (!items.length) throw enrErr('notfound');
+      const logins = new Map(), names = new Set(), repos = new Set();
+      for (const it of items) { if (it.author?.login) logins.set(it.author.login, (logins.get(it.author.login) || 0) + 1); if (it.commit?.author?.name) names.add(it.commit.author.name); if (it.repository?.full_name) repos.add(it.repository.full_name); }
+      return {
+        summary: `커밋 ${(+r.total_count || items.length).toLocaleString()}건 · 계정 ${[...logins.keys()].join(', ') || '연결 안 됨'}`,
+        fields: [F('검색된 커밋', r.total_count), F('GitHub 계정', [...logins].map(([k, n]) => `${k} (${n})`).join(', '), true), F('작성자 이름', [...names].join(', ')), F('저장소', [...repos].slice(0, 12).join(', ')),
+          F('최근 커밋', items[0]?.commit?.author?.date ? dOnly(items[0].commit.author.date) : '')],
+        found: [...[...logins.keys()].map((x) => FD('username', x, '이 이메일로 커밋한 GitHub 계정', 'in', 'GitHub')), ...[...names].slice(0, 6).map((x) => FD('person', x, '커밋 작성자 이름', 'in'))],
+        fp: fpOf([...logins.keys()]), raw: items.slice(0, 15).map((it) => ({ sha: it.sha, repo: it.repository?.full_name, author: it.commit?.author, login: it.author?.login })),
+      };
+    }
+    const u = userName(v);
+    const r = await ctx.json(`${GH}/search/commits?q=${enc('author:' + u)}&sort=author-date&order=desc&per_page=50`);
+    const items = Array.isArray(r?.items) ? r.items : [];
+    if (!items.length) throw enrErr('notfound');
+    const mails = new Map(), names = new Set(), repos = new Set();
+    for (const it of items) {
+      if (String(it.author?.login || '').toLowerCase() !== u.toLowerCase()) continue;
+      const a = it.commit?.author || {};
+      const m = String(a.email || '').toLowerCase();
+      if (emailOk(m) && m !== 'noreply@github.com') mails.set(m, (mails.get(m) || 0) + 1);
+      if (a.name) names.add(a.name);
+      if (it.repository?.full_name) repos.add(it.repository.full_name);
+    }
+    const list = [...mails].sort((a, b) => b[1] - a[1]);
+    return {
+      summary: `커밋 ${(+r.total_count || items.length).toLocaleString()}건 · 이메일 ${list.length}개${list[0] ? ` (${list[0][0]} 등)` : ''}`,
+      fields: [F('검색된 커밋', r.total_count), F('작성자 이메일', list.map(([m, n]) => `${m} (${n})`).join(', '), true), F('작성자 이름', [...names].join(', ')), F('저장소', [...repos].slice(0, 12).join(', ')),
+        F('최근 커밋', items[0]?.commit?.author?.date ? dOnly(items[0].commit.author.date) : '')],
+      found: [...list.map(([m]) => FD('email', m, m.endsWith('users.noreply.github.com') ? 'GitHub noreply 주소' : '커밋 작성자 이메일')), ...[...names].slice(0, 6).map((x) => FD('person', x, '커밋 작성자 이름', 'in'))],
+      fp: fpOf(list.map(([m]) => m)), raw: items.slice(0, 15).map((it) => ({ sha: it.sha, repo: it.repository?.full_name, author: it.commit?.author, committer: it.commit?.committer })),
+    };
+  },
+};
+const gitlabProvider = {
+  id: 'gitlab', name: 'GitLab 프로필', group: '계정·신원', types: ['username'], hosts: ['https://gitlab.com'], auth: 'none', cors: 'likely', watch: true, defaultOn: true, defaultAuto: true, minInterval: 500,
+  desc: '같은 이름의 GitLab.com 계정: 이름·소개·위치·웹사이트·조직·직함, 공개 이메일, 연결된 X·GitHub·LinkedIn·Discord.',
+  test: { type: 'username', value: 'gitlab' },
+  applies: (v) => /^[\w.-]{1,255}$/.test(userName(v)),
+  run: async (v, ctx) => {
+    const u = userName(v);
+    const L = await ctx.json(`https://gitlab.com/api/v4/users?username=${enc(u)}`);
+    const b = Array.isArray(L) ? L[0] : null;
+    if (!b) throw enrErr('notfound');
+    const d = (await soft(ctx.json(`https://gitlab.com/api/v4/users/${enc(b.id)}`))) || b;
+    const site = String(d.website_url || '').trim();
+    const found = [
+      d.name ? FD('person', d.name, 'GitLab 표시 이름', 'in') : null,
+      emailOk(d.public_email) ? FD('email', d.public_email.toLowerCase(), 'GitLab 공개 이메일') : null,
+      /^https?:\/\//i.test(site) ? FD('url', site, 'GitLab 웹사이트') : null,
+      d.twitter ? FD('username', '@' + String(d.twitter).replace(/^@/, ''), '연결된 X 계정', 'out', 'X') : null,
+      d.github ? FD('username', String(d.github).replace(/^@/, ''), '연결된 GitHub 계정', 'out', 'GitHub') : null,
+      d.discord ? FD('username', String(d.discord), '연결된 Discord', 'out', 'Discord') : null,
+      d.linkedin ? FD('username', String(d.linkedin), '연결된 LinkedIn', 'out', 'LinkedIn') : null,
+      d.organization ? FD('organization', d.organization, 'GitLab 소속') : null,
+      d.location ? FD('location', d.location, 'GitLab 표시 위치') : null,
+    ].filter(Boolean);
+    return {
+      summary: `${d.username}${d.name ? ` (${d.name})` : ''} · ${d.state || ''}${d.created_at ? ` · 가입 ${dOnly(d.created_at)}` : ''}`,
+      fields: [F('GitLab 계정 ID', d.id, true), F('표시 이름', d.name, true), F('상태', d.state), F('공개 이메일', d.public_email, true), F('소개', d.bio), F('위치', d.location), F('웹사이트', site),
+        F('조직', d.organization), F('직함', d.job_title), F('X', d.twitter), F('GitHub', d.github), F('LinkedIn', d.linkedin), F('Discord', d.discord), F('GitLab 가입일', dOnly(d.created_at), true), F('프로필 URL', d.web_url)],
+      found, fp: fpOf(d.name, d.bio, d.location, site, d.organization, d.public_email, d.state), raw: d,
+    };
+  },
+};
+const blueskyProvider = {
+  id: 'bluesky', name: 'Bluesky 프로필', group: '계정·신원', types: ['username', 'domain'], hosts: ['https://public.api.bsky.app'], auth: 'none', cors: 'likely', watch: true, defaultOn: true, defaultAuto: true, minInterval: 400,
+  desc: 'Bluesky 핸들(이름만 쓰면 .bsky.social로 간주, 도메인 핸들도 가능)의 DID·표시 이름·소개·가입일·팔로워·검증 표시.',
+  test: { type: 'username', value: 'bsky.app' },
+  applies: (v, e) => (e.type === 'domain' ? hostIsName(v.trim(), e) : /^[\w.-]{1,253}$/.test(userName(v))),
+  run: async (v, ctx) => {
+    const u = userName(v).toLowerCase();
+    const actor = u.includes('.') ? stripDot(u) : `${u}.bsky.social`;
+    let p;
+    try { p = await ctx.json(`https://public.api.bsky.app/xrpc/app.bsky.actor.getProfile?actor=${enc(actor)}`); }
+    catch (err) { if (err.status === 400) throw enrErr('notfound'); throw err; }
+    if (!p?.did) throw enrErr('parse');
+    const desc = String(p.description || '');
+    const customDomain = !/\.bsky\.social$/i.test(p.handle || '') && isHostName(p.handle || '');
+    return {
+      summary: `@${p.handle}${p.displayName ? ` (${p.displayName})` : ''} · 팔로워 ${(+p.followersCount || 0).toLocaleString()}${p.createdAt ? ` · 가입 ${dOnly(p.createdAt)}` : ''}`,
+      fields: [F('DID', p.did, true), F('핸들', p.handle), F('표시 이름', p.displayName, true), F('소개', desc), F('팔로워', p.followersCount), F('팔로우', p.followsCount), F('게시물', p.postsCount),
+        F('Bluesky 가입일', dOnly(p.createdAt), true), F('라벨', (p.labels || []).map((l) => l.val).join(', ')), F('검증', p.verification?.verifiedStatus || '')],
+      found: [FD('other', p.did, 'Bluesky DID'), p.displayName ? FD('person', p.displayName, 'Bluesky 표시 이름', 'in') : null, customDomain ? FD('domain', stripDot(p.handle), '핸들 도메인') : null,
+        ...foundFromText(desc, actor, 'Bluesky 소개글')].filter(Boolean),
+      fp: fpOf(p.handle, p.displayName, desc), raw: p,
+    };
+  },
+};
+const mastodonProvider = {
+  id: 'mastodon', name: 'Mastodon (mastodon.social)', group: '계정·신원', types: ['username'], hosts: ['https://mastodon.social'], auth: 'none', cors: 'likely', watch: true, defaultOn: true, defaultAuto: true, minInterval: 1000,
+  desc: 'mastodon.social에서 계정을 찾습니다(다른 서버 계정은 user@서버 형태로, mastodon.social이 아는 경우만). 소개·프로필 링크(rel=me 인증 표시)·가입일·이전한 계정.',
+  test: { type: 'username', value: 'Gargron' },
+  applies: (v) => /^[\w.-]{1,64}(@[a-z0-9.-]+\.[a-z]{2,})?$/i.test(userName(v)),
+  run: async (v, ctx) => {
+    const a = await ctx.json(`https://mastodon.social/api/v1/accounts/lookup?acct=${enc(userName(v))}`);
+    if (!a?.id) throw enrErr('parse');
+    const note = htmlText(a.note);
+    const links = (a.fields || []).map((f) => ({ name: htmlText(f.name), value: htmlText(f.value), href: htmlHrefs(f.value)[0] || '', ok: !!f.verified_at }));
+    return {
+      summary: `@${a.acct}${a.display_name ? ` (${a.display_name})` : ''} · 가입 ${dOnly(a.created_at)} · 게시물 ${(+a.statuses_count || 0).toLocaleString()}${a.moved ? ` · ${a.moved.acct}(으)로 이전` : ''}`,
+      fields: [F('계정', a.acct), F('표시 이름', a.display_name, true), F('소개', note), ...links.map((l) => F(`링크: ${l.name}`, `${l.value}${l.ok ? ' ✓ 인증됨' : ''}`)),
+        F('Mastodon 가입일', dOnly(a.created_at), true), F('마지막 게시', a.last_status_at), F('팔로워', a.followers_count), F('팔로잉', a.following_count), F('게시물', a.statuses_count),
+        F('봇', a.bot ? '예' : ''), F('이전한 계정', a.moved?.acct || ''), F('프로필 URL', a.url)],
+      found: [a.display_name ? FD('person', a.display_name, 'Mastodon 표시 이름', 'in') : null, ...links.filter((l) => l.href).map((l) => FD('url', l.href, l.ok ? '프로필 링크 (인증됨)' : '프로필 링크')),
+        a.moved?.acct ? FD('username', '@' + a.moved.acct, '이전한 계정') : null, ...foundFromText(note, userName(v), 'Mastodon 소개글')].filter(Boolean),
+      fp: fpOf(a.display_name, note, links.map((l) => l.value), a.moved?.acct), raw: a,
+    };
+  },
+};
+const gravatarProvider = {
+  id: 'gravatar', name: 'Gravatar 프로필', group: '계정·신원', types: ['email'], hosts: ['https://api.gravatar.com'], auth: 'none', cors: 'likely', watch: true, defaultOn: true, defaultAuto: true, minInterval: 800,
+  desc: '이메일의 SHA-256 해시로 Gravatar 공개 프로필(표시 이름·위치·소속·소개·인증된 외부 계정)을 찾습니다. 이메일 원문은 보내지 않습니다.', limit: '시간당 약 100회',
+  test: { type: 'email', value: 'test@example.com' },
+  applies: (v) => emailOk(v.trim()),
+  run: async (v, ctx) => {
+    const hsh = await sha256Hex(utf8(v.trim().toLowerCase()));
+    const p = await ctx.json(`https://api.gravatar.com/v3/profiles/${hsh}`);
+    if (!p || typeof p !== 'object') throw enrErr('parse');
+    const acc = (Array.isArray(p.verified_accounts) ? p.verified_accounts : []).filter((x) => /^https?:\/\//i.test(x?.url || ''));
+    return {
+      summary: `${p.display_name || '이름 없음'}${p.location ? ` · ${p.location}` : ''}${acc.length ? ` · 인증 계정 ${acc.length}개` : ''}`,
+      fields: [F('표시 이름', p.display_name, true), F('위치', p.location, true), F('직함', p.job_title), F('회사', p.company, true), F('소개', p.description), F('대명사', p.pronouns),
+        F('인증된 계정', acc.map((x) => `${x.service_label || x.service_type}: ${x.url}`).join('\n')), F('프로필 URL', p.profile_url)],
+      found: [p.display_name ? FD('person', p.display_name, 'Gravatar 표시 이름', 'in') : null, p.location ? FD('location', p.location, 'Gravatar 위치') : null, p.company ? FD('organization', p.company, 'Gravatar 소속') : null,
+        ...acc.map((x) => FD('url', x.url, `Gravatar 인증 계정 (${x.service_label || x.service_type})`))].filter(Boolean),
+      fp: fpOf(p.display_name, p.location, p.company, p.description, acc.map((x) => x.url)), raw: p,
+    };
+  },
+};
+const hnProvider = {
+  id: 'hackernews', name: 'Hacker News', group: '계정·신원', types: ['username'], hosts: ['https://hacker-news.firebaseio.com'], auth: 'none', cors: 'likely', watch: false, defaultOn: true, defaultAuto: true, minInterval: 300,
+  desc: '같은 이름의 Hacker News 계정: 가입일·카르마·소개글(연락처가 적혀 있는 경우가 많음). 대소문자를 구분합니다.',
+  test: { type: 'username', value: 'pg' },
+  applies: (v) => /^[\w-]{2,15}$/.test(userName(v)),
+  run: async (v, ctx) => {
+    const r = await ctx.json(`https://hacker-news.firebaseio.com/v0/user/${enc(userName(v))}.json`);
+    if (r == null) throw enrErr('notfound');
+    if (!r.id) throw enrErr('parse');
+    const about = htmlText(r.about);
+    return {
+      summary: `${r.id} · 가입 ${dOnly(unixISO(r.created))} · 카르마 ${(+r.karma || 0).toLocaleString()}`,
+      fields: [F('HN 계정', r.id), F('HN 가입일', dOnly(unixISO(r.created)), true), F('카르마', r.karma), F('소개', about), F('제출 수', (r.submitted || []).length)],
+      found: foundFromText(about, userName(v), 'HN 소개글'), fp: fpOf(about), raw: { ...r, submitted: (r.submitted || []).length },
+    };
+  },
+};
+const WD = 'https://www.wikidata.org/w/api.php';
+const WD_IDS = [['P2002', 'username', 'X'], ['P2003', 'username', 'Instagram'], ['P2013', 'username', 'Facebook'], ['P2037', 'username', 'GitHub'], ['P4033', 'username', 'Mastodon'],
+  ['P12361', 'username', 'Bluesky'], ['P7085', 'username', 'TikTok'], ['P6634', 'username', 'LinkedIn'], ['P3789', 'username', 'Telegram'], ['P4265', 'username', 'Reddit'], ['P2397', 'other', 'YouTube 채널 ID'],
+  ['P856', 'url', '공식 웹사이트'], ['P968', 'email', '이메일'], ['P1329', 'phone', '전화번호']];
+const wdLabel = (en, langs = ['ko', 'mul', 'en']) => { for (const l of langs) if (en?.labels?.[l]?.value) return en.labels[l].value; return ''; };
+const wdDesc = (en) => en?.descriptions?.ko?.value || en?.descriptions?.en?.value || '';
+const wdVals = (en, p) => (en?.claims?.[p] || []).map((c) => c?.mainsnak?.datavalue?.value).filter((x) => x != null);
+const wikidataProvider = {
+  id: 'wikidata', name: 'Wikidata', group: '계정·신원', types: ['person', 'organization', 'username', 'email'], hosts: ['https://www.wikidata.org'], auth: 'none', cors: 'yes', watch: false, defaultOn: true, defaultAuto: false, minInterval: 600,
+  desc: '인물·조직 이름이면 위키데이터 항목을 찾아 공식 웹사이트·SNS 계정 등 식별자를, 계정·이메일이면 그 값을 식별자로 가진 항목(유명인·기관)을 찾습니다. 동명이인에 주의하세요.',
+  test: { type: 'organization', value: 'Wikimedia Foundation' },
+  applies: (v, e) => (e.type === 'email' ? emailOk(v.trim()) : !!v.trim()),
+  run: async (v, ctx, e) => {
+    const q = (s) => `${WD}?${s}&format=json&origin=*&maxlag=5`;
+    let qids = [], cands = [];
+    if (e.type === 'person' || e.type === 'organization') {
+      const lang = /[가-힣]/.test(v) ? 'ko' : 'en';
+      const r = await ctx.json(q(`action=wbsearchentities&search=${enc(v.trim())}&language=${lang}&uselang=ko&type=item&limit=7`));
+      cands = Array.isArray(r?.search) ? r.search : [];
+      qids = cands.slice(0, 1).map((x) => x.id);
+    } else {
+      const u = e.type === 'email' ? 'mailto:' + v.trim().toLowerCase() : userName(v);
+      const props = e.type === 'email' ? ['P968'] : WD_IDS.filter((x) => x[1] === 'username').map((x) => x[0]);
+      const r = await ctx.json(q(`action=query&list=search&srsearch=${enc('haswbstatement:' + props.map((p) => `${p}=${u.replace(/[|"]/g, '')}`).join('|'))}&srlimit=5`));
+      qids = (r?.query?.search || []).map((x) => x.title).filter((x) => /^Q\d+$/.test(x));
+    }
+    if (!qids.length) throw enrErr('notfound');
+    const g = await ctx.json(q(`action=wbgetentities&ids=${qids.join('|')}&props=labels|descriptions|aliases|claims|sitelinks/urls&languages=ko|mul|en`));
+    const ents = qids.map((id) => g?.entities?.[id]).filter(Boolean);
+    const fields = [], found = [];
+    for (const en of ents) {
+      const label = wdLabel(en);
+      const isHuman = wdVals(en, 'P31').some((x) => x?.id === 'Q5');
+      fields.push(F(en.id, `${label}${wdDesc(en) ? ` — ${wdDesc(en)}` : ''}`, ents.length === 1));
+      const aliases = uniq([...(en.aliases?.ko || []), ...(en.aliases?.en || []), ...(en.aliases?.mul || [])].map((a) => a.value)).slice(0, 8);
+      if (aliases.length) fields.push(F('별칭', aliases.join(', ')));
+      const born = wdVals(en, 'P569')[0]?.time;
+      if (born) fields.push(F('출생', String(born).replace(/^\+/, '').slice(0, 10)));
+      for (const [p, t, name] of WD_IDS) {
+        const vals = wdVals(en, p).map(String).map((x) => (p === 'P968' ? x.replace(/^mailto:/i, '') : x));
+        if (!vals.length) continue;
+        fields.push(F(name, vals.join(', ')));
+        for (const x of vals.slice(0, 5)) if (!(e.type !== 'person' && e.type !== 'organization' && normKey(t, x) === normKey(e.type, v))) found.push(FD(t, t === 'username' && p !== 'P6634' && p !== 'P2397' ? '@' + x.replace(/^@/, '') : x, `위키데이터 ${name}`, 'out', t === 'username' ? name : ''));
+      }
+      for (const c of wdVals(en, 'P625').slice(0, 1)) if (Number.isFinite(c?.latitude)) found.push(FD('location', fmtCoord(c.latitude, c.longitude), '위키데이터 좌표', 'out', label));
+      const wiki = en.sitelinks?.kowiki?.url || en.sitelinks?.enwiki?.url;
+      if (wiki) fields.push(F('위키백과', wiki));
+      if (e.type !== 'person' && e.type !== 'organization' && label) found.push(FD(isHuman ? 'person' : 'organization', label, '위키데이터 일치 항목', 'in', en.id));
+    }
+    if (cands.length > 1) fields.push(F('다른 후보', cands.slice(1, 7).map((x) => `${x.id} ${x.label || ''}${x.description ? ` — ${x.description}` : ''}`).join('\n')));
+    return {
+      summary: `${ents.map((en) => `${en.id} ${wdLabel(en)}`).join(', ')}${cands.length > 1 ? ` · 후보 ${cands.length}개 중 1순위 (동명이인 주의)` : ''}`,
+      fields, found, fp: fpOf(qids), raw: { candidates: cands, entities: ents.map((en) => ({ id: en.id, labels: en.labels, descriptions: en.descriptions })) },
+    };
+  },
+};
+/** OpenPGP 공개키(ASCII armor)에서 키 지문·생성일·사용자 ID를 읽는다 (RFC 4880/9580 패킷 헤더만 해석) */
+function pgpParse(armored) {
+  const m = /-----BEGIN PGP PUBLIC KEY BLOCK-----([\s\S]*?)-----END PGP PUBLIC KEY BLOCK-----/.exec(armored);
+  if (!m) return null;
+  const parts = m[1].replace(/\r/g, '').split(/\n\s*\n/);
+  const body = (parts.length > 1 ? parts.slice(1).join('\n') : parts[0]).split('\n').filter((l) => l.trim() && !/^=/.test(l.trim()) && !/^[\w-]+:\s/.test(l)).join('');
+  let b;
+  try { b = b64ToBytes(body); } catch (e) { return null; }
+  const keys = [], uids = [];
+  let i = 0;
+  while (i < b.length) {
+    const hd = b[i++];
+    if (!(hd & 0x80)) break;
+    let tag, len;
+    if (hd & 0x40) {
+      tag = hd & 0x3f;
+      const o = b[i++];
+      if (o < 192) len = o;
+      else if (o < 224) len = ((o - 192) << 8) + b[i++] + 192;
+      else if (o === 255) { len = ((b[i] << 24) | (b[i + 1] << 16) | (b[i + 2] << 8) | b[i + 3]) >>> 0; i += 4; }
+      else break;
+    } else {
+      tag = (hd >> 2) & 0xf;
+      const lt = hd & 3;
+      if (lt === 0) len = b[i++];
+      else if (lt === 1) { len = (b[i] << 8) | b[i + 1]; i += 2; }
+      else if (lt === 2) { len = ((b[i] << 24) | (b[i + 1] << 16) | (b[i + 2] << 8) | b[i + 3]) >>> 0; i += 4; }
+      else len = b.length - i;
+    }
+    const body2 = b.subarray(i, i + len);
+    i += len;
+    if (tag === 6 || tag === 14) {
+      const ver = body2[0];
+      const ts = ((body2[1] << 24) | (body2[2] << 16) | (body2[3] << 8) | body2[4]) >>> 0;
+      const created = ts ? new Date(ts * 1000).toISOString() : '';
+      let fpr = '';
+      if (ver === 4) { const pre = new Uint8Array(3 + body2.length); pre.set([0x99, (body2.length >> 8) & 0xff, body2.length & 0xff]); pre.set(body2, 3); fpr = hex(sha1js(pre)).toUpperCase(); }
+      else if (ver === 6) { const pre = new Uint8Array(5 + body2.length); pre.set([0x9b, (body2.length >>> 24) & 0xff, (body2.length >> 16) & 0xff, (body2.length >> 8) & 0xff, body2.length & 0xff]); pre.set(body2, 5); fpr = hex(sha256js(pre)).toUpperCase(); }
+      keys.push({ primary: tag === 6, ver, created, algo: { 1: 'RSA', 16: 'ElGamal', 17: 'DSA', 18: 'ECDH', 19: 'ECDSA', 22: 'EdDSA', 25: 'X25519', 27: 'Ed25519', 28: 'X448', 29: 'Ed448' }[body2[5]] || String(body2[5]), fpr });
+    } else if (tag === 13) uids.push(dec8.decode(body2));
+  }
+  return { keys, uids };
+}
+const openpgpProvider = {
+  id: 'openpgp', name: 'keys.openpgp.org', group: '계정·신원', types: ['email'], hosts: ['https://keys.openpgp.org'], auth: 'none', cors: 'likely', watch: false, defaultOn: true, defaultAuto: false, minInterval: 1000,
+  desc: '이 이메일로 소유 확인을 마친 PGP 공개키가 있는지, 그 키에 함께 등록된 다른 이메일·이름과 키 지문·생성일.',
+  test: { type: 'email', value: 'test@example.com' },
+  applies: (v) => emailOk(v.trim()),
+  run: async (v, ctx) => {
+    const t = await ctx.text(`https://keys.openpgp.org/vks/v1/by-email/${enc(v.trim().toLowerCase())}`);
+    const k = pgpParse(t);
+    if (!k || !k.keys.length) throw enrErr('parse');
+    const pk = k.keys.find((x) => x.primary) || k.keys[0];
+    const me = v.trim().toLowerCase();
+    const others = uniq(k.uids.flatMap((u) => [...u.matchAll(/<([^>]+@[^>]+)>|^([^\s<>]+@[^\s<>]+)$/g)].map((x) => (x[1] || x[2]).toLowerCase()))).filter((x) => x !== me && emailOk(x));
+    const names = uniq(k.uids.map((u) => u.replace(/<[^>]*>/, '').replace(/\([^)]*\)/, '').trim()).filter((x) => x && !x.includes('@')));
+    return {
+      summary: `PGP 키 ${pk.fpr.slice(-16)} · 생성 ${dOnly(pk.created)}${others.length ? ` · 다른 이메일 ${others.length}개` : ''}`,
+      fields: [F('지문', pk.fpr, true), F('키 생성일', dOnly(pk.created), true), F('알고리즘', `${pk.algo} (v${pk.ver})`), F('사용자 ID', k.uids.join('\n')), F('하위 키', k.keys.length - 1)],
+      found: [FD('other', pk.fpr, 'PGP 키 지문'), ...others.map((x) => FD('email', x, '같은 PGP 키의 이메일')), ...names.map((x) => FD('person', x, 'PGP 키 이름', 'in'))],
+      fp: fpOf(pk.fpr, k.uids), raw: t.slice(0, 6000),
+    };
+  },
+};
+const pwnedPwProvider = {
+  id: 'pwned-passwords', name: 'Pwned Passwords (SHA-1)', group: '계정·신원', types: ['hash'], hosts: ['https://api.pwnedpasswords.com'], auth: 'none', cors: 'yes', watch: false, defaultOn: true, defaultAuto: true, minInterval: 200,
+  desc: 'SHA-1 해시가 유출된 비밀번호의 해시인지 확인합니다. 해시 앞 5자리만 보내고(k-익명성) 나머지는 이 브라우저에서 대조합니다.',
+  test: { type: 'hash', value: '5baa61e4c9b93f3f0682250b6cf8331b7ee68fd8' },
+  applies: (v) => /^[a-f0-9]{40}$/i.test(v.trim()),
+  run: async (v, ctx) => {
+    const hx = v.trim().toUpperCase();
+    const t = await ctx.text(`https://api.pwnedpasswords.com/range/${hx.slice(0, 5)}`);
+    const line = t.split('\n').find((l) => l.slice(0, 35).toUpperCase() === hx.slice(5));
+    const n = line ? +line.split(':')[1] || 0 : 0;
+    return { summary: n ? `유출 비밀번호의 해시 — ${n.toLocaleString()}회 등장` : '유출 비밀번호 목록에 없음', fields: [F('유출 비밀번호', n ? `예 (${n.toLocaleString()}회)` : '아니오', !!n)], fp: n ? 'hit' : 'none', raw: line || '(일치 없음)' };
+  },
+};
+const xonProvider = {
+  id: 'xposedornot', name: 'XposedOrNot 유출 확인', group: '계정·신원', types: ['email'], hosts: ['https://api.xposedornot.com'], auth: 'none', cors: 'likely', watch: true, defaultOn: false, defaultAuto: false, minInterval: 3000,
+  desc: '이 이메일이 공개된 데이터 유출 사고에 포함됐는지. 이메일 원문을 보내므로 기본은 꺼 두었습니다.', limit: '시간당 25회',
+  test: { type: 'email', value: 'test@example.com' },
+  applies: (v) => emailOk(v.trim()),
+  run: async (v, ctx) => {
+    const r = await ctx.json(`https://api.xposedornot.com/v1/check-email/${enc(v.trim().toLowerCase())}`);
+    if (r?.Error) throw enrErr('notfound');
+    const list = uniq((Array.isArray(r?.breaches) ? r.breaches : []).flat().map(String).filter(Boolean));
+    if (!list.length) throw enrErr('notfound');
+    return { summary: `유출 사고 ${list.length}건: ${truncate(list.join(', '), 120)}`, fields: [F('유출 사고 수', list.length, true), F('사고 목록', list.join(', '))], fp: fpOf(list), raw: r };
+  },
+};
+const PROVIDERS = [
+  dnsProvider('google'), dnsProvider('cloudflare'), rdapProvider, crtshProvider, certspotterProvider, commoncrawlProvider, waybackProvider, hibpDomainProvider,
+  ripestatProvider, ipwhoisProvider, ipinfoProvider, internetdbProvider, onionooProvider,
+  otxProvider, iscProvider, sfsProvider, cfSecurityProvider,
+  listIPProvider, disposableProvider, ofacProvider,
+  esploraProvider('mempool', 'mempool.space (비트코인)', 'https://mempool.space/api', true), esploraProvider('blockstream', 'Blockstream (비트코인 예비)', 'https://blockstream.info/api', false),
+  blockscoutProvider, trongridProvider,
+  osmProvider, weatherProvider,
+  githubProvider, githubCommitsProvider, gitlabProvider, blueskyProvider, mastodonProvider, gravatarProvider, hnProvider, wikidataProvider, openpgpProvider, pwnedPwProvider, xonProvider,
+];
 
 /* ---------- 인리치먼트 UI ---------- */
 const ENR_CORS = { yes: ['브라우저 호출 지원', 'ok'], likely: ['브라우저 호출 가능성 높음', ''], unknown: ['브라우저 호출 미확인', 'warn'] };
@@ -6849,7 +8136,7 @@ async function boot() {
   }
   startApp();
 }
-window.__danseo = { S, KV, G, extract, extractUnique, renderMD, interpretTime, solarPosition, romanizeName, punyDecode, analyzeURL, caseSTIX, caseMarkdown, md5Hex, sha256js, persist };
+window.__danseo = { S, KV, G, addEntity, addLink, extract, extractUnique, renderMD, interpretTime, solarPosition, romanizeName, punyDecode, analyzeURL, caseSTIX, caseMarkdown, md5Hex, sha256js, persist, ENR, allProviders, providersFor, runEnrich, enrichAll, apiSettings, cspConnectHosts, pgpParse, apexOf, expandV6, fullBackup };
 boot();
 </script>
 </body>
