@@ -7699,7 +7699,7 @@ function apiSettingsSection(row) {
   body.append(row('API 연동 사용', api.enabled ? '켜짐 — 아래에서 켠 제공자로만 요청합니다' : '꺼짐 — 외부로 아무 요청도 보내지 않습니다',
     switchEl(api.enabled, '', async (v) => {
       if (v) {
-        const ok = await confirmDialog('API 연동을 켜면 엔티티 값(도메인·IP·이메일·주소 등)이 아래 목록의 외부 서비스로 전송되고, 그 서비스의 기록에 남을 수 있습니다. 조사 대상이 알아챌 수 있는 서비스는 목록에 넣지 않았지만, 조사용 네트워크(VPN 등)에서 쓰는 것을 권장합니다.', { title: 'API 연동 켜기', ok: '켜기' });
+        const ok = await confirmDialog('API 연동을 켜면 엔티티 값(도메인·IP·이메일·주소 등)이 아래 목록의 외부 서비스로 전송되고, 그 서비스의 기록에 남을 수 있습니다. 대상 서버에 직접 접속하는 서비스는 넣지 않았지만 DNS 조회는 대상의 DNS 서버에 리졸버(Google·Cloudflare) 이름으로 전달될 수 있으니, 조사용 네트워크(VPN 등)에서 쓰는 것을 권장합니다.', { title: 'API 연동 켜기', ok: '켜기' });
         if (!ok) { redraw(); return; }
       }
       api.enabled = v;
