@@ -5990,8 +5990,9 @@ function dnsProvider(kind) {
         F('DMARC', DM.join(' ')), F('SOA', SOA), F('CAA', CAA.join(', ')), F('인증 토큰', tokens.join(' ⏐ ')),
         F('DNSSEC 검증', R.A.AD ? '예 (AD)' : '아니오'),
       ];
-      return { summary: `A ${A.length} · AAAA ${AAAA.length} · NS ${NS.length} · MX ${MX.length} · TXT ${TXT.length}${CN.length ? ` · CNAME → ${CN[0]}` : ''}`,
-        fields, found, fp: fpOf(A, AAAA, CN, NS, MX.map((x) => x.host)), raw: { ...R, DMARC: dmarc } };
+      const none = !A.length && !AAAA.length && !CN.length && !NS.length && !MX.length && !TXT.length;
+      return { summary: none ? `레코드 없음 (${DNS_RCODE[R.A.Status] || R.A.Status} — 등록은 됐지만 DNS가 비어 있거나 위임되지 않음)` : `A ${A.length} · AAAA ${AAAA.length} · NS ${NS.length} · MX ${MX.length} · TXT ${TXT.length}${CN.length ? ` · CNAME → ${CN[0]}` : ''}`,
+        empty: none, fields, found, fp: fpOf(A, AAAA, CN, NS, MX.map((x) => x.host)), raw: { ...R, DMARC: dmarc } };
     },
   };
 }
