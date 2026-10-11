@@ -929,7 +929,10 @@ function modal({ title, body, foot, wide, narrow, onClose, ic, sticky = false, c
   document.body.append(ovl);
   pushOverlay(o);
   requestAnimationFrame(() => {
-    const f = box.querySelector('[autofocus]') || box.querySelector('.modal-b input:not([type=hidden]):not([type=checkbox]):not([type=radio]):not([type=file]):not([disabled]), .modal-b textarea, .modal-b select');
+    // 화면에 보이는 첫 칸에 초점 — 접힌 <details> 안의 칸을 고르면 초점이 대화상자 밖에 남는다
+    const shown = (el) => el.getClientRects().length > 0;
+    const f = [...box.querySelectorAll('[autofocus], .modal-b input:not([type=hidden]):not([type=checkbox]):not([type=radio]):not([type=file]):not([disabled]), .modal-b textarea:not([disabled]), .modal-b select:not([disabled])')]
+      .sort((a, b) => b.hasAttribute('autofocus') - a.hasAttribute('autofocus')).find(shown);
     (f || box.querySelector('.modal-f .btn.primary') || closeBtn).focus({ preventScroll: true });
   });
   return o;
@@ -7917,7 +7920,7 @@ async function importData(data, label = '가져온 데이터') {
 const ATT_REQ_MAX = 5000;
 const originLabel = (o) => (!o || o === 'null' ? '로컬 파일(file://)' : o);
 // 확인 코드: 양쪽 화면에 같은 값이 보여야 내가 연 상대라는 뜻 (순수 JS SHA-256 — 보안 컨텍스트가 아니어도 동작)
-const pairCode = (bytes) => hex(sha256js(bytes)).slice(0, 8).toUpperCase().replace(/^(.{4})/, '$1-');
+const pairCode = (bytes, n = 8) => hex(sha256js(bytes)).slice(0, n).toUpperCase().match(/.{1,4}/g).join('-');
 const codeRow = (code) => h('div', { class: 'row' }, h('span', { class: 'small muted' }, '확인 코드'), h('span', { class: 'kbd', style: 'font-size:14px;letter-spacing:.08em' }, code));
 function fillToast(r) {
   const extra = `${r.left ? ` · 아직 ${r.left}개 없음` : ''}${r.bad ? ` · 해시가 맞지 않아 버린 ${r.bad}개` : ''}`;
@@ -8070,7 +8073,7 @@ async function attRecoveryModal() {
     has ? h('div', { class: 'col', style: 'gap:6px' },
       step('1', '원본 파일로 채우기', '원본 파일을 여러 개 한꺼번에 고르면 SHA-256이 같은 자리를 찾아 채웁니다. 해시 기록이 없는 항목은 노트 미리보기의 “파일로 복구”로 하나씩 연결하세요.',
         h('div', { class: 'row' }, h('button', { class: 'btn sm', onclick: async () => { const fs = await pickFile({ multiple: true }); if (fs.length) finish(restoreFromFiles(fs)); } }, icon('upload', 13), '파일 고르기'))),
-      step('2', '내 다른 주소의 단서에서 바로 받기', '같은 컴퓨터에서 예전 주소로 연 단서 파일의 주소를 넣으면 새 창으로 열어 요청합니다. 그 창에서 승인하면 두 창 사이에서만 암호화되어 전달됩니다. 그 파일도 이 버전이어야 합니다.',
+      step('2', '내 다른 주소의 단서에서 바로 받기', `같은 컴퓨터에서 예전 주소로 연 단서 파일의 주소를 넣으면 새 창으로 열어 요청합니다. 그 창에서 승인하면 서버 없이 이 창으로 옵니다${HAS_SUBTLE ? '(두 창 모두 보안 컨텍스트면 암호화, 아니면 이 창의 주소로만 전달)' : '(이 주소는 보안 컨텍스트가 아니어서 암호화 없이 이 창의 주소로만 전달)'}. 그 파일도 이 버전이어야 합니다.`,
         urlIn, h('div', { class: 'row' }, h('button', { class: 'btn sm primary', onclick: () => { m.close(); peerRequest('atts', urlIn.value, attReqItems(missing)); } }, icon('ext', 13), '열고 요청'),
           h('span', { class: 'hint' }, 'https로 연 단서는 file:// 주소를 열 수 없습니다. 그럴 땐 3·4번을 쓰세요.'))),
       step('3', '다른 컴퓨터(다른 IP)에서 바로 받기', '연결 코드를 만들어 메신저 등으로 보내고, 상대가 돌려준 응답 코드를 넣으면 두 컴퓨터가 직접(P2P) 연결됩니다. 상대가 빠진 첨부 목록을 보고 승인하면 WebRTC(DTLS)로 암호화되어 옵니다. 서버를 거치지 않습니다.',
@@ -8105,8 +8108,10 @@ async function attRespondModal(reqRaw, { live = null } = {}) {
   const found = await findForRequest(req.items);
   const avail = found.filter((f) => f.local);
   const chosen = new Set(avail);
-  let sent = false;
+  let sent = false, sending = false;
   const btn = h('button', { class: 'btn primary', disabled: !avail.length }, icon(live ? 'right' : 'download', 14), live ? '보내기' : '응답 파일 만들기');
+  const noBtn = h('button', { class: 'btn', onclick: () => m.close() }, live ? '거절' : '닫기');
+  const st = h('div', { class: 'small muted', role: 'status' });
   const pass = h('input', { class: 'input', type: 'password', autocomplete: 'new-password', placeholder: HAS_SUBTLE ? '응답 파일 비밀번호 (선택 · 비우면 암호화하지 않음)' : '이 주소에서는 응답 파일을 암호화할 수 없음 (보안 컨텍스트 아님)', disabled: !HAS_SUBTLE });
   const err = h('div', { class: 'hint', style: 'color:var(--danger)' });
   const who = req.from ? `${req.from}님이` : '상대가';
@@ -8122,17 +8127,18 @@ async function attRespondModal(reqRaw, { live = null } = {}) {
       { t: '', v: (f) => h('span', { class: 'badge' + (f.local ? ' ok' : '') }, f.local ? '있음' : '없음') }]) : h('div', { class: 'hint' }, '요청에 첨부 항목이 없습니다.'),
     h('div', { class: 'hint' }, '요청에 적힌 SHA-256(해시를 모르는 항목은 같은 ID)과 맞는 첨부만 보낼 수 있습니다. 노트·엔티티 등 사건 내용은 보내지 않습니다.'),
     live ? h('div', { class: 'hint' }, `양쪽 화면의 확인 코드가 같은지 확인하세요. 내가 연 상대가 아니면 거절하세요. ${live.secureNote}`) : pass,
-    err];
+    st, err];
   btn.addEventListener('click', async () => {
     const pick = found.filter((f) => chosen.has(f));
     if (!pick.length) return;
     if (!live && pass.value && pass.value.length < 8) { err.textContent = '비밀번호는 8자 이상으로 정하세요.'; return; }
     btn.disabled = true;
     err.textContent = '';
+    if (live) { sending = true; noBtn.textContent = '멈추기'; }
     try {
       const atts = await buildAttResponse(pick);
       const n = Object.keys(atts).length;
-      if (live) await peerSend(live, { attachments: atts });
+      if (live) await peerSend(live, { attachments: atts }, { aborted: () => !!live.aborted, progress: sendProgress(st) });
       else {
         const bundle = { format: 'danseo-att-bundle', version: 1, app: 'danseo', requestId: req.requestId, exportedAt: nowISO(), attachments: atts };
         const data = pass.value && HAS_SUBTLE ? await encryptExport(bundle, pass.value) : bundle;
@@ -8140,14 +8146,20 @@ async function attRespondModal(reqRaw, { live = null } = {}) {
       }
       sent = true;
       const c = C();
-      if (c) { addLog(c, 'system', `첨부 요청에 응답 · ${n}개를 ${live ? `${live.who}(으)로 보냄` : '응답 파일로 내보냄'}${req.from ? ` · 요청자 ${req.from}` : ''}`); markDirty(); }
+      if (c) { addLog(c, 'system', `첨부 요청에 응답 · ${n}개를 ${live ? `${live.who}(으)로 보냄${live.aborted ? ' (멈추기 전에 전송이 끝남)' : ''}` : '응답 파일로 내보냄'}${req.from ? ` · 요청자 ${req.from}` : ''}`); markDirty(); }
       m.close('sent');
       toast(live ? `첨부 ${n}개를 보냈습니다` : `응답 파일을 만들었습니다 (첨부 ${n}개). 요청한 사람에게 보내세요.`, { timeout: 4000 });
-    } catch (e) { err.textContent = '실패: ' + (e.message || e); btn.disabled = false; }
+    } catch (e) {
+      if (live?.aborted) { toast('전송을 멈췄습니다. 상대는 첨부를 받지 못했습니다.'); return; }
+      st.textContent = '';
+      err.textContent = '보내지 못했습니다: ' + (e.message || e);
+      if (live) noBtn.textContent = '거절';
+      btn.disabled = false;
+    } finally { sending = false; }
   });
   const m = modal({ title: live ? '직접 연결로 온 첨부 요청' : '첨부 요청에 응답', ic: 'clip', wide: true, sticky: !!live, body,
-    foot: [h('button', { class: 'btn', onclick: () => m.close() }, live ? '거절' : '닫기'), btn],
-    onClose: () => { if (live && !sent && !live.cancelled) peerDeny(live); } });
+    foot: [noBtn, btn],
+    onClose: () => { if (!live || sent || live.cancelled) return; if (sending) live.aborted = true; peerDeny(live, sending ? 'aborted' : ''); } });
   if (live) live.close = () => m.close('cancelled');
 }
 
@@ -8169,10 +8181,13 @@ async function peerReceived(kind, payload, from) {
     fillToast(r);
   } else await importData(payload, from);
 }
-async function peerSend(p, payload) {
-  await p.send(payload);
+// 직접 연결로 보내기. o.aborted: 보내는 중 창을 닫으면(멈추기·Esc) 남은 조각을 보내지 않는다. o.progress: 진행률.
+// 다른 컴퓨터(WebRTC)는 받는 쪽이 “받음”을 알려 와야 끝난다 — 그 전에 끊기면 실패로 본다
+async function peerSend(p, payload, o = {}) {
+  await p.send(payload, o);
   if (PEER.pending === p) PEER.pending = null;
 }
+const sendProgress = (st) => (a, b) => { st.textContent = a < b ? `보내는 중… ${Math.floor((a / b) * 100)}%` : '받는 쪽 확인을 기다리는 중…'; };
 function peerDeny(p, reason = '') {
   p.reply({ type: 'danseo-peer-deny', reason });
   if (PEER.pending === p) PEER.pending = null;
@@ -8204,27 +8219,37 @@ function showPeerRequest() {
   else peerBackupModal(p);
 }
 function peerBackupModal(p) {
-  let sent = false;
+  let sent = false, sending = false;
   const btn = h('button', { class: 'btn primary' }, icon('right', 14), '보내기');
+  const noBtn = h('button', { class: 'btn', onclick: () => m.close() }, '거절');
   const err = h('div', { class: 'hint', style: 'color:var(--danger)' });
+  const st = h('div', { class: 'small muted', role: 'status' });
   btn.addEventListener('click', async () => {
     btn.disabled = true;
     err.textContent = '';
+    sending = true;
+    noBtn.textContent = '멈추기';
     try {
-      await peerSend(p, await backupObject());
+      await peerSend(p, await backupObject(), { aborted: () => !!p.aborted, progress: sendProgress(st) });
       sent = true;
-      for (const c of S.db.cases) addLog(c, 'system', `${p.who}(으)로 전체 데이터 보냄`);
+      for (const c of S.db.cases) addLog(c, 'system', `${p.who}(으)로 전체 데이터 보냄${p.aborted ? ' (멈추기 전에 전송이 끝남)' : ''}`);
       markDirty();
       m.close('sent');
       toast('전체 데이터를 보냈습니다. 받는 쪽에서 가져오기를 마치세요.', { timeout: 5000 });
-    } catch (e) { err.textContent = '실패: ' + (e.message || e); btn.disabled = false; }
+    } catch (e) {
+      if (p.aborted) { toast('전송을 멈췄습니다. 상대는 데이터를 받지 못했습니다.'); return; }
+      st.textContent = '';
+      err.textContent = '보내지 못했습니다: ' + (e.message || e);
+      noBtn.textContent = '거절';
+      btn.disabled = false;
+    } finally { sending = false; }
   });
   const m = modal({ title: '전체 데이터 요청', ic: 'upload', narrow: true, sticky: true, body: [
     h('p', { style: 'margin:0;line-height:1.6' }, `요청한 곳: ${p.who}`, h('br'), `이 브라우저의 사건 ${S.db.cases.length}개와 첨부 ${Object.keys(S.db.attachments).length}개 전체를 요청합니다. 직접 옮기는 중이 아니라면 거절하세요.`),
     codeRow(p.code),
-    h('div', { class: 'hint' }, `양쪽 화면의 확인 코드가 같은지 확인하세요. API 키·TURN 비밀번호는 보내지 않습니다. ${p.secureNote}`), err],
-    foot: [h('button', { class: 'btn', onclick: () => m.close() }, '거절'), btn],
-    onClose: () => { if (!sent && !p.cancelled) peerDeny(p); } });
+    h('div', { class: 'hint' }, `양쪽 화면의 확인 코드가 같은지 확인하세요. API 키·TURN 비밀번호는 보내지 않습니다. ${p.secureNote}`), st, err],
+    foot: [noBtn, btn],
+    onClose: () => { if (sent || p.cancelled) return; if (sending) p.aborted = true; peerDeny(p, sending ? 'aborted' : ''); } });
   p.close = () => m.close('cancelled');
 }
 
@@ -8270,7 +8295,7 @@ async function peerRequest(kind, rawUrl, items = []) {
     else return;
     m.close();
     try { w.close(); } catch (err) { /* noop */ }
-    await peerReceived(kind, payload, from);
+    await peerReceived(kind, payload, d.payload ? `${from} · 암호화 없이 이 주소로만 전달됨` : from);
   };
   window.addEventListener('message', onMsg);
   timer = setInterval(() => {
@@ -8281,7 +8306,7 @@ async function peerRequest(kind, rawUrl, items = []) {
     if (Date.now() - t0 > 15000) status.textContent = '응답이 없습니다. 주소가 맞는지, 그 단서 파일도 이 버전(주소 이전·첨부 요청 기능)인지 확인하세요.';
   }, 600);
   const m = modal({ title: kind === 'atts' ? '다른 주소에서 첨부 받기' : '다른 주소에서 전체 데이터 받기', ic: 'download', narrow: true, sticky: true,
-    body: [h('p', { style: 'margin:0;line-height:1.6' }, `새로 연 창(${truncate(u.href, 80)})에서 요청을 승인하면 데이터가 이 창으로 옵니다. ${kp ? '두 창 사이에서만 암호화(ECDH P-256 · AES-GCM)되어 전달되고' : '이 주소는 보안 컨텍스트가 아니라서 암호화 없이, 이 창의 주소(origin)로만 전달되며'} 어떤 서버도 거치지 않습니다.`),
+    body: [h('p', { style: 'margin:0;line-height:1.6' }, `새로 연 창(${truncate(u.href, 80)})에서 요청을 승인하면 데이터가 이 창으로 옵니다. ${kp ? '상대 창도 보안 컨텍스트면 두 창 사이에서 암호화(ECDH P-256 · AES-GCM)되고, 아니면 암호화 없이 이 창의 주소(origin)로만 전달되며' : '이 주소는 보안 컨텍스트가 아니라서 암호화 없이, 이 창의 주소(origin)로만 전달되며'} 어떤 서버도 거치지 않습니다.`),
       codeRow(pairCode(pub || utf8(reqId))), h('div', { class: 'hint' }, '상대 창에 같은 확인 코드가 보이는지 확인하세요.'), status],
     foot: [h('button', { class: 'btn', onclick: () => m.close() }, '취소')],
     onClose: () => { if (!over) { stop(); try { w.postMessage({ type: 'danseo-peer-cancel', v: 1, reqId }, target); } catch (e) { /* noop */ } } } });
@@ -8312,18 +8337,28 @@ window.addEventListener('message', (e) => {
 
 /* ----- (나) 다른 컴퓨터(다른 IP): WebRTC 데이터 채널 ----- */
 const RTC_STUN = ['stun:stun.cloudflare.com:3478', 'stun:stun.l.google.com:19302'];
-const RTC_CHUNK = 64 * 1024;           // Chrome의 데이터 채널 메시지 한도(256KB)보다 작게
+const RTC_CHUNK = 64 * 1024;             // 조각 크기 — 브라우저의 데이터 채널 메시지 한도(Chrome·Safari 256KB)보다 작게
+const RTC_INLINE = 16 * 1024;            // 이보다 긴 메시지(큰 요청 목록·응답 내용)는 조각으로 나눠 보낸다
+const RTC_REQ_MAX = 8 * 1024 * 1024;     // 승인 전에 받는 요청 메시지 상한
 const RTC_MAX = 2 * 1024 * 1024 * 1024;
+const RTC_RECEIPT_MS = 60000;            // 다 보낸 뒤 받는 쪽 확인을 기다리는 시간
 const RTC = { conns: new Set() };
 const hasRTC = () => typeof RTCPeerConnection === 'function';
-function rtcIceServers() {
-  const s = S.db.settings, list = [];
-  if (s.rtcStun) list.push({ urls: RTC_STUN });
-  for (const line of String(s.rtcIce || '').split('\n')) {
-    const [url, username, credential] = line.trim().split(/\s+/);
-    if (url && /^(stun|stuns|turn|turns):/i.test(url)) list.push(username ? { urls: url, username, credential: credential || '' } : { urls: url });
+// 사용자 ICE 서버: 한 줄에 “주소 [사용자 비밀번호]”. TURN은 사용자·비밀번호가 없으면 브라우저가 연결 자체를 거부하므로 그런 줄은 빼고 알린다
+function rtcIceLines(text) {
+  const servers = [], bad = [];
+  for (const raw of String(text || '').split('\n')) {
+    const line = raw.trim();
+    if (!line) continue;
+    const [url, username, credential] = line.split(/\s+/);
+    if (!/^(stun|stuns|turn|turns):\S+$/i.test(url) || (/^turns?:/i.test(url) && !(username && credential))) { bad.push(line); continue; }
+    servers.push(username ? { urls: url, username, credential: credential || '' } : { urls: url });
   }
-  return list;
+  return { servers, bad };
+}
+function rtcIceServers() {
+  const s = S.db.settings;
+  return [...(s.rtcStun ? [{ urls: RTC_STUN }] : []), ...rtcIceLines(s.rtcIce).servers];
 }
 function rtcOpen() {
   const pc = new RTCPeerConnection({ iceServers: rtcIceServers() });
@@ -8332,6 +8367,12 @@ function rtcOpen() {
 }
 function rtcClose(pc) { if (!pc) return; try { pc.close(); } catch (e) { /* noop */ } RTC.conns.delete(pc); }
 function rtcCloseAll() { for (const pc of [...RTC.conns]) rtcClose(pc); }
+function rtcErrText(e) {
+  const m = String(e?.message || e);
+  if (/username|credential/i.test(m)) return 'TURN 서버에는 사용자와 비밀번호가 필요합니다 (고급 설정을 확인하세요)';
+  if (/ice ?server|urls?\b/i.test(m)) return 'STUN·TURN 서버 주소 형식이 맞지 않습니다 (고급 설정을 확인하세요)';
+  return m;
+}
 const concatBytes = (parts, n) => { const out = new Uint8Array(n); let o = 0; for (const p of parts) { out.set(p, o); o += p.length; } return out; };
 // 연결 코드: SDP를 deflate-raw로 줄여 base64url로. 메신저에 붙여넣기 좋게 한 줄
 async function rtcEncode(desc) {
@@ -8373,11 +8414,12 @@ function rtcGathered(pc, ms = 5000) {
     pc.addEventListener('icegatheringstatechange', on);
   });
 }
-// 확인 코드: 양쪽 DTLS 인증서 지문(SDP a=fingerprint)으로 만든다. 코드를 중간에서 바꿔치기하면 두 화면의 값이 달라진다
+// 확인 코드: 양쪽 DTLS 인증서 지문(SDP a=fingerprint)으로 만든 80비트. 코드를 중간에서 바꿔치기한 사람이
+// 두 화면의 값을 맞추려면 인증서를 2^80번 가까이 바꿔 봐야 하므로, 값이 같으면 직접 연결된 것이다
 const sdpFingerprint = (sdp) => (/^a=fingerprint:(\S+ [0-9A-F:]+)/im.exec(sdp || '')?.[1] || '').toUpperCase();
 function rtcCode(pc) {
   const a = sdpFingerprint(pc.localDescription?.sdp), b = sdpFingerprint(pc.remoteDescription?.sdp);
-  return a && b ? pairCode(utf8([a, b].sort().join('|'))) : '----';
+  return a && b ? pairCode(utf8([a, b].sort().join('|')), 20) : '----';
 }
 async function rtcPeerAddr(pc) {
   try {
@@ -8392,23 +8434,25 @@ async function rtcPeerAddr(pc) {
     return [ip && !/\.local$/i.test(ip) ? ip : '', kind].filter(Boolean).join(' · ');
   } catch (e) { return ''; }
 }
-// 데이터 채널 위의 메시지: 제어 메시지는 JSON 문자열, 응답 내용은 머리(바이트 수) + 64KB 이진 조각들
-function rtcWire(dc, { onControl, onData, onProgress }) {
+// 데이터 채널 위 메시지는 모두 JSON. 짧으면 문자열 하나, 길면 머리({type:'danseo-frame', bytes}) + 64KB 이진 조각.
+// accept(head)가 허용 바이트 수를 돌려줄 때만 조각을 모은다 — 청하지 않은 큰 데이터로 메모리를 채우지 못하게
+function rtcWire(dc, { onMessage, accept, onProgress }) {
   dc.binaryType = 'arraybuffer';
+  dc.bufferedAmountLowThreshold = 1 << 20;
   let inbox = null;
-  const finish = () => { const b = inbox; inbox = null; onData(b.head, concatBytes(b.parts, b.got)); };
+  const valid = (d) => !!d && typeof d === 'object' && d.v === 1 && typeof d.reqId === 'string' && d.reqId.length <= 80;
   dc.addEventListener('message', (e) => {
     if (typeof e.data === 'string') {
+      if (e.data.length > RTC_INLINE * 2) return;
       let d = null;
       try { d = JSON.parse(e.data); } catch (err) { return; }
-      if (!d || typeof d !== 'object' || d.v !== 1 || typeof d.reqId !== 'string' || d.reqId.length > 80) return;
-      if (d.type === 'danseo-peer-res') {
-        if (!Number.isSafeInteger(d.bytes) || d.bytes < 0 || d.bytes > RTC_MAX) return;
-        inbox = { head: d, parts: [], got: 0 };
-        if (!d.bytes) finish();
+      if (!valid(d)) return;
+      if (d.type === 'danseo-frame') {
+        const lim = accept(d);
+        inbox = Number.isSafeInteger(d.bytes) && d.bytes > 0 && lim && d.bytes <= lim ? { head: d, parts: [], got: 0 } : null;
         return;
       }
-      onControl(d);
+      onMessage(d);
       return;
     }
     if (!inbox) return;
@@ -8417,7 +8461,12 @@ function rtcWire(dc, { onControl, onData, onProgress }) {
     inbox.parts.push(chunk);
     inbox.got += chunk.length;
     onProgress?.(inbox.got, inbox.head.bytes);
-    if (inbox.got === inbox.head.bytes) finish();
+    if (inbox.got < inbox.head.bytes) return;
+    const b = inbox;
+    inbox = null;
+    let d = null;
+    try { d = JSON.parse(unutf8(concatBytes(b.parts, b.got))); } catch (err) { d = null; }
+    if (valid(d) && d.reqId === b.head.reqId) onMessage(d);
   });
   const waitLow = () => new Promise((res, rej) => {
     const ok = () => { dc.removeEventListener('close', bad); res(); };
@@ -8425,136 +8474,209 @@ function rtcWire(dc, { onControl, onData, onProgress }) {
     dc.addEventListener('bufferedamountlow', ok, { once: true });
     dc.addEventListener('close', bad, { once: true });
   });
-  return {
-    control(msg) { if (dc.readyState === 'open') dc.send(JSON.stringify({ ...msg, v: 1 })); },
-    async data(head, bytes) {
-      if (dc.readyState !== 'open') throw new Error('연결이 끊겼습니다');
-      dc.bufferedAmountLowThreshold = 1 << 20;
-      dc.send(JSON.stringify({ ...head, v: 1, bytes: bytes.length }));
+  const raw = (x) => { if (dc.readyState !== 'open') throw new Error('연결이 끊겼습니다'); dc.send(x); };
+  const wire = {
+    async send(msg, { aborted, progress } = {}) {
+      const s = JSON.stringify({ ...msg, v: 1 });
+      if (s.length <= RTC_INLINE) { raw(s); return; }
+      const bytes = utf8(s);
+      raw(JSON.stringify({ type: 'danseo-frame', v: 1, reqId: msg.reqId, bytes: bytes.length }));
       for (let i = 0; i < bytes.length; i += RTC_CHUNK) {
         while (dc.bufferedAmount > 8 << 20) await waitLow();
-        if (dc.readyState !== 'open') throw new Error('연결이 끊겼습니다');
-        dc.send(bytes.subarray(i, i + RTC_CHUNK));
+        if (aborted?.()) throw new Error('aborted');
+        raw(bytes.subarray(i, i + RTC_CHUNK));
+        progress?.(Math.min(i + RTC_CHUNK, bytes.length), bytes.length);
       }
     },
+    post(msg) { wire.send(msg).catch(() => { /* 연결이 끊긴 뒤의 알림은 버린다 */ }); },
+    // 버퍼가 다 나갈 때까지(또는 연결이 끊길 때까지) 기다린다
+    async drained() { while (dc.readyState === 'open' && dc.bufferedAmount > 0) await new Promise((r) => setTimeout(r, 200)); },
   };
+  return wire;
 }
 // 연결 설정(공통): 인터넷 너머(STUN) 사용 여부와 사용자 ICE 서버. 두 컴퓨터가 서로의 IP를 알게 된다는 점을 알린다
 function rtcOptions() {
   const s = S.db.settings;
   const stun = switchEl(!!s.rtcStun, '인터넷 너머 연결 (공개 STUN 서버 사용)', (v) => { s.rtcStun = v; markDirty(); });
-  const ice = h('textarea', { class: 'textarea mono', rows: 2, placeholder: 'turn:turn.example.org:3478 사용자 비밀번호\nstun:stun.example.org:3478', style: 'font-size:12px' });
+  const ice = h('textarea', { class: 'textarea mono', rows: 2, placeholder: 'turn:turn.example.org:3478 사용자 비밀번호\nstun:stun.example.org:3478', style: 'font-size:12px', 'aria-label': '내 STUN·TURN 서버' });
   ice.value = s.rtcIce || '';
-  ice.addEventListener('input', () => { s.rtcIce = ice.value.slice(0, 4000); markDirty(); });
-  const adv = h('details', null, h('summary', { class: 'small muted', style: 'cursor:pointer' }, '고급: 내 STUN·TURN 서버'), h('div', { class: 'col', style: 'gap:4px;margin-top:6px' }, ice,
-    h('div', { class: 'hint' }, '한 줄에 하나씩 “주소 [사용자] [비밀번호]”. 회사망처럼 직접 연결이 막힌 곳은 TURN 서버가 필요합니다. 이 값은 백업에 넣지 않습니다.')));
+  const warn = h('div', { class: 'hint', style: 'color:var(--danger)' });
+  const adv = h('details', null, h('summary', { class: 'small muted', style: 'cursor:pointer' }, '고급: 내 STUN·TURN 서버'), h('div', { class: 'col', style: 'gap:4px;margin-top:6px' }, ice, warn,
+    h('div', { class: 'hint' }, '한 줄에 하나씩 “주소 [사용자 비밀번호]” (TURN은 사용자·비밀번호 필수). 회사망처럼 직접 연결이 막힌 곳은 TURN 서버가 필요합니다. 이 값은 백업에 넣지 않습니다.')));
+  const check = () => {
+    const n = rtcIceLines(ice.value).bad.length;
+    warn.textContent = n ? `형식이 맞지 않는 ${n}줄은 쓰지 않습니다. STUN은 “stun:주소:포트”, TURN은 “turn:주소:포트 사용자 비밀번호”로 적으세요.` : '';
+    if (n) adv.open = true; // 저장된 값에 문제가 있으면 접힌 채로 두지 않는다
+  };
+  ice.addEventListener('input', () => { s.rtcIce = ice.value.slice(0, 4000); markDirty(); check(); });
+  check();
   const el = h('div', { class: 'col', style: 'gap:6px' }, stun,
     h('div', { class: 'hint' }, `직접 연결(P2P)이라 두 컴퓨터가 서로의 IP 주소를 알게 됩니다. 같은 네트워크(LAN)면 그대로 이어지고, 다른 네트워크면 양쪽 모두 위 스위치를 켜야 합니다(그때 공개 STUN 서버 ${RTC_STUN.map((x) => x.replace(/^stun:|:\d+$/g, '')).join('·')}에 내 공인 IP가 보입니다). 조사 대상과는 연결하지 마세요.`), adv);
-  el.lock = () => { stun.querySelector('input').disabled = true; ice.disabled = true; };
+  const inp = stun.querySelector('input');
+  el.lock = () => { inp.disabled = true; ice.disabled = true; };
+  el.unlock = () => { inp.disabled = false; ice.disabled = false; };
   return el;
 }
-const rtcFailHint = '연결하지 못했습니다. 다른 네트워크라면 양쪽 모두 “인터넷 너머 연결”을 켜고 코드를 새로 만들어 주고받으세요. 회사망처럼 막힌 네트워크는 TURN 서버가 필요합니다.';
 // 받는 쪽(요청하는 쪽): 연결 코드를 만들어 보내고, 상대가 보낸 응답 코드를 넣으면 이어져 요청을 보낸다
 async function rtcRequest(kind, items = []) {
   if (!hasRTC()) { toast('이 브라우저는 WebRTC 직접 연결을 지원하지 않습니다. 요청 파일이나 백업 파일을 쓰세요.', { err: true, timeout: 6000 }); return; }
-  const reqId = uuid4();
-  let pc = null, wire = null, over = false, from = '다른 컴퓨터';
+  // 받을 수 있는 크기: 요청한 첨부 크기를 모두 알면 그 합(+base64·JSON 여유), 아니면 상한
+  const known = kind === 'atts' && items.length && items.every((it) => it.size > 0);
+  const limit = known ? Math.ceil(items.reduce((a, it) => a + it.size, 0) * 4 / 3) + items.length * 2048 + (1 << 20) : RTC_MAX;
+  let pc = null, wire = null, over = false, reqId = '', asked = false, from = '다른 컴퓨터';
   const opts = rtcOptions();
   const offerOut = h('textarea', { class: 'textarea mono', rows: 3, readOnly: true, placeholder: '“연결 코드 만들기”를 누르세요', style: 'font-size:11.5px', 'aria-label': '연결 코드' });
   const answerIn = h('textarea', { class: 'textarea mono', rows: 3, disabled: true, placeholder: '상대가 보낸 응답 코드(DANSEO-RTC1…)를 붙여넣으세요', style: 'font-size:11.5px', 'aria-label': '응답 코드' });
   const codeBox = h('div', { class: 'col', style: 'gap:4px' });
   const status = h('div', { class: 'small', role: 'status' });
-  const mkBtn = h('button', { class: 'btn sm primary' }, icon('link', 13), '연결 코드 만들기');
+  const mkBtn = h('button', { class: 'btn sm primary', autofocus: true }, icon('link', 13), '연결 코드 만들기');
   const copyBtn = h('button', { class: 'btn sm', disabled: true, onclick: () => copyText(offerOut.value, '연결 코드를 복사했습니다. 상대에게 보내세요.') }, icon('copy', 13), '복사');
   const goBtn = h('button', { class: 'btn sm primary', disabled: true }, icon('right', 13), '연결');
-  const end = () => { over = true; rtcClose(pc); };
-  const onControl = (d) => {
-    if (over || d.reqId !== reqId) return;
-    if (d.type === 'danseo-peer-ack') status.textContent = '상대가 승인하기를 기다립니다… (상대 단서가 잠겨 있으면 먼저 잠금을 풀어야 합니다)';
-    else if (d.type === 'danseo-peer-deny') { end(); m.close(); toast('상대가 요청을 거절했습니다', { err: true }); }
+  // 실패하면 연결을 닫고 처음 상태로 — 설정을 바꿔 그 자리에서 새 코드를 만들 수 있게
+  const reset = (msg) => {
+    rtcClose(pc);
+    pc = null; wire = null; asked = false;
+    offerOut.value = ''; answerIn.value = '';
+    answerIn.disabled = true; goBtn.disabled = true; copyBtn.disabled = true; mkBtn.disabled = false;
+    mkBtn.lastChild.textContent = '연결 코드 다시 만들기';
+    opts.unlock();
+    codeBox.replaceChildren();
+    status.textContent = msg;
   };
-  const onData = async (head, bytes) => {
-    if (over || head.reqId !== reqId) return;
-    end();
-    m.close();
-    let payload = null;
-    try { payload = JSON.parse(unutf8(bytes)); } catch (e) { toast('받은 데이터를 읽지 못했습니다', { err: true }); return; }
-    await peerReceived(kind, payload, from);
+  const finish = () => { over = true; m.close(); const p = pc; setTimeout(() => rtcClose(p), 1500); };
+  const onMessage = async (d) => {
+    if (over || d.reqId !== reqId) return;
+    if (d.type === 'danseo-peer-ack') { status.textContent = '상대가 요청을 확인하는 중입니다… (상대 단서가 잠겨 있으면 먼저 잠금을 풀어야 합니다)'; return; }
+    if (d.type === 'danseo-peer-deny') { finish(); toast(d.reason === 'aborted' ? '상대가 전송을 멈췄습니다' : '상대가 요청을 거절했습니다', { err: true }); return; }
+    if (d.type !== 'danseo-peer-res' || !d.payload || typeof d.payload !== 'object') return;
+    wire.post({ type: 'danseo-peer-done', reqId }); // 받았다는 확인 — 보낸 쪽은 이것을 받아야 “보냄”으로 기록한다
+    finish();
+    await peerReceived(kind, d.payload, from);
   };
   mkBtn.addEventListener('click', async () => {
     mkBtn.disabled = true;
     opts.lock();
     status.textContent = '연결 코드를 만드는 중… (네트워크 후보 수집, 최대 5초)';
+    reqId = uuid4();
     try {
-      pc = rtcOpen();
+      const mine = pc = rtcOpen();
       const dc = pc.createDataChannel('danseo', { ordered: true });
-      wire = rtcWire(dc, { onControl, onData, onProgress: (got, total) => { status.textContent = `받는 중… ${fmtBytes(got)} / ${fmtBytes(total)}`; } });
+      wire = rtcWire(dc, { onMessage, accept: (head) => (asked && head.reqId === reqId ? limit : 0), onProgress: (got, total) => { status.textContent = `받는 중… ${fmtBytes(got)} / ${fmtBytes(total)}`; } });
       dc.addEventListener('open', async () => {
-        const addr = await rtcPeerAddr(pc);
+        const addr = await rtcPeerAddr(mine);
+        if (pc !== mine) return;
         from = `다른 컴퓨터${addr ? `(${addr})` : ''}`;
-        codeBox.replaceChildren(codeRow(rtcCode(pc)), h('div', { class: 'hint' }, `연결됨${addr ? ` · 상대 ${addr}` : ''}. 상대 화면의 확인 코드가 같은지 전화·메신저로 확인하세요.`));
-        status.textContent = '요청을 보냈습니다. 상대가 승인하기를 기다립니다…';
-        wire.control({ type: 'danseo-peer-req', kind, reqId, from: S.db.settings.analyst || '', case: C()?.title || '', items });
+        codeBox.replaceChildren(codeRow(rtcCode(mine)), h('div', { class: 'hint' }, `연결됨${addr ? ` · 상대 ${addr}` : ''}. 상대 화면의 확인 코드가 같은지 전화·메신저로 확인하세요.`));
+        status.textContent = '요청을 보내는 중…';
+        asked = true;
+        try {
+          await wire.send({ type: 'danseo-peer-req', kind, reqId, from: S.db.settings.analyst || '', case: C()?.title || '', items });
+          if (pc === mine && status.textContent === '요청을 보내는 중…') status.textContent = '요청을 보냈습니다. 상대가 승인하기를 기다립니다…';
+        } catch (e) { if (pc === mine && !over) reset('요청을 보내지 못했습니다: ' + rtcErrText(e)); }
       });
-      dc.addEventListener('close', () => { if (!over) { end(); status.textContent = '연결이 끊겼습니다.'; } });
-      pc.addEventListener('connectionstatechange', () => { if (!over && pc.connectionState === 'failed') status.textContent = rtcFailHint; });
+      dc.addEventListener('close', () => { if (pc === mine && !over) reset('연결이 끊겼습니다. 다시 하려면 “연결 코드 다시 만들기”로 새 코드를 주고받으세요.'); });
+      pc.addEventListener('connectionstatechange', () => {
+        if (pc !== mine || over) return;
+        if (mine.connectionState === 'failed') reset(asked ? '연결이 끊겼습니다. 다시 하려면 “연결 코드 다시 만들기”로 새 코드를 주고받으세요.'
+          : '연결하지 못했습니다. 다른 네트워크라면 양쪽 모두 “인터넷 너머 연결”을 켠 뒤 “연결 코드 다시 만들기”로 새 코드를 주고받으세요. 회사망처럼 막힌 네트워크는 TURN 서버가 필요합니다.');
+      });
       await pc.setLocalDescription(await pc.createOffer());
       await rtcGathered(pc);
+      if (pc !== mine) return;
       offerOut.value = await rtcEncode(pc.localDescription);
       copyBtn.disabled = false; answerIn.disabled = false; goBtn.disabled = false;
       status.textContent = /\na=candidate:/.test(pc.localDescription.sdp) ? '① 연결 코드를 상대에게 보내고 ② 상대가 보낸 응답 코드를 아래에 붙여넣은 뒤 “연결”을 누르세요.' : '네트워크 후보를 찾지 못했습니다. 네트워크 연결을 확인하세요.';
-    } catch (e) { status.textContent = '연결 코드를 만들지 못했습니다: ' + (e.message || e); }
+    } catch (e) { reset('연결 코드를 만들지 못했습니다: ' + rtcErrText(e)); }
   });
   goBtn.addEventListener('click', async () => {
+    if (!pc || goBtn.disabled) return;
+    goBtn.disabled = true;
     try {
       await pc.setRemoteDescription(await rtcDecode(answerIn.value, 'answer'));
-      goBtn.disabled = true; answerIn.disabled = true;
+      answerIn.disabled = true;
       status.textContent = '연결하는 중…';
-    } catch (e) { status.textContent = '응답 코드를 쓸 수 없습니다: ' + (e.message || e); }
+    } catch (e) { goBtn.disabled = false; status.textContent = '응답 코드를 쓸 수 없습니다: ' + rtcErrText(e); }
   });
   const m = modal({ title: kind === 'atts' ? '다른 컴퓨터에서 첨부 받기' : '다른 컴퓨터에서 전체 데이터 받기', ic: 'download', sticky: true,
     body: [h('p', { style: 'margin:0;line-height:1.6' }, '다른 컴퓨터(다른 IP)의 단서와 직접 연결해 받습니다. 연결 코드를 메신저 등으로 보내면 상대는 단서의 “연결 코드로 응답”에 붙여넣고 응답 코드를 돌려줍니다. 서버를 거치지 않고, 내용은 WebRTC(DTLS)로 암호화되며, 상대가 승인해야 보내집니다.'),
       opts, h('div', { class: 'row' }, mkBtn, copyBtn), offerOut, answerIn, h('div', { class: 'row' }, goBtn), codeBox, status],
     foot: [h('button', { class: 'btn', onclick: () => m.close() }, '취소')],
-    onClose: () => { if (over) return; over = true; try { wire?.control({ type: 'danseo-peer-cancel', reqId }); } catch (e) { /* noop */ } setTimeout(() => rtcClose(pc), 300); } });
+    onClose: () => {
+      if (over) return;
+      over = true;
+      if (wire && asked) wire.post({ type: 'danseo-peer-cancel', reqId });
+      const p = pc;
+      setTimeout(() => rtcClose(p), 300);
+    } });
 }
 // 보내는 쪽(요청에 응답하는 쪽): 받은 연결 코드를 넣어 응답 코드를 만들고, 이어지면 요청을 승인 창으로 넘긴다
 function rtcRespondDialog() {
   if (!hasRTC()) { toast('이 브라우저는 WebRTC 직접 연결을 지원하지 않습니다. 요청 파일이나 백업 파일을 쓰세요.', { err: true, timeout: 6000 }); return; }
   let pc = null, handed = false;
   const opts = rtcOptions();
-  const offerIn = h('textarea', { class: 'textarea mono', rows: 3, placeholder: '상대가 보낸 연결 코드(DANSEO-RTC1…)를 붙여넣으세요', style: 'font-size:11.5px', 'aria-label': '연결 코드' });
+  const offerIn = h('textarea', { class: 'textarea mono', rows: 3, autofocus: true, placeholder: '상대가 보낸 연결 코드(DANSEO-RTC1…)를 붙여넣으세요', style: 'font-size:11.5px', 'aria-label': '연결 코드' });
   const answerOut = h('textarea', { class: 'textarea mono', rows: 3, readOnly: true, placeholder: '응답 코드가 여기에 나옵니다', style: 'font-size:11.5px', 'aria-label': '응답 코드' });
   const status = h('div', { class: 'small', role: 'status' });
   const codeBox = h('div', { class: 'col', style: 'gap:4px' });
   const mkBtn = h('button', { class: 'btn sm primary' }, icon('link', 13), '응답 코드 만들기');
   const copyBtn = h('button', { class: 'btn sm', disabled: true, onclick: () => copyText(answerOut.value, '응답 코드를 복사했습니다. 상대에게 보내세요.') }, icon('copy', 13), '복사');
-  const attach = (dc) => {
+  const reset = (msg) => {
+    rtcClose(pc);
+    pc = null;
+    offerIn.disabled = false; offerIn.value = ''; answerOut.value = '';
+    mkBtn.disabled = false; copyBtn.disabled = true;
+    opts.unlock();
+    codeBox.replaceChildren();
+    status.textContent = msg;
+  };
+  const attach = (mine, dc) => {
+    let receipt = null; // 보낸 내용을 받는 쪽이 확인할 때까지 기다리는 약속
+    const broken = (why) => {
+      receipt?.rej(new Error(why));
+      receipt = null;
+      const p = PEER.pending;
+      if (p?.pc === mine) peerCancelled(p.reqId, '상대와 연결이 끊겼습니다');
+      setTimeout(() => rtcClose(mine), 0);
+    };
     const wire = rtcWire(dc, {
-      onControl: async (d) => {
+      // 승인 전에는 요청 메시지 크기까지만 조각을 받는다. 넘겨준 뒤에는 아무것도 받지 않는다 (응답하는 쪽은 내용을 받을 일이 없다)
+      accept: () => (handed ? 0 : RTC_REQ_MAX),
+      onMessage: async (d) => {
         if (d.type === 'danseo-peer-cancel') { peerCancelled(d.reqId, '상대가 요청을 취소했습니다'); return; }
-        if (d.type !== 'danseo-peer-req') return;
-        const addr = await rtcPeerAddr(pc);
+        if (d.type === 'danseo-peer-done') { receipt?.res(); receipt = null; return; }
+        if (d.type !== 'danseo-peer-req' || handed) return; // 연결 하나에 요청 하나
         handed = true;
+        const addr = await rtcPeerAddr(mine);
         m.close();
         peerIncoming(d, {
-          pc, reply: (msg) => wire.control({ ...msg, reqId: d.reqId }), who: `다른 컴퓨터${addr ? `(${addr})` : ''}의 단서`, code: rtcCode(pc), canSend: true,
+          pc: mine, reply: (msg) => wire.post({ ...msg, reqId: d.reqId }), who: `다른 컴퓨터${addr ? `(${addr})` : ''}의 단서`, code: rtcCode(mine), canSend: true,
           secureNote: '데이터는 두 컴퓨터 사이에서 WebRTC(DTLS)로 암호화되어 전달됩니다.',
-          send: (payload) => wire.data({ type: 'danseo-peer-res', reqId: d.reqId }, utf8(JSON.stringify(payload))),
+          // 다 보낸 뒤 버퍼가 비고, 받는 쪽이 “받음”을 알려 와야 끝난다. 연결이 끊기거나 확인이 오지 않으면 실패로 본다
+          send: async (payload, o = {}) => {
+            // 연결이 끊기면(broken) 곧바로 실패 — Chrome은 상대가 사라져도 채널을 'open'으로 둔 채 버퍼를 쌓아 두므로 버퍼만 기다리면 끝나지 않는다
+            let dead = null;
+            const lost = new Promise((res, rej) => { dead = rej; });
+            const got = new Promise((res, rej) => { receipt = { res, rej: (e) => { rej(e); dead(e); } }; });
+            lost.catch(() => { /* 아래 race에서 처리 */ });
+            got.catch(() => { /* 아래 race에서 처리 */ });
+            await Promise.race([wire.send({ type: 'danseo-peer-res', reqId: d.reqId, payload }, o), lost]);
+            await Promise.race([wire.drained(), lost]);
+            o.progress?.(1, 1);
+            let t = null;
+            try { await Promise.race([got, new Promise((res, rej) => { t = setTimeout(() => rej(new Error('받는 쪽 확인이 오지 않았습니다')), RTC_RECEIPT_MS); })]); }
+            finally { clearTimeout(t); }
+          },
         });
       },
-      onData: () => { /* 응답하는 쪽은 내용을 받지 않는다 */ },
     });
     dc.addEventListener('open', async () => {
-      const addr = await rtcPeerAddr(pc);
-      codeBox.replaceChildren(codeRow(rtcCode(pc)));
+      const addr = await rtcPeerAddr(mine);
+      if (pc !== mine || handed) return;
+      codeBox.replaceChildren(codeRow(rtcCode(mine)));
       status.textContent = `연결됨${addr ? ` · 상대 ${addr}` : ''}. 상대의 요청을 기다립니다…`;
     });
-    dc.addEventListener('close', () => {
-      const p = PEER.pending;
-      if (p?.pc === pc) peerCancelled(p.reqId, '상대와 연결이 끊겼습니다');
-      setTimeout(() => rtcClose(pc), 0);
-    });
+    dc.addEventListener('close', () => { if (handed) broken('연결이 끊겼습니다'); else if (pc === mine) reset('연결이 끊겼습니다. 상대에게 새 연결 코드를 받아 다시 붙여넣으세요.'); });
+    mine.addEventListener('connectionstatechange', () => { if (handed && ['failed', 'closed'].includes(mine.connectionState)) broken('연결이 끊겼습니다'); });
   };
   mkBtn.addEventListener('click', async () => {
     let offer;
@@ -8563,19 +8685,22 @@ function rtcRespondDialog() {
     opts.lock();
     status.textContent = '응답 코드를 만드는 중… (네트워크 후보 수집, 최대 5초)';
     try {
-      pc = rtcOpen();
-      pc.addEventListener('datachannel', (e) => attach(e.channel));
-      pc.addEventListener('connectionstatechange', () => { if (!handed && pc.connectionState === 'failed') status.textContent = rtcFailHint; });
+      const mine = pc = rtcOpen();
+      pc.addEventListener('datachannel', (e) => attach(mine, e.channel));
+      pc.addEventListener('connectionstatechange', () => {
+        if (pc === mine && !handed && mine.connectionState === 'failed') reset('연결하지 못했습니다. 다른 네트워크라면 양쪽 모두 “인터넷 너머 연결”을 켠 뒤, 상대에게 새 연결 코드를 받아 다시 붙여넣으세요. 회사망처럼 막힌 네트워크는 TURN 서버가 필요합니다.');
+      });
       await pc.setRemoteDescription(offer);
       await pc.setLocalDescription(await pc.createAnswer());
       await rtcGathered(pc);
+      if (pc !== mine) return;
       answerOut.value = await rtcEncode(pc.localDescription);
       copyBtn.disabled = false;
       status.textContent = '응답 코드를 상대에게 보내세요. 상대가 넣으면 연결되고, 요청 내용을 확인한 뒤 승인할 수 있습니다.';
-    } catch (e) { status.textContent = '응답 코드를 만들지 못했습니다: ' + (e.message || e); }
+    } catch (e) { reset('응답 코드를 만들지 못했습니다: ' + rtcErrText(e)); }
   });
   const m = modal({ title: '다른 컴퓨터의 요청에 응답 (연결 코드)', ic: 'upload', sticky: true,
-    body: [h('p', { style: 'margin:0;line-height:1.6' }, '다른 컴퓨터(다른 IP)의 단서가 보낸 연결 코드를 붙여넣고 응답 코드를 돌려주면 직접 연결됩니다. 이어진 뒤 상대가 무엇을 요청하는지 보여 주고, 승인해야 보냅니다.'),
+    body: [h('p', { style: 'margin:0;line-height:1.6' }, '다른 컴퓨터(다른 IP)의 단서가 보낸 연결 코드를 붙여넣고 응답 코드를 돌려주면 직접 연결됩니다. 이어진 뒤 상대가 무엇을 요청하는지 보여 주고, 승인해야 보냅니다. 응답 코드를 만드는 순간 상대 컴퓨터와 서로의 네트워크 주소가 오가니, 아는 사람이 보낸 코드만 넣으세요.'),
       opts, offerIn, h('div', { class: 'row' }, mkBtn, copyBtn), answerOut, codeBox, status],
     foot: [h('button', { class: 'btn', onclick: () => m.close() }, '닫기')],
     onClose: () => { if (!handed) rtcClose(pc); } });
@@ -8720,7 +8845,7 @@ VIEW_FN.settings = (root) => {
       row('피벗 링크 기록', '피벗 링크를 누를 때마다 활동 기록에 “서비스 ← 값”을 남겨 조사 방법을 문서화합니다', switchEl(s.logPivots, '', (v) => set('logPivots', v), 'set-logpivot')),
       row('암호화 안내 배너', '상단의 암호화 권유 배너를 다시 표시합니다', h('button', { class: 'btn sm', onclick: () => { s.hideEncBanner = false; markDirty(); renderBanners(); } }, '다시 표시'))),
     apiSettingsSection(row),
-    sec('데이터', '데이터는 이 브라우저·이 파일을 연 주소(origin)에 묶입니다. 다른 브라우저나 기기로 옮길 때는 백업 파일을, 같은 컴퓨터에서 파일 위치·주소만 바뀌었다면 “다른 주소에서 가져오기”를 쓰세요.',
+    sec('데이터', '데이터는 이 브라우저·이 파일을 연 주소(origin)에 묶입니다. 다른 브라우저나 기기로 옮길 때는 백업 파일을, 파일 위치·주소·IP가 바뀌었다면 “다른 주소·다른 컴퓨터에서 가져오기”를 쓰세요.',
       row('저장 공간', null, h('div', { class: 'row' }, storeInfo, persistBtn)),
       row('전체 백업', '모든 사건과 첨부를 JSON 한 파일로 (비밀번호 암호화 선택)', h('div', { class: 'row' }, h('button', { class: 'btn sm', onclick: fullBackup }, icon('download', 13), '내보내기'), h('button', { class: 'btn sm', onclick: importDialog }, icon('upload', 13), '가져오기'))),
       row('다른 주소·다른 컴퓨터에서 가져오기', '파일을 다른 폴더·도메인·포트·IP로 옮겨 데이터가 안 보일 때, 예전 단서에서 사건·첨부 전체를 바로 옮겨 옵니다. 같은 컴퓨터는 주소만 넣으면 되고, 다른 컴퓨터는 연결 코드로 직접(P2P) 연결합니다', h('button', { class: 'btn sm', id: 'set-peer', onclick: peerImportDialog }, icon('upload', 13), '가져오기')),
