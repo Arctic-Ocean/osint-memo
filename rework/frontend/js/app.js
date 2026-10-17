@@ -13,6 +13,7 @@ const S = {
   aiCfg: null,
   sideView: "functions",
   focusAddr: null,
+  dbg: { active: false, state: null, regs: [], prevRegs: {}, stack: [], locals: [], breaks: [], disasm: [] },
 };
 
 // ---- DOM 헬퍼 -----------------------------------------------------------
@@ -96,6 +97,7 @@ const ICON = {
   imports: '<path d="M12 3v10m0 0-4-4m4 4 4-4M5 17v2a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-2"/>',
   bookmarks: '<path d="M6 3h12v18l-6-4-6 4V3Z"/>',
   script: '<path d="m8 8-4 4 4 4M16 8l4 4-4 4M13 5l-2 14"/>',
+  debug: '<rect x="8" y="7" width="8" height="11" rx="4"/><path d="M12 7V4m-4 6H3m18 0h-5M6 5l2 2m10-2-2 2M5 19l2-2m12 2-2-2M9 10h6"/>',
   ai: '<path d="M12 3a4 4 0 0 1 4 4v1a4 4 0 0 1 0 8v1a4 4 0 0 1-8 0v-1a4 4 0 0 1 0-8V7a4 4 0 0 1 4-4Z"/><circle cx="9.5" cy="10" r="1"/><circle cx="14.5" cy="10" r="1"/>',
   settings: '<circle cx="12" cy="12" r="3"/><path d="M12 2v3m0 14v3M2 12h3m14 0h3M5 5l2 2m10 10 2 2M19 5l-2 2M7 17l-2 2"/>',
 };
@@ -113,7 +115,8 @@ function setSideView(v) {
   S.sideView = v;
   $$("#activitybar .act").forEach((b) => b.classList.toggle("active", b.dataset.view === v));
   const titles = { open: "열기", functions: "함수", strings: "문자열", symbols: "심볼",
-                   imports: "임포트 / 익스포트", bookmarks: "북마크", script: "스크립트 콘솔", settings: "설정" };
+                   imports: "임포트 / 익스포트", bookmarks: "북마크", script: "스크립트 콘솔",
+                   debug: "디버그", settings: "설정" };
   $("#side-title").textContent = titles[v] || v;
   $("#side-count").textContent = "";
   renderSide(v);
@@ -213,7 +216,7 @@ function renderSide(v) {
   }
   ({ open: renderOpen, functions: renderFunctions, strings: renderStrings,
      symbols: renderSymbols, imports: renderImports, bookmarks: renderBookmarks,
-     script: renderScript, settings: renderSettings }[v] || (() => {}))();
+     script: renderScript, debug: renderDebugSidebar, settings: renderSettings }[v] || (() => {}))();
 }
 
 function searchList(onSearch, placeholder) {
@@ -382,7 +385,7 @@ function renderTabs() {
   const bar = $("#tabs"); bar.innerHTML = "";
   S.tabs.forEach((t, i) => {
     const f = S.funcByAddr.get(t.addr);
-    const name = (f && f.name) || hx(t.addr);
+    const name = t.kind === "debug" ? "⬤ 디버거" : (f && f.name) || hx(t.addr);
     const tab = el("div", { class: "tab" + (i === S.active ? " active" : "") },
       el("span", { class: "tab-name" }, name),
       el("button", { class: "tab-x", title: "닫기", onclick: (e) => { e.stopPropagation(); closeTab(t.addr); } }, "×"));
@@ -401,6 +404,34 @@ async function renderEditor() {
     return;
   }
   ed.innerHTML = "";
+  if (tab.kind === "debug") {
+    const tb = el("div", { class: "view-toolbar" });
+    const st = S.dbg.state || {};
+    const statusText = { stopped: "중단됨", running: "실행 중", exited: "종료됨" }[st.status] || st.status || "";
+    const mk = (label, title, action, dis) => el("button", { class: "vt-btn", title,
+      disabled: dis ? "" : null, onclick: () => dbgDo(action) }, label);
+    const run = st.status === "running", dead = st.status === "exited";
+    tb.append(
+      mk("▶ 계속", "F5", "continue", run || dead),
+      mk("⤼ 한 줄", "F10", "next", run || dead),
+      mk("↓ 스텝", "F11", "step", run || dead),
+      mk("» 명령", "stepi", "stepi", run || dead),
+      mk("⤴ 함수끝", "Shift+F11", "finish", run || dead),
+      mk("⏸ 멈춤", "실행 중 멈춤", "interrupt", !run),
+      el("span", { class: "vt-title" }, "디버거"),
+      el("span", { class: "vt-spacer" }),
+      el("span", { class: "dbg-badge " + (st.status || "") }, statusText +
+        (st.frame ? ` · ${st.frame.func || ""} @ ${st.frame.addr || ""}` : "")),
+      el("button", { class: "vt-btn", onclick: () => dbgStop() }, "⏹ 정지"));
+    ed.append(tb);
+    const view = el("div", { style: "flex:1 1 auto;min-height:0;overflow:hidden;display:flex" });
+    ed.append(view);
+    renderDebuggerWorkspace(view);
+    ed.style.display = "flex"; ed.style.flexDirection = "column";
+    $("#sb-addr").textContent = st.frame ? st.frame.addr : "";
+    return;
+  }
+  ed.style.display = ""; ed.style.flexDirection = "";
   const toolbar = el("div", { class: "view-toolbar" });
   const seg = el("div", { class: "seg" });
   for (const [m, label] of [["decompile", "의사코드"], ["disasm", "디스어셈블리"], ["hex", "헥스"]]) {
@@ -622,6 +653,8 @@ const COMMANDS = [
   { id: "ai", icon: "🤖", title: "AI 채팅 열기/닫기", run: toggleAI },
   { id: "ai-settings", icon: "⚙", title: "AI 설정", run: openAISettings },
   { id: "script", icon: "⌨", title: "스크립트 콘솔", run: () => setSideView("script") },
+  { id: "debug", icon: "⬤", title: "디버깅 시작 (F5)", run: () => { setSideView("debug"); if (!S.dbg.active) dbgStart(); } },
+  { id: "debug-stop", icon: "⏹", title: "디버깅 정지", run: () => dbgStop() },
   { id: "strings", icon: "❝", title: "문자열 보기", run: () => setSideView("strings") },
   { id: "goto", icon: "⌖", title: "주소로 이동…", run: async () => {
       const v = await prompt1("주소로 이동", "예: 0x1189"); if (v) navigate(parseInt(v, v.startsWith("0x") ? 16 : 16)); } },
@@ -737,11 +770,286 @@ async function openAISettings() {
   if (S.sideView === "settings") renderSettings();
 }
 
+// ---- 디버거 (동적 분석) ------------------------------------------------
+const DBG_TAB = "__debugger__";
+let dbgPoll = null;
+
+function renderDebugSidebar() {
+  const body = $("#side-body"); body.innerHTML = "";
+  if (!S.info) { body.append(el("div", { class: "empty-list" }, "먼저 바이너리를 여세요.")); return; }
+  body.append(el("div", { class: "dbg-warn" },
+    "⚠ 디버깅은 대상 바이너리를 이 컴퓨터에서 실제로 실행합니다. 신뢰할 수 없는 파일은 격리된 VM에서 여세요."));
+  const d = S.dbg;
+  if (!d.active) {
+    const wrap = el("div", { class: "dbg-start" });
+    wrap.append(el("label", {}, "실행 인자 (선택)"));
+    const args = el("input", { id: "dbg-args", type: "text", placeholder: "예: input.bin --verbose" });
+    wrap.append(args);
+    wrap.append(el("button", { class: "primary", style: "margin-top:8px;width:100%",
+      onclick: () => dbgStart() }, "▶ 디버깅 시작"));
+    wrap.append(el("div", { class: "dbg-hint" },
+      "시작하면 main에 중단점이 설정됩니다. 함수 목록·라이브 디스어셈블리에서 중단점을 추가하세요."));
+    body.append(wrap);
+    return;
+  }
+  // 상태
+  const st = d.state || {};
+  const statusText = { stopped: "중단됨", running: "실행 중", exited: "종료됨", loaded: "로드됨" }[st.status] || st.status;
+  const sline = el("div", { class: "dbg-status " + (st.status || "") },
+    el("b", {}, statusText),
+    st.stop_reason ? el("span", {}, " · " + st.stop_reason) : null,
+    st.frame ? el("span", { class: "dbg-frame" }, ` · ${st.frame.func || ""} @ ${st.frame.addr || ""}`) : null,
+    st.status === "exited" && st.exit_code != null ? el("span", {}, ` · 종료코드 ${st.exit_code}`) : null);
+  body.append(sline);
+  // 실행 제어
+  const bar = el("div", { class: "dbg-controls" });
+  const btn = (label, title, action, disabled) => el("button",
+    { class: "dbg-ctl", title, disabled: disabled ? "" : null, onclick: () => dbgDo(action) }, label);
+  const running = st.status === "running";
+  const dead = st.status === "exited";
+  bar.append(
+    btn("▶", "계속 (F5)", "continue", running || dead),
+    btn("⤼", "한 줄 넘어 (F10)", "next", running || dead),
+    btn("↓", "한 줄 안으로 (F11)", "step", running || dead),
+    btn("»", "명령 단위 (stepi)", "stepi", running || dead),
+    btn("⤴", "함수 끝까지 (Shift+F11)", "finish", running || dead),
+    btn("⏸", "멈춤", "interrupt", !running),
+    el("button", { class: "dbg-ctl stop", title: "정지 (Shift+F5)", onclick: () => dbgStop() }, "⏹"));
+  body.append(bar);
+  // 콜 스택
+  body.append(el("div", { class: "side-head", style: "border-top:none" }, "콜 스택"));
+  if (!d.stack.length) body.append(el("div", { class: "empty-list", style: "padding:8px 12px" }, "—"));
+  for (const f of d.stack) {
+    body.append(el("div", { class: "list-item", onclick: () => f.addr && openDebuggerTab() },
+      el("span", { class: "li-addr" }, f.level), el("span", { class: "li-name" }, f.func || f.addr),
+      f.line ? el("span", { class: "li-sub" }, `:${f.line}`) : null));
+  }
+  // 중단점
+  const bhead = el("div", { class: "side-head" }, "중단점",
+    el("button", { class: "mini-btn", title: "함수/위치로 추가", onclick: dbgAddBreakPrompt }, "+"));
+  body.append(bhead);
+  if (!d.breaks.length) body.append(el("div", { class: "empty-list", style: "padding:8px 12px" }, "없음"));
+  for (const b of d.breaks) {
+    const row = el("div", { class: "bp-item" },
+      el("input", { type: "checkbox", ...(b.enabled ? { checked: "" } : {}),
+        onchange: () => api.dbgBreak({ op: "toggle", number: b.number, enable: !b.enabled }).then(dbgRefresh) }),
+      el("span", { class: "li-addr" }, b.addr ? b.addr.slice(-8) : ""),
+      el("span", { class: "li-name", onclick: () => openDebuggerTab() }, b.func || b.what || b.line || "?"),
+      el("button", { class: "bp-del", title: "삭제",
+        onclick: () => api.dbgBreak({ op: "delete", number: b.number }).then(dbgRefresh) }, "×"));
+    body.append(row);
+  }
+}
+
+async function dbgStart() {
+  const args = ($("#dbg-args") && $("#dbg-args").value.trim()) || "";
+  setMsg("디버거 시작 중…");
+  try {
+    await api.dbgStart(["main"]);
+    S.dbg.active = true;
+    S.dbg.argsCache = args;
+    // main 중단점까지 실행
+    await api.dbgExec("run", args);
+    await dbgRefresh();
+    openDebuggerTab();
+    showPanel("debugcon");
+    toast("디버깅 시작 — main 중단", "ok");
+  } catch (err) { toast("디버거 시작 실패: " + err.message, "err"); setMsg(""); S.dbg.active = false; }
+}
+async function dbgStop() {
+  stopDbgPoll();
+  try { await api.dbgStop(); } catch {}
+  S.dbg = { active: false, state: null, regs: [], prevRegs: {}, stack: [], locals: [], breaks: [], disasm: [] };
+  if (S.sideView === "debug") renderDebugSidebar();
+  closeTab(DBG_TAB);
+  setMsg("디버깅 종료");
+}
+async function dbgDo(action) {
+  setMsg(`디버거: ${action}…`);
+  try {
+    const r = await api.dbgExec(action, S.dbg.argsCache || "");
+    S.dbg.state = r.state;
+    await dbgRefresh();
+    if (r.state.status === "running") startDbgPoll();
+    else { stopDbgPoll(); if (r.state.status === "exited") toast("프로그램 종료 (코드 " + (r.state.exit_code ?? "?") + ")", "ok"); }
+  } catch (err) { toast("디버그 실패: " + err.message, "err"); }
+  setMsg("");
+}
+function startDbgPoll() {
+  stopDbgPoll();
+  dbgPoll = setInterval(async () => {
+    try {
+      const r = await api.dbgState();
+      if (r.state.status !== "running") { stopDbgPoll(); await dbgRefresh(); }
+      else { await dbgRefreshOutput(); }
+    } catch { stopDbgPoll(); }
+  }, 700);
+}
+function stopDbgPoll() { if (dbgPoll) { clearInterval(dbgPoll); dbgPoll = null; } }
+
+async function dbgRefresh() {
+  try {
+    const s = await api.dbgState(); S.dbg.state = s.state;
+    if (s.state.status === "stopped") {
+      const [regs, stack, locals, breaks, dis] = await Promise.all([
+        api.dbgRegs().catch(() => ({ registers: [] })),
+        api.dbgStack().catch(() => ({ stack: [] })),
+        api.dbgLocals().catch(() => ({ variables: [] })),
+        api.dbgBreaks().catch(() => []),
+        api.dbgDisasm().catch(() => ({ instructions: [] })),
+      ]);
+      S.dbg.prevRegs = {}; for (const r of S.dbg.regs) S.dbg.prevRegs[r.name] = r.value;
+      S.dbg.regs = regs.registers || [];
+      S.dbg.stack = stack.stack || [];
+      S.dbg.locals = locals.variables || [];
+      S.dbg.breaks = Array.isArray(breaks) ? breaks : [];
+      S.dbg.disasm = dis.instructions || [];
+    } else if (s.state.status === "exited") {
+      try { S.dbg.breaks = await api.dbgBreaks(); } catch {}
+    }
+  } catch (err) { /* 세션 종료됨 */ }
+  if (S.sideView === "debug") renderDebugSidebar();
+  if (curTab() && curTab().addr === DBG_TAB) renderEditor();
+  await dbgRefreshOutput();
+  syncStaticRip();
+}
+async function dbgRefreshOutput() {
+  try {
+    const o = await api.dbgOutput(false);
+    const panel = $("#panel-debugcon");
+    if (panel && panel.dataset.rendered) {
+      const pre = $("#dbgcon-out");
+      if (pre) { pre.textContent = (o.target || "") + (o.console ? "\n" + o.console : ""); pre.scrollTop = pre.scrollHeight; }
+    }
+  } catch {}
+}
+
+async function dbgAddBreakPrompt() {
+  const v = await prompt1("중단점 추가", "함수 이름 또는 위치 (예: main, check, *0x1189, file.c:42)");
+  if (!v) return;
+  try { await api.dbgBreak({ op: "add", location: v }); await dbgRefresh(); }
+  catch (err) { toast("중단점 실패: " + err.message, "err"); }
+}
+async function dbgToggleBreakAt(addr) {
+  // 라이브 디스어셈블리에서 런타임 주소에 중단점 토글
+  const existing = S.dbg.breaks.find((b) => b.addr && parseInt(b.addr, 16) === parseInt(addr, 16));
+  try {
+    if (existing) await api.dbgBreak({ op: "delete", number: existing.number });
+    else await api.dbgBreak({ op: "add", location: "*" + addr });
+    await dbgRefresh();
+  } catch (err) { toast("중단점 실패: " + err.message, "err"); }
+}
+
+function openDebuggerTab() {
+  let i = tabIndex(DBG_TAB);
+  if (i < 0) { S.tabs.push({ addr: DBG_TAB, kind: "debug" }); i = S.tabs.length - 1; }
+  S.active = i; renderTabs(); renderEditor();
+}
+
+function renderDebuggerWorkspace(ed) {
+  ed.innerHTML = "";
+  const d = S.dbg;
+  const st = d.state || {};
+  const wrap = el("div", { class: "dbgws" });
+  // 좌: 라이브 디스어셈블리
+  const left = el("div", { class: "dbgws-disasm" });
+  left.append(el("div", { class: "dbgws-head" }, "라이브 디스어셈블리 (현재 $pc)"));
+  const curAddr = st.frame && st.frame.addr ? parseInt(st.frame.addr, 16) : null;
+  const bpAddrs = new Set(d.breaks.filter((b) => b.addr).map((b) => parseInt(b.addr, 16)));
+  if (!d.disasm.length) left.append(el("div", { class: "empty-list" }, st.status === "exited" ? "프로그램이 종료되었습니다." : "중단 상태가 아닙니다."));
+  for (const ins of d.disasm) {
+    const a = parseInt(ins.addr, 16);
+    const isCur = curAddr != null && a === curAddr;
+    const hasBp = bpAddrs.has(a);
+    const row = el("div", { class: "dbg-ins" + (isCur ? " cur" : ""), title: "클릭: 중단점 토글",
+      onclick: () => dbgToggleBreakAt(ins.addr) });
+    row.innerHTML =
+      `<span class="dbg-bp ${hasBp ? "on" : ""}">●</span>` +
+      `<span class="dbg-arrow">${isCur ? "▶" : ""}</span>` +
+      `<span class="a">${esc((ins.addr || "").replace(/^0x0*/, ""))}</span>` +
+      `<span class="o">${esc(ins.inst || "")}</span>` +
+      (ins.func ? `<span class="dbg-fn">${esc(ins.func)}${ins.offset ? "+" + ins.offset : ""}</span>` : "");
+    left.append(row);
+  }
+  // 우: 레지스터 / 스택 / 지역변수
+  const right = el("div", { class: "dbgws-side" });
+  // 레지스터
+  right.append(el("div", { class: "dbgws-head" }, "레지스터 (더블클릭 수정)"));
+  const regGrid = el("div", { class: "reg-grid" });
+  const showRegs = d.regs.filter((r) => /^(rax|rbx|rcx|rdx|rsi|rdi|rbp|rsp|r8|r9|r10|r11|r12|r13|r14|r15|rip|eflags|pc|sp|lr|x\d+|w\d+)$/i.test(r.name)).slice(0, 40);
+  for (const r of (showRegs.length ? showRegs : d.regs.slice(0, 32))) {
+    const changed = d.prevRegs[r.name] !== undefined && d.prevRegs[r.name] !== r.value;
+    const cell = el("div", { class: "reg" + (changed ? " changed" : ""), title: "더블클릭: 값 수정",
+      ondblclick: () => editReg(r.name, r.value) },
+      el("span", { class: "reg-n" }, r.name),
+      el("span", { class: "reg-v" }, r.value));
+    regGrid.append(cell);
+  }
+  right.append(regGrid);
+  // 지역변수/인자
+  right.append(el("div", { class: "dbgws-head" }, "지역변수 · 인자 (더블클릭 수정)"));
+  const locWrap = el("div", { class: "loc-list" });
+  if (!d.locals.length) locWrap.append(el("div", { class: "empty-list" }, "—"));
+  for (const v of d.locals) {
+    locWrap.append(el("div", { class: "loc" + (v.arg ? " arg" : ""), title: "더블클릭: 값 수정",
+      ondblclick: () => editVar(v.name, v.value) },
+      el("span", { class: "loc-n" }, (v.arg ? "arg " : "") + v.name),
+      el("span", { class: "loc-v" }, String(v.value ?? ""))));
+  }
+  right.append(locWrap);
+  wrap.append(left, right);
+  ed.append(wrap);
+}
+async function editReg(name, cur) {
+  const v = await prompt1("레지스터 수정 (런타임 조작)", `${name} =`, cur || "");
+  if (v === null) return;
+  try { await api.dbgSetReg(name, v); await dbgRefresh(); toast(`${name} = ${v}`, "ok"); }
+  catch (err) { toast("실패: " + err.message, "err"); }
+}
+async function editVar(name, cur) {
+  const v = await prompt1("변수 값 수정 (런타임 조작)", `${name} =`, String(cur ?? ""));
+  if (v === null) return;
+  try { await api.dbgSetVar(name, v); await dbgRefresh(); toast(`${name} = ${v}`, "ok"); }
+  catch (err) { toast("실패: " + err.message, "err"); }
+}
+
+function renderDebugConsolePanel() {
+  const panel = $("#panel-debugcon");
+  panel.innerHTML = "";
+  panel.dataset.rendered = "1";
+  if (!S.dbg.active) { panel.append(el("div", { class: "empty-list" }, "디버그 세션이 없습니다.")); panel.dataset.rendered = ""; return; }
+  const pre = el("pre", { id: "dbgcon-out", class: "dbgcon-out" });
+  panel.append(pre);
+  const row = el("div", { class: "dbgcon-input" });
+  const inp = el("input", { type: "text", placeholder: "gdb 명령 입력 (예: info registers, x/4xw $sp)" });
+  inp.addEventListener("keydown", async (e) => {
+    if (e.key !== "Enter") return;
+    const cmd = inp.value.trim(); if (!cmd) return; inp.value = "";
+    try { await api.dbgConsole(cmd); await dbgRefresh(); }
+    catch (err) { toast("명령 실패: " + err.message, "err"); }
+  });
+  row.append(inp);
+  panel.append(row);
+  dbgRefreshOutput();
+}
+
+// 디버깅 중 정적 디스어셈블리 뷰의 현재 명령을 강조(load_bias 보정)
+function syncStaticRip() {
+  const st = S.dbg.state;
+  if (!st || !st.frame || st.load_bias == null) return;
+  const rtAddr = parseInt(st.frame.addr, 16);
+  const staticAddr = rtAddr - st.load_bias;
+  $$("#editor .ins.cur").forEach((e) => e.classList.remove("cur"));
+  const node = $(`#editor [data-ins="${staticAddr}"]`);
+  if (node) node.classList.add("cur");
+}
+
 // ---- 하단 패널 ----------------------------------------------------------
 function showPanel(name) {
   $$("#bottom .ptab").forEach((b) => b.classList.toggle("active", b.dataset.panel === name));
   $$("#bottom .panel").forEach((p) => p.classList.toggle("active", p.dataset.panel === name));
   $("#bottom").classList.remove("collapsed");
+  if (name === "debugcon") renderDebugConsolePanel();
 }
 
 // ---- 스플리터 드래그 ----------------------------------------------------
@@ -758,6 +1066,16 @@ function dragSplit(handle, onMove) {
 // ---- 키바인딩 -----------------------------------------------------------
 function keybind(e) {
   const mod = e.ctrlKey || e.metaKey;
+  // 디버거 단축키(세션 활성 시)
+  if (S.dbg.active) {
+    if (e.key === "F5" && e.shiftKey) { e.preventDefault(); dbgStop(); return; }
+    if (e.key === "F5") { e.preventDefault(); dbgDo("continue"); return; }
+    if (e.key === "F10") { e.preventDefault(); dbgDo("next"); return; }
+    if (e.key === "F11" && e.shiftKey) { e.preventDefault(); dbgDo("finish"); return; }
+    if (e.key === "F11") { e.preventDefault(); dbgDo("step"); return; }
+  } else if (e.key === "F5" && S.info && e.target.tagName !== "INPUT" && e.target.tagName !== "TEXTAREA") {
+    e.preventDefault(); setSideView("debug"); dbgStart(); return;
+  }
   if (mod && (e.key === "k" || e.key === "p")) { e.preventDefault(); openPalette(e.key === "p" ? "@" : ""); return; }
   if (e.key === "/" && e.target.tagName !== "INPUT" && e.target.tagName !== "TEXTAREA") { e.preventDefault(); openPalette(); return; }
   if (mod && e.shiftKey && (e.key === "A" || e.key === "a")) { e.preventDefault(); toggleAI(); return; }

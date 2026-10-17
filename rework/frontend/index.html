@@ -31,6 +31,7 @@
       <button class="act" data-view="symbols" title="심볼 (Alt 3)"></button>
       <button class="act" data-view="imports" title="임포트/익스포트 (Alt 4)"></button>
       <button class="act" data-view="bookmarks" title="북마크 (Alt 5)"></button>
+      <button class="act" data-view="debug" title="디버그 (동적 분석)"></button>
       <button class="act" data-view="script" title="스크립트 콘솔"></button>
       <div class="act-spacer"></div>
       <button class="act" data-cmd="toggle-ai" title="AI 채팅 (Ctrl+Shift+A)"></button>
@@ -60,10 +61,12 @@
         <div class="panel-tabs">
           <button class="ptab active" data-panel="xrefs">상호참조</button>
           <button class="ptab" data-panel="output">출력</button>
+          <button class="ptab" data-panel="debugcon">디버그 콘솔</button>
         </div>
         <div class="panel-body">
           <div class="panel active" data-panel="xrefs" id="panel-xrefs"></div>
           <div class="panel" data-panel="output" id="panel-output"></div>
+          <div class="panel" data-panel="debugcon" id="panel-debugcon"></div>
         </div>
       </section>
     </main>

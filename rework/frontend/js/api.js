@@ -50,4 +50,23 @@ export const api = {
   aiConfigGet:() => j("GET", "/api/ai/config"),
   aiConfigSet:(cfg) => j("POST", "/api/ai/config", cfg),
   aiChat:     (messages, system = "") => j("POST", "/api/ai/chat", { messages, system }),
+
+  // 디버거 (GDB/MI)
+  dbgStart:   (breakpoints = []) => j("POST", "/api/debug/start", { breakpoints }),
+  dbgStop:    () => j("POST", "/api/debug/stop"),
+  dbgState:   () => j("GET", "/api/debug/state"),
+  dbgExec:    (action, args = "") => j("POST", "/api/debug/exec", { action, args }),
+  dbgBreak:   (payload) => j("POST", "/api/debug/break", payload),
+  dbgBreaks:  () => j("GET", "/api/debug/breakpoints"),
+  dbgRegs:    () => j("GET", "/api/debug/registers"),
+  dbgStack:   () => j("GET", "/api/debug/stack"),
+  dbgLocals:  () => j("GET", "/api/debug/locals"),
+  dbgDisasm:  () => j("GET", "/api/debug/disasm"),
+  dbgEval:    (expr) => j("POST", "/api/debug/eval", { expr }),
+  dbgSetVar:  (expr, value) => j("POST", "/api/debug/setvar", { expr, value }),
+  dbgSetReg:  (name, value) => j("POST", "/api/debug/setreg", { name, value }),
+  dbgMem:     (addr, count = 128) => j("GET", `/api/debug/mem?addr=${encodeURIComponent(addr)}&count=${count}`),
+  dbgWriteMem:(addr, hex) => j("POST", "/api/debug/writemem", { addr, hex }),
+  dbgConsole: (cmd) => j("POST", "/api/debug/console", { cmd }),
+  dbgOutput:  (clear = false) => j("GET", `/api/debug/output?clear=${clear}`),
 };

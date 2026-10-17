@@ -137,6 +137,16 @@ class Program:
 
     # ---- 이름 해석 ------------------------------------------------------
 
+    def _func_name_to_addr(self, name: str) -> int | None:
+        """함수 이름 → 정적 가상주소(PIE 바이어스 계산용)."""
+        if not hasattr(self, "_name_addr_cache"):
+            m = {}
+            for f in self.model.functions:
+                nm = self.name_for(f.vaddr) or f.display_name
+                m.setdefault(nm, f.vaddr)
+            self._name_addr_cache = m
+        return self._name_addr_cache.get(name)
+
     def name_for(self, va: int) -> str | None:
         """주소를 표시용 이름으로. 사용자 리네임 > 함수 > 임포트 > 심볼."""
         if self.project:
