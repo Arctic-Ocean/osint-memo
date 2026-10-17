@@ -17,11 +17,14 @@
 from __future__ import annotations
 
 import atexit
+import fcntl
 import os
 import pty
+import re
 import select
 import signal
 import subprocess
+import termios
 import threading
 import time
 import weakref
@@ -38,6 +41,53 @@ def mi_quote(s: str) -> str:
     if any(c in s for c in "\r\n\x00"):
         raise DebugError("개행·NUL 문자는 사용할 수 없습니다.")
     return '"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+MAX_INPUT = 64 * 1024        # 한 번에 대상 stdin 으로 보낼 수 있는 최대 바이트
+# 쿠킹(ICANON) 모드 pty 는 한 줄이 4095바이트를 넘으면 나머지를 조용히 버린다(측정으로 확인).
+CANON_LINE_MAX = 4095
+_INPUT_ESC = {"n": 10, "r": 13, "t": 9, "a": 7, "b": 8, "f": 12, "v": 11, "e": 27,
+              "\\": 92, '"': 34, "'": 39}
+_HEX2 = re.compile(r"[0-9a-fA-F]{2}")
+_OCT3 = re.compile(r"[0-7]{1,3}")
+
+
+def _decode_exit_code(v):
+    """GDB MI 의 exit-code 는 8진수 문자열이다(종료코드 10 → "012"). 10진 문자열로 바꾼다."""
+    if v is None:
+        return None
+    try:
+        return str(int(str(v), 8))
+    except ValueError:
+        return str(v)
+
+
+def decode_input_escapes(text: str) -> bytes:
+    """대상 stdin 으로 보낼 문자열의 C 스타일 이스케이프를 바이트로 푼다.
+    `\\n \\r \\t \\\\ \\xHH \\033(8진)` 등. 알 수 없는 이스케이프는 글자 그대로 둔다.
+    이스케이프가 아닌 글자는 UTF-8 로 인코딩한다."""
+    out = bytearray()
+    i, n = 0, len(text)
+    while i < n:
+        c = text[i]
+        if c == "\\" and i + 1 < n:
+            e = text[i + 1]
+            if e == "x" and _HEX2.fullmatch(text[i + 2:i + 4] or "-"):
+                out.append(int(text[i + 2:i + 4], 16))
+                i += 4
+                continue
+            m = _OCT3.match(text, i + 1)
+            if m:
+                out.append(int(m.group(), 8) & 0xFF)
+                i = m.end()
+                continue
+            if e in _INPUT_ESC:
+                out.append(_INPUT_ESC[e])
+                i += 2
+                continue
+        out += c.encode("utf-8")
+        i += 1
+    return bytes(out)
 
 
 # 살아 있는 세션 추적: 서버가 종료돼도 gdb·대상 프로세스가 고아로 남지 않게 한다.
@@ -199,6 +249,8 @@ class DebugSession:
         self._lock = threading.Lock()   # 토큰 발급 + stdin 쓰기 직렬화
         self._plock = threading.Lock()  # _pending 접근 보호(I/O 중에는 잡지 않는다)
         self._stop_lock = threading.Lock()
+        self._io_lock = threading.Lock()   # 대상 stdin 쓰기와 pty fd 닫기를 직렬화
+        self._line_carry = 0               # 줄바꿈 없이 보낸 채 남아 있는 현재 줄의 바이트 수
         self._closed = False            # stop() 완료 여부(멱등성)
         self._closing = False
         self._token = 0
@@ -206,6 +258,7 @@ class DebugSession:
         self.inferior_pid = None
         self.console = []               # gdb 콘솔/로그 스트림(~, &)
         self.target_out = []            # 대상 프로그램 stdout/stderr(pty)
+        self.merged = []                # 위 둘을 도착 순서대로 섞은 로그(콘솔 패널 표시용)
         self.events = []                # 최근 비동기 이벤트 로그
         self.status = "loaded"          # loaded|running|stopped|exited|error
         self.last_stop = None           # 마지막 *stopped 정보
@@ -227,6 +280,8 @@ class DebugSession:
         except Exception:
             pass
         master, slave = pty.openpty()
+        # 대상이 입력을 읽지 않을 때 쓰기가 서버 스레드를 붙들지 않도록 논블로킹으로 둔다
+        fcntl.fcntl(master, fcntl.F_SETFL, fcntl.fcntl(master, fcntl.F_GETFL) | os.O_NONBLOCK)
         self._pty_master = master
         self._pty_slave = slave   # 세션 동안 열어 둔다(조기 EOF 방지)
         try:
@@ -291,14 +346,15 @@ class DebugSession:
                                 stream.close()
                         except Exception:
                             pass
-                for fd_attr in ("_pty_master", "_pty_slave"):
-                    fd = getattr(self, fd_attr, None)
-                    setattr(self, fd_attr, None)
-                    if fd is not None:
-                        try:
-                            os.close(fd)
-                        except OSError:
-                            pass
+                with self._io_lock:   # 진행 중인 stdin 쓰기가 닫힌(재사용될 수 있는) fd 에 쓰지 않게
+                    for fd_attr in ("_pty_master", "_pty_slave"):
+                        fd = getattr(self, fd_attr, None)
+                        setattr(self, fd_attr, None)
+                        if fd is not None:
+                            try:
+                                os.close(fd)
+                            except OSError:
+                                pass
                 _LIVE_SESSIONS.discard(self)
             self.status = "exited"
 
@@ -387,12 +443,15 @@ class DebugSession:
                 if not ready:
                     continue
                 data = os.read(master, 4096)
+            except BlockingIOError:
+                continue
             except (OSError, ValueError):
                 break
             if not data:
                 break
             text = data.decode("utf-8", "replace")
             self.target_out.append(text)
+            self._log_merged(text)
             if len(self.target_out) > 2000:
                 del self.target_out[:1000]
 
@@ -434,8 +493,10 @@ class DebugSession:
                 val = rest
             if kind == "@":
                 self.target_out.append(val)
+                self._log_merged(val)
             else:
                 self.console.append(val)
+                self._log_merged(val)
                 if len(self.console) > 2000:
                     del self.console[:1000]
 
@@ -448,7 +509,8 @@ class DebugSession:
             self.last_stop = results
             if reason.startswith("exited"):
                 self.status = "exited"
-                self.exit_code = results.get("exit-code", "0" if reason == "exited-normally" else None)
+                self.exit_code = _decode_exit_code(
+                    results.get("exit-code", "0" if reason == "exited-normally" else None))
             else:
                 self.status = "stopped"
                 self._update_bias(results.get("frame"))
@@ -468,7 +530,7 @@ class DebugSession:
         elif cls == "thread-group-exited":
             self.inferior_pid = None
             self.status = "exited"
-            self.exit_code = results.get("exit-code")
+            self.exit_code = _decode_exit_code(results.get("exit-code"))
             self._stopped_ev.set()
 
     def _update_bias(self, frame):
@@ -679,6 +741,73 @@ class DebugSession:
         self._send(f'-data-write-memory-bytes {addr} {hexbytes}')
         return {"addr": addr, "written": len(hexbytes) // 2}
 
+    # ---- 대상 프로그램 stdin ---------------------------------------------
+    INPUT_WAIT = 3.0   # 대상이 입력을 안 읽어 버퍼가 가득 찼을 때 기다리는 최대 시간(초)
+
+    def send_input(self, text: str = "", newline: bool = True, escapes: bool = False,
+                   eof: bool = False) -> dict:
+        """대상 프로그램의 stdin 으로 입력을 보낸다(전용 pty 마스터에 쓴다).
+
+        터미널과 같은 쿠킹 모드라 에코가 출력에 함께 찍히고, 한 줄은 줄바꿈이 있어야
+        프로그램에 전달된다. `eof` 는 EOF 문자(보통 ^D)를 보낸다. `escapes` 가 켜져 있으면
+        \\xHH·\\033·\\n 같은 이스케이프를 바이트로 풀어 보낸다(제어·바이너리 입력용).
+        프로그램이 입력을 읽지 않아 버퍼가 가득 차면 기다리지 않고 DebugError 를 낸다."""
+        if not isinstance(text, str):
+            raise DebugError("입력은 문자열이어야 합니다.")
+        data = decode_input_escapes(text) if escapes else text.encode("utf-8")
+        if newline:
+            data += b"\n"
+        if eof:
+            try:
+                data += termios.tcgetattr(self._pty_slave)[6][termios.VEOF]
+            except Exception:
+                data += b"\x04"
+        if not data:
+            raise DebugError("보낼 입력이 없습니다.")
+        if len(data) > MAX_INPUT:
+            raise DebugError(f"입력이 너무 큽니다({len(data)}바이트, 최대 {MAX_INPUT}). "
+                             "큰 입력은 실행 인자에 `< 파일` 로 연결하세요.")
+        with self._io_lock:
+            fd = self._pty_master
+            if self._closed or not self._alive or fd is None:
+                raise DebugError("디버그 세션이 활성 상태가 아닙니다.")
+            # 쿠킹 모드에서는 한 줄이 CANON_LINE_MAX 를 넘으면 커널이 조용히 잘라 버린다.
+            # 잘린 입력으로 분석하는 사고를 막기 위해 보내기 전에 거부한다.
+            # (프로그램이 스스로 raw 모드로 바꿨다면 이 제한은 적용되지 않는다.)
+            try:
+                canonical = bool(termios.tcgetattr(self._pty_slave)[3] & termios.ICANON)
+            except Exception:
+                canonical = True
+            if canonical:
+                for k, seg in enumerate(data.split(b"\n")):
+                    length = len(seg) + (self._line_carry if k == 0 else 0)
+                    if length > CANON_LINE_MAX:
+                        raise DebugError(
+                            f"한 줄이 {CANON_LINE_MAX}바이트를 넘습니다({length}바이트). 터미널(pty)은 그 이상을 "
+                            "조용히 버립니다. 긴 입력은 파일로 만들어 실행 인자에 `< 파일` 로 연결하세요.")
+            sent = 0
+            deadline = time.monotonic() + self.INPUT_WAIT
+            while sent < len(data):
+                try:
+                    sent += os.write(fd, data[sent:])
+                except BlockingIOError:
+                    left = deadline - time.monotonic()
+                    if left <= 0:
+                        raise DebugError(
+                            f"대상 입력 버퍼가 가득 찼습니다({sent}/{len(data)}바이트만 전달). "
+                            "프로그램이 입력을 읽고 있는지 확인하세요.")
+                    select.select([], [fd], [], min(left, 0.2))
+                except OSError as e:
+                    raise DebugError(f"대상 입력 전송 실패: {e}")
+            # 줄바꿈 없이 남은 현재 줄 길이 추적(EOF 는 남은 줄을 프로그램에 넘기므로 0)
+            if eof:
+                self._line_carry = 0
+            elif b"\n" in data:
+                self._line_carry = len(data.rsplit(b"\n", 1)[1])
+            else:
+                self._line_carry += len(data)
+        return {"sent": sent, "bytes": len(data)}
+
     # ---- 스냅샷 --------------------------------------------------------
     def snapshot(self) -> dict:
         # last_stop은 리더 스레드가 언제든 None으로 바꿀 수 있으므로 한 번만 읽는다
@@ -694,6 +823,15 @@ class DebugSession:
             "load_bias": self.load_bias,
             "pid": proc.pid if proc else None,
         }
+
+    def _log_merged(self, text: str):
+        self.merged.append(text)
+        if len(self.merged) > 4000:
+            del self.merged[:2000]
+
+    def merged_output(self) -> str:
+        """프로그램 출력과 gdb 메시지를 도착 순서대로 이은 텍스트."""
+        return "".join(self.merged)
 
     def target_output(self, clear: bool = False) -> str:
         text = "".join(self.target_out)

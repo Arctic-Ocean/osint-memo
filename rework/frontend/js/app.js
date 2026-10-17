@@ -789,7 +789,7 @@ function renderDebugSidebar() {
     wrap.append(el("button", { class: "primary", style: "margin-top:8px;width:100%",
       onclick: () => dbgStart() }, "▶ 디버깅 시작"));
     wrap.append(el("div", { class: "dbg-hint" },
-      "시작하면 main에 중단점이 설정됩니다. 함수 목록·라이브 디스어셈블리에서 중단점을 추가하세요."));
+      "시작하면 main에 중단점이 설정됩니다. 입력이 필요한 프로그램은 하단 ‘디버그 콘솔’의 입력창으로 보내거나, 실행 인자에 `< 파일`을 쓰세요."));
     body.append(wrap);
     return;
   }
@@ -955,7 +955,7 @@ async function dbgRefreshOutput() {
     const panel = $("#panel-debugcon");
     if (panel && panel.dataset.rendered) {
       const pre = $("#dbgcon-out");
-      if (pre) { pre.textContent = (o.target || "") + (o.console ? "\n" + o.console : ""); pre.scrollTop = pre.scrollHeight; }
+      if (pre) { pre.textContent = o.merged ?? ((o.target || "") + (o.console ? "\n" + o.console : "")); pre.scrollTop = pre.scrollHeight; }
     }
   } catch {}
 }
@@ -1049,6 +1049,30 @@ async function editVar(name, cur) {
   catch (err) { toast("실패: " + err.message, "err"); }
 }
 
+// 대상 프로그램 stdin 입력 (전용 pty). 옵션·기록은 패널을 다시 그려도 유지한다.
+const stdinOpts = { newline: true, escapes: false };
+const stdinHist = [];
+let stdinHistPos = -1;
+
+async function dbgSendStdin(inp, opts) {
+  const st = S.dbg.state || {};
+  if (st.status === "exited") { toast("프로그램이 종료되어 입력을 받을 수 없습니다. ↻ 다시 실행하세요.", "err"); return; }
+  const text = opts.eof ? "" : inp.value;
+  if (!opts.eof && !text && !opts.newline) return;
+  try {
+    await api.dbgStdin(text, opts);
+    if (!opts.eof && text && stdinHist[stdinHist.length - 1] !== text) stdinHist.push(text);
+    stdinHistPos = -1;
+    inp.value = "";
+  } catch (err) { toast("입력 실패: " + err.message, "err"); return; }
+  // 에코와 프로그램 출력은 비동기로 도착하므로 간격을 두고 몇 번 갱신한다
+  for (const ms of [150, 500, 1200]) setTimeout(dbgRefreshOutput, ms);
+  // 입력을 받은 프로그램이 곧 끝나거나 진행할 수 있다: 실행 중인데 폴링이 꺼져 있으면 켠다
+  setTimeout(() => {
+    if (S.dbg.active && S.dbg.state && S.dbg.state.status === "running" && !dbgPoll) startDbgPoll();
+  }, 300);
+}
+
 function renderDebugConsolePanel() {
   const panel = $("#panel-debugcon");
   panel.innerHTML = "";
@@ -1056,9 +1080,44 @@ function renderDebugConsolePanel() {
   if (!S.dbg.active) { panel.append(el("div", { class: "empty-list" }, "디버그 세션이 없습니다.")); panel.dataset.rendered = ""; return; }
   const pre = el("pre", { id: "dbgcon-out", class: "dbgcon-out" });
   panel.append(pre);
+
+  // 대상 프로그램 stdin
+  const sRow = el("div", { class: "dbgcon-input dbgcon-stdin" });
+  const sIn = el("input", { type: "text", id: "dbg-stdin", spellcheck: "false", autocomplete: "off",
+    placeholder: "프로그램에 보낼 입력 — Enter 전송, ↑↓ 이전 입력" });
+  const cbNl = el("input", { type: "checkbox", ...(stdinOpts.newline ? { checked: "" } : {}) });
+  const cbEsc = el("input", { type: "checkbox", ...(stdinOpts.escapes ? { checked: "" } : {}) });
+  cbNl.addEventListener("change", () => { stdinOpts.newline = cbNl.checked; });
+  cbEsc.addEventListener("change", () => { stdinOpts.escapes = cbEsc.checked; });
+  const send = () => dbgSendStdin(sIn, { newline: stdinOpts.newline, escapes: stdinOpts.escapes });
+  sIn.addEventListener("keydown", (e) => {
+    if (e.isComposing || e.keyCode === 229) return;   // 한글 등 IME 조합 중 Enter 는 전송이 아니다
+    if (e.key === "Enter") { e.preventDefault(); send(); }
+    else if (e.key === "ArrowUp" && stdinHist.length) {
+      e.preventDefault();
+      stdinHistPos = stdinHistPos < 0 ? stdinHist.length - 1 : Math.max(0, stdinHistPos - 1);
+      sIn.value = stdinHist[stdinHistPos];
+    } else if (e.key === "ArrowDown" && stdinHistPos >= 0) {
+      e.preventDefault();
+      stdinHistPos += 1;
+      if (stdinHistPos >= stdinHist.length) { stdinHistPos = -1; sIn.value = ""; }
+      else sIn.value = stdinHist[stdinHistPos];
+    }
+  });
+  sRow.append(
+    el("span", { class: "dbgcon-lbl", title: "대상 프로그램의 stdin" }, "입력 ▸"), sIn,
+    el("label", { class: "dbgcon-opt", title: "끝에 줄바꿈(Enter)을 붙입니다" }, cbNl, "줄바꿈"),
+    el("label", { class: "dbgcon-opt", title: "\\n \\xHH \\033 같은 이스케이프를 바이트로 보냅니다(제어·바이너리 입력)" }, cbEsc, "\\x 해석"),
+    el("button", { class: "vt-btn", onclick: send }, "보내기"),
+    el("button", { class: "vt-btn", title: "EOF(^D) 보내기 — 입력 끝",
+      onclick: () => dbgSendStdin(sIn, { eof: true, newline: false, escapes: false }) }, "EOF"));
+  panel.append(sRow);
+
+  // gdb 명령
   const row = el("div", { class: "dbgcon-input" });
   const inp = el("input", { type: "text", placeholder: "gdb 명령 입력 (예: info registers, x/4xw $sp)" });
   inp.addEventListener("keydown", async (e) => {
+    if (e.isComposing || e.keyCode === 229) return;
     if (e.key !== "Enter") return;
     const cmd = inp.value.trim(); if (!cmd) return; inp.value = "";
     try { await api.dbgConsole(cmd); await dbgRefresh(); }
@@ -1085,7 +1144,12 @@ function showPanel(name) {
   $$("#bottom .ptab").forEach((b) => b.classList.toggle("active", b.dataset.panel === name));
   $$("#bottom .panel").forEach((p) => p.classList.toggle("active", p.dataset.panel === name));
   $("#bottom").classList.remove("collapsed");
-  if (name === "debugcon") renderDebugConsolePanel();
+  if (name === "debugcon") {
+    // 출력 + 입력 줄 두 개가 들어가야 하므로 패널이 너무 낮으면 키운다
+    const bot = $("#bottom");
+    if (bot.offsetHeight < 260) bot.style.height = "260px";
+    renderDebugConsolePanel();
+  }
 }
 
 // ---- 스플리터 드래그 ----------------------------------------------------

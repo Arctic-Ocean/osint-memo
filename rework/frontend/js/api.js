@@ -68,5 +68,6 @@ export const api = {
   dbgMem:     (addr, count = 128) => j("GET", `/api/debug/mem?addr=${encodeURIComponent(addr)}&count=${count}`),
   dbgWriteMem:(addr, hex) => j("POST", "/api/debug/writemem", { addr, hex }),
   dbgConsole: (cmd) => j("POST", "/api/debug/console", { cmd }),
+  dbgStdin:   (text, opts = {}) => j("POST", "/api/debug/stdin", { text, ...opts }),
   dbgOutput:  (clear = false) => j("GET", `/api/debug/output?clear=${clear}`),
 };

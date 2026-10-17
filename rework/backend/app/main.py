@@ -518,10 +518,25 @@ def api_debug_console(payload: dict = Body(...)):
     return _dbg_guard(lambda: STATE.dbg().console_cmd(payload.get("cmd", "")))
 
 
+@app.post("/api/debug/stdin")
+def api_debug_stdin(payload: dict = Body(...)):
+    """대상 프로그램의 stdin 으로 입력을 보낸다(전용 pty)."""
+    sess = STATE.dbg()
+    text = payload.get("text", "")
+    if not isinstance(text, str):
+        raise HTTPException(400, "text는 문자열이어야 합니다.")
+    return _dbg_guard(lambda: sess.send_input(
+        text,
+        newline=bool(payload.get("newline", True)),
+        escapes=bool(payload.get("escapes", False)),
+        eof=bool(payload.get("eof", False))))
+
+
 @app.get("/api/debug/output")
 def api_debug_output(clear: bool = False):
     sess = STATE.dbg()
-    return {"target": sess.target_output(clear=clear), "console": sess.console_output()}
+    return {"target": sess.target_output(clear=clear), "console": sess.console_output(),
+            "merged": sess.merged_output()}
 
 
 # ---- 로컬 파일 탐색(파일 열기 UI용) ------------------------------------

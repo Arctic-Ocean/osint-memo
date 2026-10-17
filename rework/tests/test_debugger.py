@@ -289,6 +289,247 @@ def _():
     return "5회 실패 시작: gdb 0개, fd 누수 0, 스레드 누수 0"
 
 
+_ECHO_BIN = []
+
+
+def _echo_bin():
+    """한 줄을 읽어 'got:<줄>' 을 찍는 작은 프로그램(없으면 None). EOF 면 'EOF' 출력 후 exit 1."""
+    if _ECHO_BIN:
+        return _ECHO_BIN[0]
+    if not shutil.which("gcc"):
+        _ECHO_BIN.append(None); return None
+    import subprocess
+    d = tempfile.mkdtemp(); src = os.path.join(d, "echo.c"); exe = os.path.join(d, "echobin")
+    open(src, "w").write(
+        '#include <stdio.h>\nint main(void){char b[8192];puts("name?");fflush(stdout);'
+        'if(!fgets(b,sizeof b,stdin)){puts("EOF");return 1;}printf("got:%s",b);return 0;}\n')
+    subprocess.check_call(["gcc", "-g", "-O0", "-o", exe, src])
+    _ECHO_BIN.append(exe)
+    return exe
+
+
+def _wait_exit(s, secs=5.0):
+    t0 = time.time()
+    while time.time() - t0 < secs:
+        st = s.snapshot()
+        if st["status"] == "exited":
+            return st
+        time.sleep(0.05)
+    return s.snapshot()
+
+
+def _run_waiting(exe):
+    """중단점 없이 실행해 fgets 에서 입력을 기다리는 상태로 만든다."""
+    s = DebugSession(exe); s.start()
+    st = s._exec("-exec-run", wait_stop=True, timeout=1.0)
+    assert st["status"] == "running", st
+    return s
+
+
+@scenario("stdin-line")
+def _():
+    exe = _echo_bin()
+    if not exe: return "gcc 없음: 건너뜀"
+    s = _run_waiting(exe)
+    r = s.send_input("hello")
+    st = _wait_exit(s); time.sleep(0.2)
+    out = s.target_output(); s.stop()
+    assert st["status"] == "exited" and st["exit_code"] == "0", st
+    assert "got:hello" in out, repr(out)
+    return f"{r['bytes']}바이트 전달, 출력={out.strip()!r}"
+
+
+@scenario("stdin-eof")
+def _():
+    exe = _echo_bin()
+    if not exe: return "gcc 없음: 건너뜀"
+    s = _run_waiting(exe)
+    s.send_input("", newline=False, eof=True)
+    st = _wait_exit(s); time.sleep(0.2)
+    out = s.target_output(); s.stop()
+    assert st["exit_code"] == "1", st            # GDB 의 8진 "01" 이 아니라 10진 1
+    assert "EOF" in out, repr(out)
+    return f"EOF 전달 → 프로그램이 EOF 를 읽고 exit {st['exit_code']}"
+
+
+@scenario("stdin-escapes-and-utf8")
+def _():
+    exe = _echo_bin()
+    if not exe: return "gcc 없음: 건너뜀"
+    s = _run_waiting(exe)
+    s.send_input("A\\x42\\x43", escapes=True)             # \x42 → 'B', \x43 → 'C'
+    _wait_exit(s); time.sleep(0.2); out1 = s.target_output(); s.stop()
+    assert "got:ABC" in out1, repr(out1)
+    s = _run_waiting(exe)
+    s.send_input("안녕 rework")                              # UTF-8 한글 왕복
+    _wait_exit(s); time.sleep(0.2); out2 = s.target_output(); s.stop()
+    assert "got:안녕 rework" in out2, repr(out2)
+    return "\\xHH 이스케이프와 한글(UTF-8) 입력이 그대로 전달됨"
+
+
+_LEN_BIN = []
+
+
+def _len_bin():
+    """read() 한 번에 받은 바이트 수와 마지막 바이트를 알려 주는 프로그램."""
+    if _LEN_BIN:
+        return _LEN_BIN[0]
+    if not shutil.which("gcc"):
+        _LEN_BIN.append(None); return None
+    import subprocess
+    d = tempfile.mkdtemp(); src = os.path.join(d, "len.c"); exe = os.path.join(d, "lenbin")
+    open(src, "w").write(
+        '#include <stdio.h>\n#include <unistd.h>\nint main(void){static char b[100000];puts("ready");'
+        'fflush(stdout);ssize_t n=read(0,b,sizeof b-1);printf("\\nread=%zd last=0x%02x\\n",n,n>0?(unsigned char)b[n-1]:0);'
+        'return 0;}\n')
+    subprocess.check_call(["gcc", "-O0", "-o", exe, src])
+    _LEN_BIN.append(exe)
+    return exe
+
+
+def _received(s):
+    import re
+    _wait_exit(s); time.sleep(0.2)
+    mm = re.search(r"read=(-?\d+)", s.target_output())
+    return int(mm.group(1)) if mm else None
+
+
+@scenario("stdin-long-line-limit")
+def _():
+    """쿠킹 모드 pty 는 한 줄이 4095바이트를 넘으면 조용히 버린다 → 보내기 전에 거부해야 한다."""
+    exe = _len_bin()
+    if not exe: return "gcc 없음: 건너뜀"
+    # 한계 이내(4095 + 개행)는 한 바이트도 안 잃고 전달된다
+    s = DebugSession(exe); s.start(); s._exec("-exec-run", wait_stop=True, timeout=1.0)
+    s.send_input("A" * m.CANON_LINE_MAX)
+    got = _received(s); s.stop()
+    assert got == m.CANON_LINE_MAX + 1, f"한계 이내 입력이 잘림: read={got}"
+    # 한계를 넘는 줄은 거부(그대로 보냈다면 프로그램은 4096바이트만 받는다)
+    s = DebugSession(exe); s.start(); s._exec("-exec-run", wait_stop=True, timeout=1.0)
+    try:
+        s.send_input("A" * (m.CANON_LINE_MAX + 1)); raise AssertionError("긴 줄이 거부돼야 함")
+    except DebugError as e:
+        assert "4095" in str(e) and "<" in str(e), str(e)
+    # 줄바꿈 없이 나눠 보낸 조각도 합쳐서 계산한다
+    s.send_input("B" * 3000, newline=False)
+    try:
+        s.send_input("C" * 2000, newline=False); raise AssertionError("누적 초과가 거부돼야 함")
+    except DebugError:
+        pass
+    s.send_input("D" * 1000)                                  # 3000+1000 은 한계 이내 → 줄바꿈으로 확정
+    got2 = _received(s); s.stop()
+    assert got2 == 4001, f"조각 결합 결과가 이상함: read={got2}"
+    return f"4095바이트 줄은 손실 없이 전달(read={got}), 4096바이트·누적 초과는 거부, 조각 결합 read={got2}"
+
+
+@scenario("stdin-write-deadline")
+def _():
+    """대상이 입력을 안 읽어 쓰기가 막혀도(EAGAIN) 대기 상한 안에 오류로 돌아와야 한다."""
+    s = DebugSession(DEMO); s.start(); s.break_insert("main"); s.run("x")
+    real_os = m.os
+    class _Shim:
+        def __getattr__(self, name): return getattr(real_os, name)
+        def write(self, fd, data):
+            if fd == s._pty_master: raise BlockingIOError(11, "EAGAIN")
+            return real_os.write(fd, data)
+    old_wait = DebugSession.INPUT_WAIT
+    m.os = _Shim(); DebugSession.INPUT_WAIT = 0.4
+    t0 = time.time(); err = None
+    try:
+        s.send_input("hello")
+    except DebugError as e:
+        err = str(e)
+    finally:
+        m.os = real_os; DebugSession.INPUT_WAIT = old_wait
+    dt = time.time() - t0
+    s.stop()
+    assert err and "가득" in err, f"가득 참 오류가 없음: {err}"
+    assert dt < 3, f"{dt:.1f}s 걸림(대기 상한 초과)"
+    return f"EAGAIN 지속 시 {dt:.2f}s 안에 '{err[:18]}…' 오류"
+
+
+@scenario("output-order")
+def _():
+    """프로그램 출력과 gdb 메시지는 도착 순서대로 섞여야 한다(입력→결과를 한눈에 보도록)."""
+    exe = _echo_bin()
+    if not exe: return "gcc 없음: 건너뜀"
+    s = DebugSession(exe); s.start(); s.break_insert("main"); s.run("")
+    s.cont()                                     # main → fgets 대기
+    time.sleep(0.4)
+    s.send_input("ordered")
+    _wait_exit(s); time.sleep(0.4)
+    log = s.merged_output(); s.stop()
+    idx = [log.find(k) for k in ("Breakpoint 1, main", "name?", "got:ordered", "exited normally")]
+    assert all(i >= 0 for i in idx), (idx, log[-200:])
+    assert idx == sorted(idx), f"순서가 어긋남: {idx}"
+    return "Breakpoint → name? → got:ordered → exited 순으로 섞임"
+
+
+@scenario("stdin-limits-and-closed")
+def _():
+    s = DebugSession(DEMO); s.start(); s.break_insert("main"); s.run("x")
+    for bad, kw in (("x" * (m.MAX_INPUT + 1), {"newline": False}), ("", {"newline": False})):
+        try:
+            s.send_input(bad, **kw); raise AssertionError("거부돼야 함")
+        except DebugError:
+            pass
+    s.stop()
+    try:
+        s.send_input("late")
+        raise AssertionError("종료된 세션에 전송이 거부돼야 함")
+    except DebugError:
+        pass
+    return "너무 큰 입력·빈 입력·종료된 세션 모두 DebugError"
+
+
+@scenario("stdin-args-redirect")
+def _():
+    exe = _echo_bin()
+    if not exe: return "gcc 없음: 건너뜀"
+    f = os.path.join(tempfile.mkdtemp(), "in.txt"); open(f, "w").write("from-file\n")
+    s = DebugSession(exe); s.start(); s.run(f"< {f}")
+    st = _wait_exit(s); time.sleep(0.2); out = s.target_output(); s.stop()
+    assert "got:from-file" in out, repr(out)
+    return "실행 인자 `< 파일` 로 입력 파일 연결"
+
+
+@scenario("stdin-concurrent-stop")
+def _():
+    # 입력을 보내는 중에 세션을 종료해도 DebugError 외의 예외·행이 없어야 한다
+    s = DebugSession(DEMO); s.start(); s.break_insert("main"); s.run("x")
+    errs = []
+    def spam():
+        for _ in range(300):
+            try: s.send_input("z" * 100, newline=False)
+            except DebugError: pass
+            except Exception as e: errs.append(repr(e)); return
+    t = threading.Thread(target=spam); t.start()
+    time.sleep(0.05); s.stop(); t.join(10)
+    assert not t.is_alive(), "입력 스레드가 멈추지 않음"
+    assert not errs, errs
+    return "전송 중 stop(): 예외·행 없음"
+
+
+@scenario("input-escape-decoder")
+def _():
+    d = m.decode_input_escapes
+    cases = {r"hello": b"hello", r"a\nb": b"a\nb", r"A\x42C": b"ABC", r"\033[0m": b"\x1b[0m",
+             r"back\\slash": b"back\\slash", r"\x4": b"\\x4", r"\q": b"\\q", "한글": "한글".encode(),
+             r"\0": b"\x00", r"end\\": b"end\\"}
+    for src, want in cases.items():
+        assert d(src) == want, (src, d(src), want)
+    return f"{len(cases)}개 경계 케이스 통과"
+
+
+@scenario("exit-code-decimal")
+def _():
+    d = m._decode_exit_code
+    cases = {"0": "0", "01": "1", "07": "7", "010": "8", "012": "10", "0377": "255", None: None}
+    for src, want in cases.items():
+        assert d(src) == want, (src, d(src), want)
+    return "GDB 8진 종료코드를 10진으로 변환(010→8, 012→10, 0377→255)"
+
+
 @scenario("parser-escapes")
 def _():
     got = m._parse_cstring('"\\033[0mX\\000Y\\a\\x41\\"\\\\"', 0)[0]
