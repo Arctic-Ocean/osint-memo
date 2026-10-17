@@ -7,10 +7,14 @@ from __future__ import annotations
 
 import io
 import os
+import shutil
+import threading
 import contextlib
 import traceback
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, UploadFile, File, Body
+from starlette.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -32,7 +36,17 @@ UPLOADS_DIR = os.path.join(DATA_DIR, "uploads")
 os.makedirs(PROJECTS_DIR, exist_ok=True)
 os.makedirs(UPLOADS_DIR, exist_ok=True)
 
-app = FastAPI(title="rework", docs_url="/api/docs", openapi_url="/api/openapi.json")
+@asynccontextmanager
+async def lifespan(_app):
+    # 서버 종료(Ctrl+C·SIGTERM) 시 gdb와 디버깅 대상 프로세스가 고아로 남지 않게 정리한다.
+    try:
+        yield
+    finally:
+        _teardown_debug()
+
+
+app = FastAPI(title="rework", docs_url="/api/docs", openapi_url="/api/openapi.json",
+              lifespan=lifespan)
 
 
 # ---- 세션 상태 ----------------------------------------------------------
@@ -41,6 +55,7 @@ class State:
         self.programs: dict[str, Program] = {}   # sha -> Program
         self.current: str | None = None
         self.debug: DebugSession | None = None   # 활성 디버그 세션(한 번에 하나)
+        self.dbg_lock = threading.RLock()        # 세션 시작·종료·교체를 직렬화
 
     def prog(self) -> Program:
         if not self.current or self.current not in self.programs:
@@ -91,12 +106,13 @@ def _open_path(path: str) -> dict:
 def _teardown_debug():
     """활성 디버그 세션을 종료한다. 디버깅 중인 바이너리는 실행 중이라
     파일이 잠겨(ETXTBSY) 덮어쓸 수 없으므로, 파일을 건드리기 전에 호출한다."""
-    if STATE.debug:
-        try:
-            STATE.debug.stop()
-        except Exception:
-            pass
-        STATE.debug = None
+    with STATE.dbg_lock:
+        sess, STATE.debug = STATE.debug, None
+        if sess is not None:
+            try:
+                sess.stop()   # 대상 프로세스가 사라질 때까지 기다린 뒤 반환한다
+            except Exception:
+                pass
 
 
 @app.post("/api/open")
@@ -108,14 +124,31 @@ def api_open(payload: dict = Body(...)):
     return _open_path(os.path.expanduser(path))
 
 
+def _save_upload(dest: str, data: bytes) -> None:
+    """임시 파일에 쓴 뒤 원자적으로 교체한다. 같은 이름의 바이너리가 아직 실행 중이어도
+    (open-for-write만 막는) ETXTBSY 없이 디렉터리 항목만 바꾼다."""
+    tmp = f"{dest}.part-{os.urandom(4).hex()}"
+    try:
+        with open(tmp, "wb") as fh:
+            fh.write(data)
+        os.replace(tmp, dest)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
 @app.post("/api/upload")
 async def api_upload(file: UploadFile = File(...)):
-    _teardown_debug()   # 디버깅 중이면 파일이 잠겨 쓰기 실패하므로 먼저 종료
-    dest = os.path.join(UPLOADS_DIR, os.path.basename(file.filename or "upload.bin"))
+    name = os.path.basename(file.filename or "") or "upload.bin"
+    dest = os.path.join(UPLOADS_DIR, name)
     data = await file.read()
+    # 종료 대기·파일 쓰기는 블로킹이므로 이벤트 루프 밖(스레드풀)에서 수행한다
+    await run_in_threadpool(_teardown_debug)
     try:
-        with open(dest, "wb") as fh:
-            fh.write(data)
+        await run_in_threadpool(_save_upload, dest, data)
     except OSError as e:
         raise HTTPException(400, f"파일 저장 실패: {e}")
     return _open_path(dest)
@@ -363,30 +396,33 @@ def _dbg_guard(fn):
 @app.post("/api/debug/start")
 def api_debug_start(payload: dict = Body(...)):
     prog = STATE.prog()
-    if STATE.debug and STATE.debug._alive:
-        STATE.debug.stop()
-    try:
-        sess = DebugSession(prog.model.path, program=prog)
-        state = sess.start()
-    except DebugError as e:
-        raise HTTPException(400, str(e))
-    except Exception as e:
-        raise HTTPException(500, f"디버거 시작 실패: {e}")
-    STATE.debug = sess
-    # 요청된 중단점(함수명 등) 설치
-    for loc in payload.get("breakpoints", []):
+    if not shutil.which("gdb"):
+        raise HTTPException(400, "GDB를 찾을 수 없습니다. 설치한 뒤 다시 시도하세요 (예: apt install gdb).")
+    with STATE.dbg_lock:           # 동시 시작·정지가 세션을 새거나 교차 종료하지 않도록 직렬화
+        _teardown_debug()
         try:
-            sess.break_insert(str(loc))
-        except DebugError:
-            pass
-    return {"state": state, "breakpoints": _dbg_guard(sess.breakpoints)}
+            sess = DebugSession(prog.model.path, program=prog)
+            state = sess.start()
+        except DebugError as e:
+            raise HTTPException(400, str(e))
+        except Exception as e:
+            raise HTTPException(500, f"디버거 시작 실패: {e}")
+        STATE.debug = sess
+        # 요청된 중단점(함수명 등) 설치. 실패한 것은 응답에 실어 사용자에게 알린다
+        # (스트립된 바이너리에서 main 을 못 찾는 경우 등).
+        failed = []
+        for loc in payload.get("breakpoints", []):
+            try:
+                sess.break_insert(str(loc))
+            except DebugError as e:
+                failed.append({"location": str(loc), "error": str(e)})
+        return {"state": state, "breakpoints": _dbg_guard(sess.breakpoints),
+                "failed_breakpoints": failed}
 
 
 @app.post("/api/debug/stop")
 def api_debug_stop():
-    if STATE.debug:
-        STATE.debug.stop()
-        STATE.debug = None
+    _teardown_debug()
     return {"ok": True}
 
 

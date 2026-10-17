@@ -193,6 +193,7 @@ async function openPath(path) {
 async function onOpened(info) {
   S.info = info;
   S.tabs = []; S.active = -1;
+  dbgReset();   // 서버는 바이너리를 열 때 디버그 세션을 종료하므로 프론트 상태도 맞춘다
   $("#file-name").textContent = info.name;
   $("#file-meta").textContent =
     `${info.fmt} · ${info.arch}/${info.bits}bit · ${info.counts.functions}개 함수 · ${fmtSize(info.size)}`;
@@ -412,7 +413,7 @@ async function renderEditor() {
       disabled: dis ? "" : null, onclick: () => dbgDo(action) }, label);
     const run = st.status === "running", dead = st.status === "exited";
     tb.append(
-      mk("▶ 계속", "F5", "continue", run || dead),
+      dead ? mk("↻ 다시 실행", "F5", "run", false) : mk("▶ 계속", "F5", "continue", run),
       mk("⤼ 한 줄", "F10", "next", run || dead),
       mk("↓ 스텝", "F11", "step", run || dead),
       mk("» 명령", "stepi", "stepi", run || dead),
@@ -808,7 +809,7 @@ function renderDebugSidebar() {
   const running = st.status === "running";
   const dead = st.status === "exited";
   bar.append(
-    btn("▶", "계속 (F5)", "continue", running || dead),
+    dead ? btn("↻", "다시 실행 (F5)", "run", false) : btn("▶", "계속 (F5)", "continue", running),
     btn("⤼", "한 줄 넘어 (F10)", "next", running || dead),
     btn("↓", "한 줄 안으로 (F11)", "step", running || dead),
     btn("»", "명령 단위 (stepi)", "stepi", running || dead),
@@ -841,28 +842,53 @@ function renderDebugSidebar() {
   }
 }
 
+let dbgStarting = false;
 async function dbgStart() {
+  if (dbgStarting || S.dbg.active) return;   // F5 연타·버튼 더블클릭으로 시작 흐름이 겹치지 않게
+  dbgStarting = true;
   const args = ($("#dbg-args") && $("#dbg-args").value.trim()) || "";
   setMsg("디버거 시작 중…");
   try {
-    await api.dbgStart(["main"]);
+    const started = await api.dbgStart(["main"]);
     S.dbg.active = true;
     S.dbg.argsCache = args;
+    const missed = started.failed_breakpoints || [];
     // main 중단점까지 실행
-    await api.dbgExec("run", args);
+    const r = await api.dbgExec("run", args);
+    S.dbg.state = r.state;
     await dbgRefresh();
+    if (!S.dbg.active) return;               // 그 사이 세션이 끝났다면 중단
     openDebuggerTab();
     showPanel("debugcon");
-    toast("디버깅 시작 — main 중단", "ok");
-  } catch (err) { toast("디버거 시작 실패: " + err.message, "err"); setMsg(""); S.dbg.active = false; }
+    if (r.state.status === "running") {
+      startDbgPoll();                         // 중단점이 없거나 입력 대기 등: 멈출 때까지 폴링
+      toast("프로그램 실행 중…", "ok");
+    } else {
+      toast("디버깅 시작 — main 중단", "ok");
+    }
+    if (missed.length) toast("중단점 설정 실패: " + missed.map((m) => m.location).join(", "), "err");
+  } catch (err) {
+    toast("디버거 시작 실패: " + err.message, "err"); setMsg("");
+    S.dbg.active = false;
+    try { await api.dbgStop(); } catch {}   // 서버에 반쯤 만들어진 세션이 남지 않게
+  } finally { dbgStarting = false; }
+}
+function dbgReset() {
+  stopDbgPoll();
+  S.dbg = { active: false, state: null, regs: [], prevRegs: {}, stack: [], locals: [], breaks: [], disasm: [] };
+  closeTab(DBG_TAB);
+  if (S.sideView === "debug") renderDebugSidebar();
 }
 async function dbgStop() {
-  stopDbgPoll();
   try { await api.dbgStop(); } catch {}
-  S.dbg = { active: false, state: null, regs: [], prevRegs: {}, stack: [], locals: [], breaks: [], disasm: [] };
-  if (S.sideView === "debug") renderDebugSidebar();
-  closeTab(DBG_TAB);
+  dbgReset();
   setMsg("디버깅 종료");
+}
+// 서버 쪽 세션이 사라졌거나 gdb가 죽은 경우
+function dbgEnded() {
+  const was = S.dbg.active;
+  dbgReset();
+  if (was) toast("디버그 세션이 종료되었습니다.", "err");
 }
 async function dbgDo(action) {
   setMsg(`디버거: ${action}…`);
@@ -872,24 +898,34 @@ async function dbgDo(action) {
     await dbgRefresh();
     if (r.state.status === "running") startDbgPoll();
     else { stopDbgPoll(); if (r.state.status === "exited") toast("프로그램 종료 (코드 " + (r.state.exit_code ?? "?") + ")", "ok"); }
-  } catch (err) { toast("디버그 실패: " + err.message, "err"); }
+  } catch (err) {
+    toast("디버그 실패: " + err.message, "err");
+    await dbgRefresh();   // 세션이 이미 사라졌다면 여기서 감지해 UI를 비활성으로 돌린다
+  }
   setMsg("");
 }
+let dbgPollBusy = false;
 function startDbgPoll() {
   stopDbgPoll();
   dbgPoll = setInterval(async () => {
+    if (dbgPollBusy) return;                 // 응답이 늦을 때 요청이 겹쳐 쌓이지 않게
+    dbgPollBusy = true;
     try {
       const r = await api.dbgState();
+      if (r.state.status === "none" || r.state.alive === false) { dbgEnded(); return; }
       if (r.state.status !== "running") { stopDbgPoll(); await dbgRefresh(); }
       else { await dbgRefreshOutput(); }
     } catch { stopDbgPoll(); }
+    finally { dbgPollBusy = false; }
   }, 700);
 }
 function stopDbgPoll() { if (dbgPoll) { clearInterval(dbgPoll); dbgPoll = null; } }
 
 async function dbgRefresh() {
   try {
-    const s = await api.dbgState(); S.dbg.state = s.state;
+    const s = await api.dbgState();
+    if (s.state.status === "none" || s.state.alive === false) { dbgEnded(); return; }
+    S.dbg.state = s.state;
     if (s.state.status === "stopped") {
       const [regs, stack, locals, breaks, dis] = await Promise.all([
         api.dbgRegs().catch(() => ({ registers: [] })),
@@ -1069,7 +1105,7 @@ function keybind(e) {
   // 디버거 단축키(세션 활성 시)
   if (S.dbg.active) {
     if (e.key === "F5" && e.shiftKey) { e.preventDefault(); dbgStop(); return; }
-    if (e.key === "F5") { e.preventDefault(); dbgDo("continue"); return; }
+    if (e.key === "F5") { e.preventDefault(); dbgDo(S.dbg.state && S.dbg.state.status === "exited" ? "run" : "continue"); return; }
     if (e.key === "F10") { e.preventDefault(); dbgDo("next"); return; }
     if (e.key === "F11" && e.shiftKey) { e.preventDefault(); dbgDo("finish"); return; }
     if (e.key === "F11") { e.preventDefault(); dbgDo("step"); return; }
