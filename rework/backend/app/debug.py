@@ -26,6 +26,7 @@ import re
 import select
 import signal
 import subprocess
+import sys
 import termios
 import threading
 import time
@@ -43,6 +44,24 @@ def mi_quote(s: str) -> str:
     if any(c in s for c in "\r\n\x00"):
         raise DebugError("개행·NUL 문자는 사용할 수 없습니다.")
     return '"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def _sandbox_mod():
+    """샌드박스 모듈. 패키지(app.debug)로 불러왔을 때와 테스트가 파일 경로로 직접 불러왔을 때 모두 동작."""
+    try:
+        from . import sandbox as mod
+        return mod
+    except ImportError:
+        import importlib.util
+        name = "rework_sandbox"
+        if name in sys.modules:
+            return sys.modules[name]
+        spec = importlib.util.spec_from_file_location(
+            name, os.path.join(os.path.dirname(os.path.abspath(__file__)), "sandbox.py"))
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules[name] = mod
+        spec.loader.exec_module(mod)
+        return mod
 
 
 MAX_INPUT = 64 * 1024        # 한 번에 대상 stdin 으로 보낼 수 있는 최대 바이트
@@ -281,11 +300,15 @@ def parse_mi_results(s: str) -> dict:
 
 # ---- 디버그 세션 ---------------------------------------------------------
 class DebugSession:
-    def __init__(self, binary_path: str, program=None):
+    def __init__(self, binary_path: str, program=None, sandbox=None):
         if not os.path.isfile(binary_path):
             raise DebugError(f"파일이 없습니다: {binary_path}")
         self.path = binary_path
         self.program = program          # 정적 분석 Program(이름/바이어스 해석용)
+        self.sandbox_policy = sandbox   # SandboxPolicy(격리 실행) 또는 None(비격리)
+        self.sandbox_info = None        # 실제로 적용된 격리 보고서(시작 후)
+        self._launch = None             # sandbox.Launch(정리 대상)
+        self._wall_timer = None
         self.proc = None
         self._lock = threading.Lock()   # 토큰 발급 + stdin 쓰기 직렬화
         self._plock = threading.Lock()  # _pending 접근 보호(I/O 중에는 잡지 않는다)
@@ -340,10 +363,29 @@ class DebugSession:
         except (OSError, termios.error):
             self._pty_base = None
         try:
+            gdb_args = ["--quiet", "--nx", "--interpreter=mi3", "-iex", "set auto-load off"]
+            launch = None
+            if self.sandbox_policy is not None and self.sandbox_policy.enabled:
+                sbx = _sandbox_mod()
+                try:
+                    launch = sbx.prepare(self.sandbox_policy, self.path, os.ttyname(slave), gdb_args)
+                except sbx.SandboxError as e:
+                    raise DebugError(f"격리 실행을 시작할 수 없습니다: {e}")
+                self._launch = launch
+                self.sandbox_info = launch.info
+                if launch.uid is not None:       # 낮춘 uid 가 전용 pty 를 열 수 있게
+                    os.fchown(slave, launch.uid, -1)
+                    os.fchmod(slave, 0o600)
+                argv, extra = launch.argv, dict(pass_fds=launch.pass_fds, **launch.popen_kwargs)
+            else:
+                sbx = _sandbox_mod()
+                self.sandbox_info = sbx.describe(sbx.SandboxPolicy(mode="off"))
+                argv, extra = ["gdb"] + gdb_args + [self.path], {}
             self.proc = subprocess.Popen(
-                ["gdb", "--quiet", "--nx", "--interpreter=mi3", self.path],
-                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                text=True, bufsize=1, start_new_session=True)  # 새 프로세스 그룹(정리용)
+                argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, bufsize=1, start_new_session=True, **extra)  # 새 프로세스 그룹(정리용)
+            if launch is not None:
+                launch.attach(self.proc)         # cgroup 에 넣고 샌드박스를 풀어 준다
             self._alive = True
             _LIVE_SESSIONS.add(self)
             self._reader = threading.Thread(target=self._read_loop, daemon=True)
@@ -354,18 +396,28 @@ class DebugSession:
             # 대상 입출력을 pty로 연결(MI 채널 오염 방지 + 캡처).
             # slave fd를 계속 열어 둬야 inferior가 열기 전 master가 EOF를 받지 않는다.
             try:
-                tty_name = os.ttyname(slave)
-                self._send(f"-inferior-tty-set {tty_name}", timeout=2)
+                tty_name = launch.tty_target if launch is not None else os.ttyname(slave)
+                self._send(f"-inferior-tty-set {tty_name}", timeout=3)
             except Exception:
-                pass
+                if launch is not None:           # 격리 실행에서 tty 가 안 잡히면 대상 출력이 MI 채널로 샌다
+                    raise
             self._send("-gdb-set mi-async on", timeout=2)
             self._send("-gdb-set pagination off", timeout=2)
             self._send("-gdb-set confirm off", timeout=2)
+            if self.sandbox_policy is not None and self.sandbox_policy.enabled and self.sandbox_policy.wall_seconds:
+                self._wall_timer = threading.Timer(self.sandbox_policy.wall_seconds, self._wall_expired)
+                self._wall_timer.daemon = True
+                self._wall_timer.start()
         except BaseException:
             # gdb 미설치(FileNotFoundError)·설정 실패 등: fd·프로세스를 남기지 않는다
             self.stop()
             raise
         return self.snapshot()
+
+    def _wall_expired(self):
+        """격리 정책의 실행 시간 제한을 넘으면 세션을 끝낸다."""
+        self._log_merged(f"\n[샌드박스] 실행 시간 제한({self.sandbox_policy.wall_seconds}초)을 넘어 종료합니다.\n")
+        self.stop()
 
     def stop(self):
         """세션 종료. 멱등이며 동시 호출에 안전하다. 반환 시점에 gdb와 대상 프로세스가
@@ -376,6 +428,8 @@ class DebugSession:
             self._closed = True
             self._closing = True
             self._alive = False
+            if self._wall_timer is not None:
+                self._wall_timer.cancel()
             proc = self.proc
             try:
                 if proc is not None and proc.poll() is None:
@@ -429,6 +483,12 @@ class DebugSession:
                 proc.wait(timeout=3.0)
             except Exception:
                 pass
+        if self._launch is not None:
+            # 격리 실행: 대상은 별도 pid 네임스페이스 안에 있다(gdb 가 보는 pid 는 호스트 pid 가 아니다).
+            # 네임스페이스에 남은 프로세스와 cgroup·복사본을 정리한다.
+            self._launch.cleanup()
+            self._launch = None
+            return
         pid = self.inferior_pid
         if pid:
             self._kill_inferior(pid)
@@ -582,10 +642,11 @@ class DebugSession:
     def _on_notify_async(self, cls, results):
         self.events.append({"t": cls})
         if cls == "thread-group-started":
-            try:
-                self.inferior_pid = int(results.get("pid"))
-            except (TypeError, ValueError):
-                pass
+            if self._launch is None:             # 격리 실행의 pid 는 네임스페이스 안의 번호라 호스트에서 쓰면 안 된다
+                try:
+                    self.inferior_pid = int(results.get("pid"))
+                except (TypeError, ValueError):
+                    pass
         elif cls == "thread-group-exited":
             self.inferior_pid = None
             self.status = "exited"
@@ -939,6 +1000,7 @@ class DebugSession:
             "exit_code": self.exit_code,
             "load_bias": self.load_bias,
             "pid": proc.pid if proc else None,
+            "sandbox": self.sandbox_info,
         }
 
     def _log_merged(self, text: str):

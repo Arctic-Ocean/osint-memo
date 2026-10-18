@@ -25,6 +25,7 @@ from .project import Project
 from .decompile import Decompiler
 from .ai import AIConfig, chat as ai_chat
 from .debug import DebugSession, DebugError
+from . import sandbox as sbx
 
 # ---- 경로 ---------------------------------------------------------------
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -35,6 +36,21 @@ PROJECTS_DIR = os.path.join(DATA_DIR, "projects")
 UPLOADS_DIR = os.path.join(DATA_DIR, "uploads")
 os.makedirs(PROJECTS_DIR, exist_ok=True)
 os.makedirs(UPLOADS_DIR, exist_ok=True)
+
+# 로컬 전용 서버: Host 헤더가 로컬 주소가 아니면 거절한다(DNS rebinding 으로 외부 웹페이지가
+# 이 API 를 부르는 것 — 예: 격리를 끄고 프로그램 실행 — 을 막는다). 원격 접속이 필요하면
+# REWORK_ALLOWED_HOSTS=호스트1,호스트2 로 명시한다.
+_ALLOWED_HOSTS = {"127.0.0.1", "localhost", "[::1]"} | {
+    h.strip().lower() for h in os.environ.get("REWORK_ALLOWED_HOSTS", "").split(",") if h.strip()}
+
+
+def _host_only(host: str) -> str:
+    host = host.strip().lower()
+    if host.startswith("["):
+        end = host.find("]")
+        return host[:end + 1] if end != -1 else host
+    return host.rsplit(":", 1)[0] if host.count(":") == 1 else host
+
 
 @asynccontextmanager
 async def lifespan(_app):
@@ -69,6 +85,14 @@ class State:
 
 
 STATE = State()
+
+
+@app.middleware("http")
+async def _local_host_only(request, call_next):
+    if _host_only(request.headers.get("host", "")) not in _ALLOWED_HOSTS:
+        return JSONResponse({"detail": "허용되지 않은 Host 입니다. 로컬 주소(127.0.0.1·localhost)로 접속하세요."},
+                            status_code=403)
+    return await call_next(request)
 
 
 def parse_addr(v) -> int:
@@ -385,6 +409,36 @@ def api_ai_chat(payload: dict = Body(...)):
     return ai_chat(AI_CFG, messages, system)
 
 
+# ---- 격리 실행(샌드박스) -----------------------------------------------
+SANDBOX_CFG = sbx.SandboxConfig(os.path.join(DATA_DIR, "sandbox.json"))
+
+
+def _sandbox_report() -> dict:
+    status = sbx.probe()
+    return {"status": status.to_dict(), "policy": SANDBOX_CFG.policy.to_dict(),
+            "report": sbx.describe(SANDBOX_CFG.policy, status, potential=True)}
+
+
+@app.get("/api/sandbox/status")
+def api_sandbox_status():
+    return _sandbox_report()
+
+
+@app.post("/api/sandbox/recheck")
+def api_sandbox_recheck():
+    sbx.probe(force=True)
+    return _sandbox_report()
+
+
+@app.post("/api/sandbox/config")
+def api_sandbox_config(payload: dict = Body(...)):
+    try:
+        SANDBOX_CFG.save(payload)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return _sandbox_report()
+
+
 # ---- 디버거 (GDB/MI) ---------------------------------------------------
 def _dbg_guard(fn):
     try:
@@ -398,10 +452,14 @@ def api_debug_start(payload: dict = Body(...)):
     prog = STATE.prog()
     if not shutil.which("gdb"):
         raise HTTPException(400, "GDB를 찾을 수 없습니다. 설치한 뒤 다시 시도하세요 (예: apt install gdb).")
+    try:                           # 저장된 정책 위에 이번 요청의 값을 덮는다(저장하지 않음)
+        policy = SANDBOX_CFG.effective(payload.get("sandbox"))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
     with STATE.dbg_lock:           # 동시 시작·정지가 세션을 새거나 교차 종료하지 않도록 직렬화
         _teardown_debug()
         try:
-            sess = DebugSession(prog.model.path, program=prog)
+            sess = DebugSession(prog.model.path, program=prog, sandbox=policy)
             state = sess.start()
         except DebugError as e:
             raise HTTPException(400, str(e))

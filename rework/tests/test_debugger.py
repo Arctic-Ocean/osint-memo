@@ -19,6 +19,12 @@ want = set(a for a in sys.argv[1:] if not a.startswith("-"))
 spec = importlib.util.spec_from_file_location("dbgmod", path)
 m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
 DebugSession, DebugError = m.DebugSession, m.DebugError
+if os.environ.get("REWORK_TEST_SANDBOX") == "1":      # 같은 시나리오를 격리 실행 위에서 다시 돌린다
+    _Plain, _sbx = m.DebugSession, m._sandbox_mod()
+
+    class DebugSession(_Plain):
+        def __init__(self, path, program=None, sandbox=None):
+            super().__init__(path, program, sandbox=sandbox or _sbx.SandboxPolicy())
 DEMO = os.path.join(ROOT, "samples", "demo_elf")
 RESULTS = []
 
