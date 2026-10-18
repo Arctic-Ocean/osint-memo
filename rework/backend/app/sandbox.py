@@ -207,8 +207,11 @@ class SandboxConfig:
                     self.policy = SandboxPolicy.from_dict(json.load(fh), strict=False)
             except Exception:
                 self.policy = SandboxPolicy()   # 깨진 설정은 안전한 기본값(격리 켬)으로
+        self.policy.mode = "on"                 # 비격리는 저장된 기본값이 될 수 없다(시작할 때마다 직접 선택)
 
     def save(self, patch: dict) -> SandboxPolicy:
+        if isinstance(patch, dict) and patch.get("mode", "on") != "on":
+            raise ValueError("비격리는 저장할 수 없습니다. 신뢰하는 파일을 디버깅할 때마다 직접 선택하세요.")
         new = SandboxPolicy.from_dict(patch, base=self.policy)
         self.policy = new
         tmp = self.path + ".tmp"

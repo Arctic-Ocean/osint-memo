@@ -14,6 +14,9 @@ const S = {
   sideView: "functions",
   focusAddr: null,
   dbg: { active: false, state: null, regs: [], prevRegs: {}, stack: [], locals: [], breaks: [], disasm: [] },
+  sbx: null,             // 서버의 격리 상태·정책·보고서
+  sbxForm: null,         // 사이드바 격리 설정 입력값(저장 전)
+  sbxOff: false,         // 이번 세션만 비격리로 시작(저장되지 않음)
 };
 
 // ---- DOM 헬퍼 -----------------------------------------------------------
@@ -775,21 +778,132 @@ async function openAISettings() {
 const DBG_TAB = "__debugger__";
 let dbgPoll = null;
 
+// ---- 격리 실행(샌드박스) 설정 ------------------------------------------
+async function loadSandbox(recheck = false) {
+  try {
+    S.sbx = recheck ? await api.sandboxRecheck() : await api.sandboxStatus();
+    if (!S.sbxForm) S.sbxForm = sbxFormFrom(S.sbx.policy);
+  } catch (e) { S.sbx = { error: e.message }; }
+  if (S.sideView === "debug" && !S.dbg.active) renderDebugSidebar();
+}
+function sbxFormFrom(p) {
+  return { network: p.network, memory_mb: p.memory_mb, cpu_seconds: p.cpu_seconds, wall_seconds: p.wall_seconds,
+           max_processes: p.max_processes, extra_ro: (p.extra_ro || []).join("\n") };
+}
+function sbxPayload() {
+  const f = S.sbxForm || {};
+  const num = (v, name) => {
+    const n = Number(v);
+    if (!Number.isInteger(n)) throw new Error(`${name} 는 정수여야 합니다.`);
+    return n;
+  };
+  return {
+    mode: S.sbxOff ? "off" : "on", network: f.network || "none",
+    memory_mb: num(f.memory_mb, "메모리"), cpu_seconds: num(f.cpu_seconds, "CPU 시간"),
+    wall_seconds: num(f.wall_seconds, "실행 시간"), max_processes: num(f.max_processes, "프로세스 수"),
+    extra_ro: String(f.extra_ro || "").split("\n").map((x) => x.trim()).filter(Boolean),
+  };
+}
+function sbxLayerList(layers) {
+  const box = el("div", { class: "sbx-layers" });
+  for (const l of layers || []) {
+    box.append(el("div", { class: "sbx-layer " + (l.active ? "on" : "off"), title: l.detail || "" },
+      el("span", { class: "sbx-mark" }, l.active ? "✓" : "✗"),
+      el("span", {}, l.label),
+      l.detail ? el("div", { class: "sbx-detail" }, l.detail) : null));
+  }
+  return box;
+}
+function sandboxBadge(info) {
+  if (!info) return null;
+  return el("span", { class: "sbx-badge " + (info.enabled ? "on" : "off"), title: info.summary || "" },
+    info.enabled ? "🔒 격리" : "⚠ 비격리");
+}
+function sandboxCard() {
+  const box = el("div", { class: "sbx" });
+  const sb = S.sbx;
+  if (!sb) { box.append(el("div", { class: "sbx-note" }, "격리 상태 확인 중…")); return box; }
+  if (sb.error) { box.append(el("div", { class: "dbg-warn", style: "margin:0" }, "격리 상태를 확인하지 못했습니다: " + sb.error)); return box; }
+  const ok = sb.status.available;
+  const f = S.sbxForm;
+  box.append(el("div", { class: "sbx-head" }, el("b", {}, "격리 실행"),
+    el("span", { class: "sbx-chip " + (ok ? "ok" : "bad") }, ok ? "사용 가능" : "사용 불가"),
+    el("button", { class: "mini-btn", title: "다시 확인", onclick: () => loadSandbox(true) }, "↻")));
+  if (!ok) {
+    box.append(el("div", { class: "sbx-note bad" }, sb.status.reason),
+      sb.status.hint ? el("div", { class: "sbx-note" }, sb.status.hint) : null);
+  } else if (sb.status.reason) {
+    box.append(el("div", { class: "sbx-note" }, sb.status.reason));
+  }
+  const radio = (off, title, sub) => el("label", { class: "sbx-opt" + (S.sbxOff === off ? " sel" : "") },
+    el("input", { type: "radio", name: "sbx-mode", ...(S.sbxOff === off ? { checked: "" } : {}),
+      onchange: () => { S.sbxOff = off; renderDebugSidebar(); } }),
+    el("span", {}, el("b", {}, title), el("div", { class: "sbx-sub" }, sub)));
+  box.append(radio(false, "격리 실행 (권장)", "네트워크 차단 · 읽기 전용 파일시스템 · 시스템 콜 제한 · 자원 한도"),
+             radio(true, "비격리", "신뢰하는 파일만. 이 컴퓨터에서 그대로 실행됩니다."));
+  if (S.sbxOff) box.append(el("div", { class: "dbg-warn", style: "margin:6px 0 0" },
+    "⚠ 악성코드라면 파일 삭제·유출·네트워크 공격이 그대로 일어납니다. 비격리는 저장되지 않으며 시작할 때마다 선택해야 합니다."));
+  if (!S.sbxOff) {
+    const row = (label, input) => el("div", { class: "sbx-row" }, el("label", {}, label), input);
+    const num = (key, min) => el("input", { type: "number", value: f[key], min: String(min),
+      oninput: (e) => { f[key] = e.target.value; } });
+    const net = el("select", { onchange: (e) => { f.network = e.target.value; renderDebugSidebar(); } },
+      el("option", { value: "none", ...(f.network === "none" ? { selected: "" } : {}) }, "차단 (기본)"),
+      el("option", { value: "host", ...(f.network === "host" ? { selected: "" } : {}) }, "호스트 네트워크 공유 (위험)"));
+    box.append(row("네트워크", net));
+    if (f.network === "host") box.append(el("div", { class: "dbg-warn", style: "margin:0 0 6px" },
+      "⚠ 대상이 이 컴퓨터의 네트워크(로컬 서비스 포함)로 통신할 수 있습니다."));
+    const adv = el("details", { class: "sbx-adv" }, el("summary", {}, "자원 한도 · 추가 경로"));
+    adv.append(row("메모리(MB)", num("memory_mb", 64)), row("CPU 시간(초)", num("cpu_seconds", 1)),
+      row("실행 시간(초, 0=무제한)", num("wall_seconds", 0)), row("프로세스 수", num("max_processes", 1)),
+      el("label", { class: "sbx-lbl" }, "추가로 읽기 전용 노출할 경로 (한 줄에 하나)"),
+      el("textarea", { rows: "2", placeholder: "/home/me/inputs", oninput: (e) => { f.extra_ro = e.target.value; } }, f.extra_ro),
+      el("div", { class: "sbx-sub" }, "`< 파일` 로 입력을 줄 파일이 있는 폴더 등. 격리 사용자가 읽을 수 있어야 합니다."),
+      el("button", { class: "mini-btn wide", onclick: sbxSave }, "설정 저장"));
+    box.append(adv);
+  }
+  const rep = el("details", { class: "sbx-adv" },
+    el("summary", {}, `적용되는 보호 (${(sb.report.layers || []).filter((l) => l.active).length}/${(sb.report.layers || []).length})`));
+  rep.append(sbxLayerList(sb.report.layers));
+  box.append(rep);
+  return box;
+}
+async function sbxSave() {
+  try {
+    const p = sbxPayload(); delete p.mode;
+    S.sbx = await api.sandboxSave(p);
+    S.sbxForm = sbxFormFrom(S.sbx.policy);
+    toast("격리 설정 저장됨", "ok");
+    renderDebugSidebar();
+  } catch (e) { toast("저장 실패: " + e.message, "err"); }
+}
+
 function renderDebugSidebar() {
   const body = $("#side-body"); body.innerHTML = "";
   if (!S.info) { body.append(el("div", { class: "empty-list" }, "먼저 바이너리를 여세요.")); return; }
-  body.append(el("div", { class: "dbg-warn" },
-    "⚠ 디버깅은 대상 바이너리를 이 컴퓨터에서 실제로 실행합니다. 신뢰할 수 없는 파일은 격리된 VM에서 여세요."));
   const d = S.dbg;
   if (!d.active) {
+    if (!S.sbx) loadSandbox();
+    const unavailable = S.sbx && !S.sbx.error && !S.sbx.status.available;
+    if (S.sbxOff || unavailable) {
+      body.append(el("div", { class: "dbg-warn" },
+        "⚠ 디버깅은 대상 바이너리를 이 컴퓨터에서 실제로 실행합니다. " +
+        (unavailable && !S.sbxOff ? "지금은 격리를 쓸 수 없어 시작할 수 없습니다. 아래 안내를 따르거나 신뢰하는 파일에 한해 ‘비격리’를 선택하세요."
+                                  : "신뢰할 수 없는 파일은 격리 실행으로 여세요.")));
+    } else {
+      body.append(el("div", { class: "dbg-safe" },
+        "🔒 대상 프로그램은 격리된 환경(네트워크 차단·읽기 전용 파일시스템)에서 실행됩니다."));
+    }
+    body.append(el("div", { style: "padding:0 12px" }, sandboxCard()));
     const wrap = el("div", { class: "dbg-start" });
     wrap.append(el("label", {}, "실행 인자 (선택)"));
     const args = el("input", { id: "dbg-args", type: "text", placeholder: "예: input.bin --verbose" });
     wrap.append(args);
     wrap.append(el("button", { class: "primary", style: "margin-top:8px;width:100%",
-      onclick: () => dbgStart() }, "▶ 디버깅 시작"));
+      ...(unavailable && !S.sbxOff ? { disabled: "" } : {}),
+      onclick: () => dbgStart() }, S.sbxOff ? "⚠ 격리 없이 시작" : "▶ 디버깅 시작"));
     wrap.append(el("div", { class: "dbg-hint" },
-      "시작하면 main에 중단점이 설정됩니다. 입력이 필요한 프로그램은 하단 ‘디버그 콘솔’의 입력창으로 보내거나, 실행 인자에 `< 파일`을 쓰세요."));
+      "시작하면 main에 중단점이 설정됩니다. 입력이 필요한 프로그램은 하단 ‘디버그 콘솔’의 입력창으로 보내거나, 실행 인자에 `< 파일`을 쓰세요(격리에서는 그 파일의 폴더를 ‘추가 경로’에 넣어야 합니다)."));
     body.append(wrap);
     return;
   }
@@ -800,8 +914,16 @@ function renderDebugSidebar() {
     el("b", {}, statusText),
     st.stop_reason ? el("span", {}, " · " + st.stop_reason) : null,
     st.frame ? el("span", { class: "dbg-frame" }, ` · ${st.frame.func || ""} @ ${st.frame.addr || ""}`) : null,
-    st.status === "exited" && st.exit_code != null ? el("span", {}, ` · 종료코드 ${st.exit_code}`) : null);
+    st.status === "exited" && st.exit_code != null ? el("span", {}, ` · 종료코드 ${st.exit_code}`) : null,
+    st.sandbox ? el("span", {}, " ") : null, sandboxBadge(st.sandbox));
   body.append(sline);
+  if (st.sandbox && !st.sandbox.enabled) body.append(el("div", { class: "dbg-warn" },
+    "⚠ 이 세션은 격리 없이 실행 중입니다. 대상이 이 컴퓨터의 파일·네트워크에 그대로 접근할 수 있습니다."));
+  if (st.sandbox && st.sandbox.enabled) {
+    const det = el("details", { class: "sbx-adv", style: "margin:6px 12px" }, el("summary", {}, st.sandbox.summary));
+    det.append(sbxLayerList(st.sandbox.layers));
+    body.append(det);
+  }
   // 실행 제어
   const bar = el("div", { class: "dbg-controls" });
   const btn = (label, title, action, disabled) => el("button",
@@ -847,9 +969,14 @@ async function dbgStart() {
   if (dbgStarting || S.dbg.active) return;   // F5 연타·버튼 더블클릭으로 시작 흐름이 겹치지 않게
   dbgStarting = true;
   const args = ($("#dbg-args") && $("#dbg-args").value.trim()) || "";
+  let sandbox;
+  try { sandbox = sbxPayload(); } catch (e) { toast(e.message, "err"); dbgStarting = false; return; }
+  if (S.sbxOff && !confirm("격리 없이 시작합니다.\n\n이 파일이 악성코드라면 이 컴퓨터의 파일 삭제·정보 유출·네트워크 공격이 실제로 일어날 수 있습니다.\n신뢰하는 파일일 때만 계속하세요. 계속할까요?")) {
+    dbgStarting = false; return;
+  }
   setMsg("디버거 시작 중…");
   try {
-    const started = await api.dbgStart(["main"]);
+    const started = await api.dbgStart(["main"], sandbox);
     S.dbg.active = true;
     S.dbg.argsCache = args;
     const missed = started.failed_breakpoints || [];
@@ -876,6 +1003,7 @@ async function dbgStart() {
 }
 function dbgReset() {
   stopDbgPoll();
+  S.sbxOff = false;                                  // 비격리는 한 세션에만 유효하다
   S.dbg = { active: false, state: null, regs: [], prevRegs: {}, stack: [], locals: [], breaks: [], disasm: [] };
   const dc = $("#panel-debugcon");                  // 다음 세션에서 콘솔 패널을 처음부터 다시 그리게 한다
   if (dc) { dc.dataset.rendered = ""; dc.innerHTML = ""; }

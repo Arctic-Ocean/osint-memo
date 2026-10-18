@@ -492,8 +492,10 @@ def _():
 def _():
     exe = _echo_bin()
     if not exe: return "gcc 없음: 건너뜀"
-    f = os.path.join(tempfile.mkdtemp(), "in.txt"); open(f, "w").write("from-file\n")
-    s = DebugSession(exe); s.start(); s.run(f"< {f}")
+    d = tempfile.mkdtemp(); os.chmod(d, 0o755)
+    f = os.path.join(d, "in.txt"); open(f, "w").write("from-file\n"); os.chmod(f, 0o644)
+    kw = {"sandbox": _sbx.SandboxPolicy(extra_ro=[d])} if os.environ.get("REWORK_TEST_SANDBOX") == "1" else {}
+    s = DebugSession(exe, **kw); s.start(); s.run(f"< {f}")      # 격리에서는 읽을 파일을 extra_ro 로 노출해야 한다
     st = _wait_exit(s); time.sleep(0.2); out = s.target_output(); s.stop()
     assert "got:from-file" in out, repr(out)
     return "실행 인자 `< 파일` 로 입력 파일 연결"

@@ -52,7 +52,11 @@ export const api = {
   aiChat:     (messages, system = "") => j("POST", "/api/ai/chat", { messages, system }),
 
   // 디버거 (GDB/MI)
-  dbgStart:   (breakpoints = []) => j("POST", "/api/debug/start", { breakpoints }),
+  dbgStart:   (breakpoints = [], sandbox) =>
+                j("POST", "/api/debug/start", sandbox ? { breakpoints, sandbox } : { breakpoints }),
+  sandboxStatus:  () => j("GET", "/api/sandbox/status"),
+  sandboxRecheck: () => j("POST", "/api/sandbox/recheck"),
+  sandboxSave:    (cfg) => j("POST", "/api/sandbox/config", cfg),
   dbgStop:    () => j("POST", "/api/debug/stop"),
   dbgState:   () => j("GET", "/api/debug/state"),
   dbgExec:    (action, args = "") => j("POST", "/api/debug/exec", { action, args }),
