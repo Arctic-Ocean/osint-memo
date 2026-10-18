@@ -860,6 +860,7 @@ async function dbgStart() {
     if (!S.dbg.active) return;               // 그 사이 세션이 끝났다면 중단
     openDebuggerTab();
     showPanel("debugcon");
+    growBottomForConsole();
     if (r.state.status === "running") {
       startDbgPoll();                         // 중단점이 없거나 입력 대기 등: 멈출 때까지 폴링
       toast("프로그램 실행 중…", "ok");
@@ -876,6 +877,9 @@ async function dbgStart() {
 function dbgReset() {
   stopDbgPoll();
   S.dbg = { active: false, state: null, regs: [], prevRegs: {}, stack: [], locals: [], breaks: [], disasm: [] };
+  const dc = $("#panel-debugcon");                  // 다음 세션에서 콘솔 패널을 처음부터 다시 그리게 한다
+  if (dc) { dc.dataset.rendered = ""; dc.innerHTML = ""; }
+  stdinHistPos = -1;
   closeTab(DBG_TAB);
   if (S.sideView === "debug") renderDebugSidebar();
 }
@@ -890,10 +894,27 @@ function dbgEnded() {
   dbgReset();
   if (was) toast("디버그 세션이 종료되었습니다.", "err");
 }
+let dbgBusy = false;
+function rerenderDebugViews() {
+  if (S.sideView === "debug") renderDebugSidebar();
+  if (curTab() && curTab().addr === DBG_TAB) renderEditor();
+}
 async function dbgDo(action) {
+  // 이미 실행 중이거나 요청이 진행 중이면 같은 명령을 다시 보내지 않는다(서버가 400 을 낸다).
+  if (action !== "interrupt" && ((S.dbg.state && S.dbg.state.status === "running") || dbgBusy)) return;
+  dbgBusy = true;
   setMsg(`디버거: ${action}…`);
+  // 서버는 프로그램이 멈출 때까지(최대 EXEC_WAIT) 응답을 미룬다. 입력을 기다리는 프로그램이면 그동안
+  // 화면이 '중단됨'으로 남고 프롬프트도 안 보이므로, 오래 걸리면 곧바로 '실행 중'으로 보이고 폴링한다.
+  const early = setTimeout(() => {
+    if (!dbgBusy || !S.dbg.active) return;
+    S.dbg.state = { ...(S.dbg.state || {}), status: "running", stop_reason: null };
+    rerenderDebugViews();
+    startDbgPoll();
+  }, 300);
   try {
     const r = await api.dbgExec(action, S.dbg.argsCache || "");
+    if (r.state.alive === false) { dbgEnded(); return; }     // gdb 가 죽은 것이지 프로그램이 끝난 것이 아니다
     S.dbg.state = r.state;
     await dbgRefresh();
     if (r.state.status === "running") startDbgPoll();
@@ -901,6 +922,9 @@ async function dbgDo(action) {
   } catch (err) {
     toast("디버그 실패: " + err.message, "err");
     await dbgRefresh();   // 세션이 이미 사라졌다면 여기서 감지해 UI를 비활성으로 돌린다
+  } finally {
+    clearTimeout(early);
+    dbgBusy = false;
   }
   setMsg("");
 }
@@ -953,10 +977,16 @@ async function dbgRefreshOutput() {
   try {
     const o = await api.dbgOutput(false);
     const panel = $("#panel-debugcon");
-    if (panel && panel.dataset.rendered) {
-      const pre = $("#dbgcon-out");
-      if (pre) { pre.textContent = o.merged ?? ((o.target || "") + (o.console ? "\n" + o.console : "")); pre.scrollTop = pre.scrollHeight; }
-    }
+    if (!panel || !panel.dataset.rendered) return;
+    const pre = $("#dbgcon-out");
+    if (!pre) return;
+    const next = o.merged ?? ((o.target || "") + (o.console ? "\n" + o.console : ""));
+    if (pre.textContent === next) return;               // 바뀐 게 없으면 DOM 을 건드리지 않는다(스크롤·선택 보존)
+    const sel = window.getSelection();
+    if (sel && !sel.isCollapsed && sel.anchorNode && pre.contains(sel.anchorNode)) return;   // 선택 중이면 미룬다
+    const atBottom = pre.scrollHeight - pre.scrollTop - pre.clientHeight < 8;
+    pre.textContent = next;
+    if (atBottom) pre.scrollTop = pre.scrollHeight;     // 맨 아래를 보고 있을 때만 새 출력을 따라간다
   } catch {}
 }
 
@@ -1075,6 +1105,7 @@ async function dbgSendStdin(inp, opts) {
 
 function renderDebugConsolePanel() {
   const panel = $("#panel-debugcon");
+  stdinHistPos = -1;                 // 새로 그린 입력창은 비어 있으므로 기록 위치도 처음으로
   panel.innerHTML = "";
   panel.dataset.rendered = "1";
   if (!S.dbg.active) { panel.append(el("div", { class: "empty-list" }, "디버그 세션이 없습니다.")); panel.dataset.rendered = ""; return; }
@@ -1107,7 +1138,7 @@ function renderDebugConsolePanel() {
   sRow.append(
     el("span", { class: "dbgcon-lbl", title: "대상 프로그램의 stdin" }, "입력 ▸"), sIn,
     el("label", { class: "dbgcon-opt", title: "끝에 줄바꿈(Enter)을 붙입니다" }, cbNl, "줄바꿈"),
-    el("label", { class: "dbgcon-opt", title: "\\n \\xHH \\033 같은 이스케이프를 바이트로 보냅니다(제어·바이너리 입력)" }, cbEsc, "\\x 해석"),
+    el("label", { class: "dbgcon-opt", title: "\\n \\xHH \\033 같은 이스케이프를 바이트로 보냅니다. ^C·^D·0x7f 같은 제어 바이트도 변형 없이 그대로 전달됩니다" }, cbEsc, "\\x 해석"),
     el("button", { class: "vt-btn", onclick: send }, "보내기"),
     el("button", { class: "vt-btn", title: "EOF(^D) 보내기 — 입력 끝",
       onclick: () => dbgSendStdin(sIn, { eof: true, newline: false, escapes: false }) }, "EOF"));
@@ -1140,15 +1171,23 @@ function syncStaticRip() {
 }
 
 // ---- 하단 패널 ----------------------------------------------------------
+let userResizedBottom = false;      // 사용자가 스플리터로 하단 패널 높이를 직접 조절했는가
+// 디버그 콘솔은 출력 + 입력 줄 두 개가 들어가야 하므로 세션을 시작할 때 한 번 키운다.
+// 사용자가 높이를 직접 조절했다면 존중하고, 접어 둔 패널(Ctrl+J)도 되살리지 않는다.
+function growBottomForConsole() {
+  if (userResizedBottom) return;
+  const bot = $("#bottom");
+  if (!bot.classList.contains("collapsed") && bot.offsetHeight < 260) bot.style.height = "260px";
+}
 function showPanel(name) {
   $$("#bottom .ptab").forEach((b) => b.classList.toggle("active", b.dataset.panel === name));
   $$("#bottom .panel").forEach((p) => p.classList.toggle("active", p.dataset.panel === name));
   $("#bottom").classList.remove("collapsed");
   if (name === "debugcon") {
-    // 출력 + 입력 줄 두 개가 들어가야 하므로 패널이 너무 낮으면 키운다
-    const bot = $("#bottom");
-    if (bot.offsetHeight < 260) bot.style.height = "260px";
-    renderDebugConsolePanel();
+    const dc = $("#panel-debugcon");
+    // 이미 그려져 있으면 출력만 갱신한다(다시 그리면 입력 중이던 내용·기록 위치가 사라진다)
+    if (S.dbg.active && dc.dataset.rendered && dc.querySelector("#dbg-stdin")) dbgRefreshOutput();
+    else renderDebugConsolePanel();
   }
 }
 
@@ -1226,6 +1265,7 @@ function boot() {
   dragSplit($("#split-bottom"), (e) => {
     const rect = $("#main").getBoundingClientRect();
     const h = Math.max(60, Math.min(rect.height - 120, rect.bottom - e.clientY));
+    userResizedBottom = true;
     $("#bottom").style.height = h + "px";
   });
   // 키

@@ -530,6 +530,303 @@ def _():
     return "GDB 8진 종료코드를 10진으로 변환(010→8, 012→10, 0377→255)"
 
 
+_PROBE_SRC = r"""
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <termios.h>
+#include <unistd.h>
+static void hexline(const unsigned char *b, int n) {
+    printf("GOT[%d]:", n);
+    for (int i = 0; i < n; i++) printf(" %02x", b[i]);
+    printf("\n"); fflush(stdout);
+}
+int main(int argc, char **argv) {
+    const char *mode = argc > 1 ? argv[1] : "hex";
+    struct termios t; tcgetattr(0, &t);
+    if (!strcmp(mode, "state")) {
+        printf("STATE ICANON=%d ECHO=%d ISIG=%d IXON=%d ICRNL=%d\n", !!(t.c_lflag & ICANON), !!(t.c_lflag & ECHO),
+               !!(t.c_lflag & ISIG), !!(t.c_iflag & IXON), !!(t.c_iflag & ICRNL));
+        fflush(stdout); return 0;
+    }
+    if (!strcmp(mode, "rawleave")) {
+        struct termios r = t; r.c_lflag &= ~(ICANON | ECHO); tcsetattr(0, TCSANOW, &r);
+        puts("raw"); fflush(stdout); char c; read(0, &c, 1); _exit(0);
+    }
+    if (!strcmp(mode, "rawcooked")) {
+        int n = atoi(argc > 2 ? argv[2] : "5000");
+        struct termios r = t; cfmakeraw(&r); tcsetattr(0, TCSANOW, &r);
+        puts("raw\r"); fflush(stdout);
+        static unsigned char b[70000]; int got = 0;
+        while (got < n) { int k = read(0, b + got, n - got); if (k <= 0) break; got += k; }
+        tcsetattr(0, TCSANOW, &t);
+        printf("cooked got=%d\n", got); fflush(stdout);
+        char line[8192];
+        if (fgets(line, sizeof line, stdin)) printf("LINE:%s", line); else puts("LINE:EOF");
+        fflush(stdout); return 0;
+    }
+    if (!strcmp(mode, "kor")) { for (int i = 0; i < 3000; i++) printf("가"); printf("\nDONE\n"); fflush(stdout); return 0; }
+    puts("ready"); fflush(stdout);
+    unsigned char b[8192];
+    for (;;) {
+        int n = read(0, b, sizeof b);
+        if (n <= 0) { puts("EOF"); fflush(stdout); return n < 0; }
+        hexline(b, n);
+        if (n >= 4 && !memcmp(b, "quit", 4)) return 0;
+    }
+}
+"""
+_PROBE_BIN = []
+
+
+def _probe_bin():
+    """모드별로 동작하는 터미널 탐침: state / rawleave / rawcooked N / kor / (기본) hex."""
+    if _PROBE_BIN:
+        return _PROBE_BIN[0]
+    if not shutil.which("gcc"):
+        _PROBE_BIN.append(None); return None
+    import subprocess
+    d = tempfile.mkdtemp(); src = os.path.join(d, "ttyprobe.c"); exe = os.path.join(d, "ttyprobe")
+    open(src, "w", encoding="utf-8").write(_PROBE_SRC)
+    subprocess.check_call(["gcc", "-g", "-O0", "-o", exe, src])
+    _PROBE_BIN.append(exe)
+    return exe
+
+
+def _wait_text(s, pattern, secs=6.0):
+    import re
+    t0 = time.time()
+    while time.time() - t0 < secs:
+        if re.search(pattern, s.merged_output()):
+            return True
+        time.sleep(0.05)
+    return False
+
+
+def _got_bytes(s):
+    import re
+    out = []
+    for mm in re.finditer(r"GOT\[(\d+)\]:((?: [0-9a-f]{2})+)", s.merged_output()):
+        out += [int(x, 16) for x in mm.group(2).split()]
+    return out
+
+
+def _wait_status(s, status, secs=6.0):
+    t0 = time.time()
+    while time.time() - t0 < secs:
+        if s.snapshot()["status"] == status:
+            return True
+        time.sleep(0.05)
+    return False
+
+
+@scenario("stdin-byte-fidelity")
+def _():
+    """보낸 바이트 == 프로그램이 받은 바이트. 쿠킹 모드가 해석하는 제어 바이트를 모두 섞어도 변형·삼킴·시그널·출력 정지가 없어야 한다."""
+    exe = _probe_bin()
+    if not exe: return "gcc 없음: 건너뜀"
+    payload = r"A\x03\x04\x0d\x11\x12\x13\x15\x16\x17\x1a\x1c\x7fB"
+    expected = [0x41, 3, 4, 13, 0x11, 0x12, 0x13, 0x15, 0x16, 0x17, 0x1a, 0x1c, 0x7f, 0x42, 10]
+    s = DebugSession(exe); s.start(); s.run(""); _wait_text(s, "ready")
+    r = s.send_input(payload, escapes=True)
+    assert _wait_text(s, r"GOT\["), "프로그램이 입력을 받지 못함"
+    time.sleep(0.3)
+    assert s.snapshot()["status"] == "running", f"제어 바이트가 시그널로 디버기를 멈춤: {s.snapshot()['status']}"
+    got = _got_bytes(s)
+    assert got == expected, f"바이트가 달라짐: 받음={[hex(x) for x in got]}"
+    # ^S(0x13) 가 출력을 얼리지 않았다면 EOF 후 'EOF' 가 찍히고 프로그램이 끝난다
+    s.send_input("", newline=False, eof=True)
+    assert _wait_text(s, "EOF") and _wait_status(s, "exited"), "^S 로 대상 출력이 멈췄거나 EOF 가 전달되지 않음"
+    s.stop()
+    return f"제어 바이트 13종 포함 {len(expected)}바이트가 그대로 전달({r['quoted']}개 인용), 시그널·출력 정지 없음"
+
+
+@scenario("stdin-signal-chars-in-text")
+def _():
+    """escapes 를 끈 일반 텍스트에 ^C/^Z/^\\ 문자가 섞여도(붙여넣기) 대상에 시그널이 가지 않는다."""
+    exe = _probe_bin()
+    if not exe: return "gcc 없음: 건너뜀"
+    for ch in ("\x03", "\x1a", "\x1c"):
+        s = DebugSession(exe); s.start(); s.run(""); _wait_text(s, "ready")
+        s.send_input("pay" + ch + "load")
+        assert _wait_text(s, r"GOT\["), "입력이 전달되지 않음"
+        time.sleep(0.25)
+        st = s.snapshot()
+        assert st["status"] == "running", f"0x{ord(ch):02x} 가 시그널로 디버기를 멈춤: {st['status']} {st['stop_reason']}"
+        want = [ord(c) for c in "pay" + ch + "load"] + [10]
+        assert _got_bytes(s) == want, [hex(x) for x in _got_bytes(s)]
+        s.stop()
+    return "^C ^Z ^\\ 가 데이터로 전달되고 디버기는 계속 실행"
+
+
+@scenario("stdin-reset-on-run")
+def _():
+    """이전 실행에서 안 읽힌 입력과 바뀐 터미널 모드가 다음 실행으로 새지 않는다. 실행 중이 아닐 때의 입력은 거부."""
+    exe = _probe_bin()
+    if not exe: return "gcc 없음: 건너뜀"
+    s = DebugSession(exe); s.start()
+    try:
+        s.send_input("before-run"); raise AssertionError("실행 전 전송이 거부돼야 함")
+    except DebugError:
+        pass
+    s.run(""); _wait_text(s, "ready")
+    s.send_input("quit"); s.send_input("leftover-1"); s.send_input("leftover-2")
+    assert _wait_status(s, "exited"), "프로그램이 quit 으로 끝나지 않음"
+    try:
+        s.send_input("typed-after-exit"); raise AssertionError("종료 뒤 전송이 거부돼야 함")
+    except DebugError:
+        pass
+    n0 = len(s.merged)
+    s.run(""); time.sleep(0.8)
+    fresh = "".join(s.merged[n0:])
+    assert "GOT[" not in fresh, f"이전 실행의 입력이 새 실행으로 샘: {fresh[-120:]!r}"
+    s.stop()
+    # raw 모드로 바꾸고 복원 없이 끝난 프로그램 → 다음 실행은 기본 상태로 시작
+    s = DebugSession(exe); s.start(); s.run("rawleave"); _wait_text(s, "raw")
+    s.send_input("k", newline=False); assert _wait_status(s, "exited")
+    s.run("state"); time.sleep(0.8)
+    import re
+    st = re.findall(r"STATE.*", s.merged_output())[-1]
+    s.stop()
+    assert "ICANON=1" in st and "ECHO=1" in st and "ISIG=0" in st and "IXON=0" in st and "ICRNL=0" in st, st
+    return f"입력 큐·termios 초기화됨({st})"
+
+
+@scenario("stdin-raw-mode-recovery")
+def _():
+    """raw 모드에서 줄바꿈 없이 4095바이트 넘게 보낸 뒤 cooked 로 돌아와도 입력이 영구히 막히지 않는다."""
+    exe = _probe_bin()
+    if not exe: return "gcc 없음: 건너뜀"
+    s = DebugSession(exe); s.start(); s.run("rawcooked 5000"); _wait_text(s, "raw")
+    s.send_input("x" * 5000, newline=False)                  # raw: 줄 길이 제한 없음
+    assert s._line_carry == 0, s._line_carry
+    assert _wait_text(s, "cooked got=5000"), "프로그램이 5000바이트를 다 받지 못함"
+    time.sleep(0.2)
+    s.send_input("hello")                                    # cooked 복귀 후에도 정상 전송
+    assert _wait_text(s, "LINE:hello"), s.merged_output()[-120:]
+    s.stop()
+    s = DebugSession(exe); s.start(); s.run("rawcooked 10"); _wait_text(s, "raw")
+    try:
+        s.send_input("", newline=False, eof=True); raise AssertionError("raw 에서 EOF 는 거부돼야 함")
+    except DebugError as e:
+        assert "raw" in str(e)
+    s.stop()
+    return "raw 5000바이트 후 cooked 복귀·'hello' 전달 성공, raw 에서의 EOF 는 안내와 함께 거부"
+
+
+@scenario("stdin-partial-write-carry")
+def _():
+    """쓰기가 중간에 막혀 일부만 전달되면, 전달된 만큼만 줄 길이에 반영한다(다음 줄이 조용히 잘리지 않게)."""
+    s = DebugSession(DEMO); s.start(); s.break_insert("main"); s.run("x")
+    real_os = m.os; calls = {"n": 0}
+    class _Shim:
+        def __getattr__(self, name): return getattr(real_os, name)
+        def write(self, fd, data):
+            if fd != s._pty_master: return real_os.write(fd, data)
+            calls["n"] += 1
+            if calls["n"] == 1: return real_os.write(fd, data[:10])    # 처음엔 10바이트만 받는다
+            raise BlockingIOError(11, "EAGAIN")
+    old = DebugSession.INPUT_WAIT
+    m.os = _Shim(); DebugSession.INPUT_WAIT = 0.3
+    try:
+        try:
+            s.send_input("A" * 50, newline=False); raise AssertionError("부분 전달 오류가 나야 함")
+        except DebugError as e:
+            msg = str(e)
+    finally:
+        m.os = real_os; DebugSession.INPUT_WAIT = old
+    assert "10/50" in msg, msg
+    assert s._line_carry == 10, f"전달된 10바이트만 반영돼야 함: carry={s._line_carry}"
+    try:
+        s.send_input("B" * 4090, newline=False); raise AssertionError("남은 조각과 합쳐 한계 초과가 거부돼야 함")
+    except DebugError as e:
+        assert "4100" in str(e), str(e)
+    s.send_input("", newline=True)                           # 개행으로 줄을 확정하면 다시 0
+    assert s._line_carry == 0
+    s.stop()
+    return "부분 전달 10/50바이트 → carry=10, 다음 줄은 4100바이트로 정확히 거부, 개행 후 복구"
+
+
+@scenario("stdin-limit-accounting")
+def _():
+    """줄 길이 계산은 프로그램이 실제로 받는 줄과 일치해야 한다(제어 바이트는 데이터, 줄 경계는 개행뿐)."""
+    import re
+    exe = _probe_bin()
+    if not exe: return "gcc 없음: 건너뜀"
+    def reads(s):
+        return [int(x) for x in re.findall(r"GOT\[(\d+)\]", s.merged_output())]
+    # (a) ^V(0x16) 를 포함한 두 줄: 예전엔 ^V 가 삼켜져 약 3900바이트가 조용히 사라졌다
+    s = DebugSession(exe); s.start(); s.run(""); _wait_text(s, "ready")
+    s.send_input("A" * 4000 + r"\x16\n" + "B" * 4000, escapes=True)
+    t0 = time.time()
+    while time.time() - t0 < 6 and len(reads(s)) < 2: time.sleep(0.05)
+    a = reads(s); s.stop()
+    assert a == [4002, 4001], f"두 줄이 손실 없이 전달돼야 함: {a}"
+    # (b) 4095바이트 + EOF: 예전엔 EOF 문자를 길이에 넣어 거부했다. 실제로는 4095바이트가 그대로 넘어간다
+    s = DebugSession(exe); s.start(); s.run(""); _wait_text(s, "ready")
+    s.send_input("A" * 4095, newline=False, eof=True)
+    t0 = time.time()
+    while time.time() - t0 < 6 and not reads(s): time.sleep(0.05)
+    b = reads(s); s.stop()
+    assert b == [4095], f"4095바이트가 EOF 로 확정돼 전달돼야 함: {b}"
+    # (c) CR 은 이제 줄 경계가 아니라 데이터: 3000+CR+3000 은 6001바이트 한 줄이므로 거부된다
+    s = DebugSession(exe); s.start(); s.run(""); _wait_text(s, "ready")
+    try:
+        s.send_input("A" * 3000 + r"\r" + "B" * 3000, escapes=True); raise AssertionError("6001바이트 한 줄은 거부돼야 함")
+    except DebugError as e:
+        assert "6001" in str(e), str(e)
+    s.stop()
+    return "인용된 ^V 줄은 4002+4001 무손실, 4095+EOF 는 허용, CR 은 데이터로 계산(6001 거부)"
+
+
+@scenario("utf8-chunk-boundary")
+def _():
+    """read() 청크 경계에서 한글이 잘려도 깨지지 않는다(청크를 직접 만들어 타이밍과 무관하게 검증)."""
+    s = DebugSession(DEMO)
+    s._alive = True
+    r, w = os.pipe()
+    th = threading.Thread(target=s._pty_loop, args=(r,), daemon=True); th.start()
+    data = ("가나다" * 5).encode("utf-8")           # 한 글자 3바이트
+    for cut in (1, 2, 4, 8):                          # 글자 한가운데서 끊는다
+        os.write(w, data[:cut]); time.sleep(0.35)     # 별도 read() 로 읽히도록 간격을 둔다
+        os.write(w, data[cut:]); time.sleep(0.35)
+    s._alive = False; th.join(2); os.close(r); os.close(w)
+    out = s.merged_output()
+    assert out == ("가나다" * 5) * 4, repr(out[:60])
+    assert "\ufffd" not in out
+    # 실제 프로그램 출력(9000바이트)도 확인
+    exe = _probe_bin()
+    if exe:
+        s2 = DebugSession(exe); s2.start(); s2.run("kor"); _wait_text(s2, "DONE"); time.sleep(0.2)
+        o2 = s2.merged_output(); s2.stop()
+        assert o2.count("가") == 3000 and "\ufffd" not in o2, (o2.count("가"), o2.count("\ufffd"))
+    return "글자 중간에서 끊긴 4가지 경계 모두 복원, 실제 출력 3000자도 U+FFFD 0개"
+
+
+@scenario("stdin-input-validation")
+def _():
+    """잘못된 입력은 500 이 아니라 명확한 오류가 된다(서로게이트·불리언 아닌 옵션·실행 전)."""
+    s = DebugSession(DEMO); s.start(); s.break_insert("main"); s.run("x")
+    try:
+        s.send_input("bad\\ud800".encode().decode("unicode_escape"), newline=False)
+        raise AssertionError("짝 없는 서로게이트가 거부돼야 함")
+    except DebugError as e:
+        assert "유니코드" in str(e), str(e)
+    s.stop()
+    import importlib
+    os.environ.setdefault("REWORK_DATA", tempfile.mkdtemp())
+    sys.path.insert(0, os.path.join(ROOT, "backend"))
+    api = importlib.import_module("app.main")
+    ok = api._stdin_args({"text": "hi", "newline": False, "escapes": True, "eof": False})
+    assert ok == ("hi", False, True, False), ok
+    for bad in ({"text": 1}, {"text": "a", "newline": "false"}, {"text": "a", "eof": 1}, {"text": "a", "escapes": None}):
+        try:
+            api._stdin_args(bad); raise AssertionError(f"{bad} 가 거부돼야 함")
+        except Exception as e:
+            assert getattr(e, "status_code", None) == 400, (bad, e)
+    return "서로게이트는 DebugError, 불리언이 아닌 옵션은 HTTP 400"
+
+
 @scenario("parser-escapes")
 def _():
     got = m._parse_cstring('"\\033[0mX\\000Y\\a\\x41\\"\\\\"', 0)[0]

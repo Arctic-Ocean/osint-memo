@@ -518,18 +518,26 @@ def api_debug_console(payload: dict = Body(...)):
     return _dbg_guard(lambda: STATE.dbg().console_cmd(payload.get("cmd", "")))
 
 
+def _stdin_args(payload: dict) -> tuple:
+    """/api/debug/stdin 본문 검증. 옵션은 진짜 불리언만 받는다(`"false"` 문자열이 True 가 되면 안 된다)."""
+    text = payload.get("text", "")
+    if not isinstance(text, str):
+        raise HTTPException(400, "text는 문자열이어야 합니다.")
+    flags = {}
+    for key, default in (("newline", True), ("escapes", False), ("eof", False)):
+        v = payload.get(key, default)
+        if not isinstance(v, bool):
+            raise HTTPException(400, f"{key}는 true/false 여야 합니다.")
+        flags[key] = v
+    return text, flags["newline"], flags["escapes"], flags["eof"]
+
+
 @app.post("/api/debug/stdin")
 def api_debug_stdin(payload: dict = Body(...)):
     """대상 프로그램의 stdin 으로 입력을 보낸다(전용 pty)."""
     sess = STATE.dbg()
-    text = payload.get("text", "")
-    if not isinstance(text, str):
-        raise HTTPException(400, "text는 문자열이어야 합니다.")
-    return _dbg_guard(lambda: sess.send_input(
-        text,
-        newline=bool(payload.get("newline", True)),
-        escapes=bool(payload.get("escapes", False)),
-        eof=bool(payload.get("eof", False))))
+    text, newline, escapes, eof = _stdin_args(payload)
+    return _dbg_guard(lambda: sess.send_input(text, newline=newline, escapes=escapes, eof=eof))
 
 
 @app.get("/api/debug/output")

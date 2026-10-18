@@ -17,6 +17,8 @@
 from __future__ import annotations
 
 import atexit
+import bisect
+import codecs
 import fcntl
 import os
 import pty
@@ -60,6 +62,45 @@ def _decode_exit_code(v):
         return str(int(str(v), 8))
     except ValueError:
         return str(v)
+
+
+def _cc(attrs, idx):
+    """termios c_cc 항목을 정수 바이트로 돌려준다(비활성(0)이거나 형식이 다르면 None)."""
+    try:
+        v = attrs[6][idx]
+    except (IndexError, TypeError):
+        return None
+    if isinstance(v, (bytes, bytearray)):
+        v = v[0] if len(v) == 1 else None
+    return v if isinstance(v, int) and v != 0 else None
+
+
+def tty_special_bytes(attrs) -> set:
+    """쿠킹 모드 라인 디시플린이 입력에서 '해석'해 버리는 바이트들.
+    이 바이트를 프로그램에 그대로 전달하려면 ^V(VLNEXT)로 인용해야 한다. 개행(0x0a)은
+    진짜 줄 끝이므로 제외한다. 현재 termios 설정에서 계산하므로 프로그램이 설정을 바꿔도 맞다."""
+    iflag, lflag = attrs[0], attrs[3]
+    idx = [termios.VEOF, termios.VEOL, termios.VERASE, termios.VKILL]
+    for name in ("VEOL2", "VWERASE", "VREPRINT", "VLNEXT"):
+        if hasattr(termios, name):
+            idx.append(getattr(termios, name))
+    if lflag & termios.ISIG:
+        idx += [termios.VINTR, termios.VQUIT, termios.VSUSP]
+    if iflag & termios.IXON:
+        idx += [termios.VSTART, termios.VSTOP]
+    out = {c for c in (_cc(attrs, i) for i in idx) if c is not None}
+    if iflag & (termios.ICRNL | termios.IGNCR):
+        out.add(13)
+    out.discard(10)
+    return out
+
+
+def advance_line_carry(carry: int, data: bytes, eof: bool = False) -> int:
+    """줄바꿈 없이 남은 '현재 줄'의 길이를 갱신한다. 개행은 줄을 끝내고, EOF 문자는 남은
+    줄을 프로그램에 넘기므로 0 이 된다. (특수 바이트는 인용해 보내므로 길이에 1씩 더한다.)"""
+    last = data.rfind(b"\n")
+    carry = len(data) - last - 1 if last >= 0 else carry + len(data)
+    return 0 if eof else carry
 
 
 def decode_input_escapes(text: str) -> bytes:
@@ -251,6 +292,7 @@ class DebugSession:
         self._stop_lock = threading.Lock()
         self._io_lock = threading.Lock()   # 대상 stdin 쓰기와 pty fd 닫기를 직렬화
         self._line_carry = 0               # 줄바꿈 없이 보낸 채 남아 있는 현재 줄의 바이트 수
+        self._pty_base = None              # 실행 때마다 복원할 pty 터미널 설정
         self._closed = False            # stop() 완료 여부(멱등성)
         self._closing = False
         self._token = 0
@@ -284,6 +326,19 @@ class DebugSession:
         fcntl.fcntl(master, fcntl.F_SETFL, fcntl.fcntl(master, fcntl.F_GETFL) | os.O_NONBLOCK)
         self._pty_master = master
         self._pty_slave = slave   # 세션 동안 열어 둔다(조기 EOF 방지)
+        # 입력이 '보낸 그대로' 프로그램에 닿게 터미널 해석을 끈다.
+        #  - ISIG: ^C/^Z/^\\ 바이트가 대상에 시그널을 보내 디버기를 멈추거나 죽이지 않게(중단은 ⏸ 버튼)
+        #  - IXON: ^S(0x13) 한 바이트로 대상 출력이 얼어붙지 않게
+        #  - ICRNL/INLCR/IGNCR: 0x0d·0x0a 가 변환·삭제되지 않게
+        # 남은 특수 문자(^D 0x7f ^U 등)는 send_input 이 ^V 로 인용한다.
+        try:
+            attrs = termios.tcgetattr(slave)
+            attrs[0] &= ~(termios.ICRNL | termios.INLCR | termios.IGNCR | termios.IXON)
+            attrs[3] &= ~termios.ISIG
+            termios.tcsetattr(slave, termios.TCSANOW, attrs)
+            self._pty_base = attrs
+        except (OSError, termios.error):
+            self._pty_base = None
         try:
             self.proc = subprocess.Popen(
                 ["gdb", "--quiet", "--nx", "--interpreter=mi3", self.path],
@@ -437,6 +492,8 @@ class DebugSession:
             self._stopped_ev.set()
 
     def _pty_loop(self, master):
+        # read() 청크 경계에서 멀티바이트 문자(한글)가 잘려도 깨지지 않도록 증분 디코더를 쓴다
+        decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
         while self._alive and not self._closing:
             try:
                 ready, _, _ = select.select([master], [], [], 0.2)
@@ -449,7 +506,9 @@ class DebugSession:
                 break
             if not data:
                 break
-            text = data.decode("utf-8", "replace")
+            text = decoder.decode(data)
+            if not text:
+                continue
             self.target_out.append(text)
             self._log_merged(text)
             if len(self.target_out) > 2000:
@@ -607,7 +666,21 @@ class DebugSession:
         if args:
             self._send(f"-exec-arguments {args}")
         self.exit_code = None   # 종료 뒤 다시 실행할 때 이전 종료코드가 남지 않게
+        self._reset_pty()       # 이전 실행에서 안 읽힌 입력·바뀐 터미널 모드가 새 실행으로 새지 않게
         return self._exec("-exec-run", wait_stop=True)
+
+    def _reset_pty(self):
+        with self._io_lock:
+            slave = self._pty_slave
+            if slave is None or self._closed:
+                return
+            try:
+                termios.tcflush(slave, termios.TCIFLUSH)             # 안 읽힌 입력 버림
+                if self._pty_base is not None:
+                    termios.tcsetattr(slave, termios.TCSANOW, self._pty_base)   # ICANON/ECHO 등 복원
+            except (OSError, termios.error):
+                pass
+            self._line_carry = 0
 
     def cont(self):   return self._exec("-exec-continue", wait_stop=True)
     def step(self):   return self._exec("-exec-step", wait_stop=True)
@@ -748,65 +821,109 @@ class DebugSession:
                    eof: bool = False) -> dict:
         """대상 프로그램의 stdin 으로 입력을 보낸다(전용 pty 마스터에 쓴다).
 
-        터미널과 같은 쿠킹 모드라 에코가 출력에 함께 찍히고, 한 줄은 줄바꿈이 있어야
-        프로그램에 전달된다. `eof` 는 EOF 문자(보통 ^D)를 보낸다. `escapes` 가 켜져 있으면
-        \\xHH·\\033·\\n 같은 이스케이프를 바이트로 풀어 보낸다(제어·바이너리 입력용).
-        프로그램이 입력을 읽지 않아 버퍼가 가득 차면 기다리지 않고 DebugError 를 낸다."""
+        계약: 보낸 바이트가 그대로 프로그램에 닿는다. 이를 위해 시작 시 신호·흐름제어·CR 변환을
+        끄고, 쿠킹 모드가 해석하는 나머지 특수 바이트(^D 0x7f ^U 등)는 ^V 로 인용해 보낸다.
+        한 줄은 줄바꿈이 있어야 프로그램에 전달되며(쿠킹 모드), `eof` 는 EOF 문자(^D)를 보낸다.
+        `escapes` 가 켜져 있으면 \\xHH·\\033·\\n 같은 이스케이프를 바이트로 풀어 보낸다.
+        한 줄이 4095바이트를 넘거나(터미널이 조용히 버림), 프로그램이 입력을 읽지 않아 버퍼가
+        가득 차면 기다리지 않고 DebugError 를 낸다."""
         if not isinstance(text, str):
             raise DebugError("입력은 문자열이어야 합니다.")
-        data = decode_input_escapes(text) if escapes else text.encode("utf-8")
-        if newline:
-            data += b"\n"
-        if eof:
-            try:
-                data += termios.tcgetattr(self._pty_slave)[6][termios.VEOF]
-            except Exception:
-                data += b"\x04"
-        if not data:
+        if len(text) > MAX_INPUT:
+            raise DebugError(f"입력이 너무 큽니다({len(text)}자, 최대 {MAX_INPUT}). "
+                             "큰 입력은 실행 인자에 `< 파일` 로 연결하세요.")
+        try:
+            raw = decode_input_escapes(text) if escapes else text.encode("utf-8")
+        except UnicodeEncodeError:
+            raise DebugError("유효하지 않은 유니코드 문자(짝 없는 서로게이트)가 있어 보낼 수 없습니다.")
+        body = raw + (b"\n" if newline else b"")
+        if not body and not eof:
             raise DebugError("보낼 입력이 없습니다.")
-        if len(data) > MAX_INPUT:
-            raise DebugError(f"입력이 너무 큽니다({len(data)}바이트, 최대 {MAX_INPUT}). "
+        if len(body) > MAX_INPUT:
+            raise DebugError(f"입력이 너무 큽니다({len(body)}바이트, 최대 {MAX_INPUT}). "
                              "큰 입력은 실행 인자에 `< 파일` 로 연결하세요.")
         with self._io_lock:
             fd = self._pty_master
             if self._closed or not self._alive or fd is None:
                 raise DebugError("디버그 세션이 활성 상태가 아닙니다.")
-            # 쿠킹 모드에서는 한 줄이 CANON_LINE_MAX 를 넘으면 커널이 조용히 잘라 버린다.
-            # 잘린 입력으로 분석하는 사고를 막기 위해 보내기 전에 거부한다.
-            # (프로그램이 스스로 raw 모드로 바꿨다면 이 제한은 적용되지 않는다.)
+            if self.status not in ("running", "stopped"):
+                raise DebugError("실행 중인 프로그램이 없습니다. ▶/↻ 로 먼저 실행하세요 "
+                                 "(종료된 프로그램에 보낸 입력은 다음 실행으로 새므로 받지 않습니다).")
             try:
-                canonical = bool(termios.tcgetattr(self._pty_slave)[3] & termios.ICANON)
-            except Exception:
-                canonical = True
+                attrs = termios.tcgetattr(self._pty_slave)
+            except (OSError, termios.error):
+                attrs = None
+            canonical = attrs is None or bool(attrs[3] & termios.ICANON)
+
+            wire = bytearray()
+            ends = []                    # 원본 바이트 i 까지 보냈을 때의 와이어 길이(부분 쓰기 계산용)
             if canonical:
-                for k, seg in enumerate(data.split(b"\n")):
+                # (1) 쿠킹 모드에서는 한 줄이 CANON_LINE_MAX 를 넘으면 커널이 나머지를 조용히 버린다.
+                #     잘린 입력으로 분석하는 사고를 막기 위해 보내기 전에 거부한다.
+                for k, seg in enumerate(body.split(b"\n")):
                     length = len(seg) + (self._line_carry if k == 0 else 0)
                     if length > CANON_LINE_MAX:
                         raise DebugError(
                             f"한 줄이 {CANON_LINE_MAX}바이트를 넘습니다({length}바이트). 터미널(pty)은 그 이상을 "
                             "조용히 버립니다. 긴 입력은 파일로 만들어 실행 인자에 `< 파일` 로 연결하세요.")
+                # (2) 라인 디시플린이 해석하는 바이트는 ^V 로 인용해 그대로 닿게 한다
+                quote = set()
+                vlnext = None
+                if attrs is not None:
+                    specials = tty_special_bytes(attrs) & set(body)
+                    vlnext = _cc(attrs, termios.VLNEXT) if hasattr(termios, "VLNEXT") else None
+                    if specials:
+                        if vlnext is None or not (attrs[3] & termios.IEXTEN):
+                            raise DebugError(
+                                "이 터미널 모드에서는 제어 바이트 "
+                                + ", ".join(f"0x{b:02x}" for b in sorted(specials))
+                                + " 를 그대로 보낼 수 없습니다(프로그램이 리터럴 인용을 껐습니다).")
+                        quote = specials
+                for b in body:
+                    if b in quote:
+                        wire.append(vlnext)
+                    wire.append(b)
+                    ends.append(len(wire))
+                if eof:
+                    wire.append(_cc(attrs, termios.VEOF) or 4 if attrs is not None else 4)
+            else:
+                # 프로그램이 raw 모드: 줄 단위 해석이 없으므로 그대로 쓴다(EOF 문자는 의미가 없다)
+                if eof:
+                    raise DebugError("프로그램이 raw 모드라 EOF 문자(^D)는 의미가 없습니다"
+                                     "(프로그램은 0x04 를 데이터로 받습니다).")
+                wire += body
+                ends = list(range(1, len(body) + 1))
+
             sent = 0
             deadline = time.monotonic() + self.INPUT_WAIT
-            while sent < len(data):
+            fail = None
+            while sent < len(wire):
                 try:
-                    sent += os.write(fd, data[sent:])
+                    sent += os.write(fd, bytes(wire[sent:]))
                 except BlockingIOError:
                     left = deadline - time.monotonic()
                     if left <= 0:
-                        raise DebugError(
-                            f"대상 입력 버퍼가 가득 찼습니다({sent}/{len(data)}바이트만 전달). "
-                            "프로그램이 입력을 읽고 있는지 확인하세요.")
+                        fail = "full"
+                        break
                     select.select([], [fd], [], min(left, 0.2))
                 except OSError as e:
-                    raise DebugError(f"대상 입력 전송 실패: {e}")
-            # 줄바꿈 없이 남은 현재 줄 길이 추적(EOF 는 남은 줄을 프로그램에 넘기므로 0)
-            if eof:
-                self._line_carry = 0
-            elif b"\n" in data:
-                self._line_carry = len(data.rsplit(b"\n", 1)[1])
+                    fail = f"전송 실패: {e}"
+                    break
+
+            # 줄 길이 상태 갱신: 실제로 전달된 원본 바이트만큼만 반영한다
+            delivered = len(body) if sent >= len(wire) else bisect.bisect_right(ends, sent)
+            if canonical:
+                self._line_carry = advance_line_carry(
+                    self._line_carry, body[:delivered], eof=eof and sent >= len(wire))
             else:
-                self._line_carry += len(data)
-        return {"sent": sent, "bytes": len(data)}
+                self._line_carry = 0     # raw 로 보낸 바이트는 cooked 로 돌아오면 확정된 입력이다
+            if fail == "full":
+                raise DebugError(
+                    f"대상 입력 버퍼가 가득 찼습니다({delivered}/{len(body)}바이트만 전달됨). "
+                    "프로그램이 입력을 읽고 있는지 확인하세요. 전달된 앞부분은 이미 입력 큐에 있습니다.")
+            if fail:
+                raise DebugError(f"대상 입력 {fail}")
+        return {"sent": len(body), "bytes": len(wire), "quoted": len(wire) - len(body) - (1 if eof else 0)}
 
     # ---- 스냅샷 --------------------------------------------------------
     def snapshot(self) -> dict:
