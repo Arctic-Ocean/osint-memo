@@ -22,6 +22,7 @@ import codecs
 import fcntl
 import os
 import pty
+import queue
 import re
 import select
 import signal
@@ -298,6 +299,47 @@ def parse_mi_results(s: str) -> dict:
     return d
 
 
+LOG_LIMIT_CHARS = 2_000_000        # 로그 버퍼(대상 출력·gdb 콘솔·섞은 로그)마다 보관하는 최대 글자 수
+LOG_TAIL_CHARS = 262_144           # API 가 한 번에 돌려주는 최대 글자 수(JSON 이스케이프로 최대 6배까지 부풀 수 있다)
+MI_LINE_MAX = 1 << 20              # gdb 가 보내는 한 줄의 최대 길이(넘으면 그 줄은 버린다)
+
+
+class _Spawner:
+    """subprocess.Popen 을 항상 같은 장수 스레드에서 실행한다. bwrap 의 --die-with-parent(PR_SET_PDEATHSIG)는
+    '부모 스레드'가 끝날 때 발동하는데 웹 서버의 스레드풀 작업자는 10초쯤 놀면 정리된다 — 그 스레드가 Popen 을
+    했다면 세션이 몇 초 뒤 아무 오류 없이 죽는다. 이 스레드는 서버 프로세스가 끝날 때까지 산다."""
+
+    def __init__(self):
+        self._q: queue.Queue = queue.Queue()
+        self._t = None
+        self._lock = threading.Lock()
+
+    def _run(self):
+        while True:
+            fn, box, ev = self._q.get()
+            try:
+                box["v"] = fn()
+            except BaseException as e:      # noqa: BLE001  호출자에게 그대로 전달한다
+                box["e"] = e
+            ev.set()
+
+    def call(self, fn):
+        with self._lock:
+            if self._t is None or not self._t.is_alive():
+                self._t = threading.Thread(target=self._run, daemon=True, name="rework-spawner")
+                self._t.start()
+        box: dict = {}
+        ev = threading.Event()
+        self._q.put((fn, box, ev))
+        ev.wait()
+        if "e" in box:
+            raise box["e"]
+        return box["v"]
+
+
+_SPAWNER = _Spawner()
+
+
 # ---- 디버그 세션 ---------------------------------------------------------
 class DebugSession:
     def __init__(self, binary_path: str, program=None, sandbox=None):
@@ -324,6 +366,9 @@ class DebugSession:
         self.console = []               # gdb 콘솔/로그 스트림(~, &)
         self.target_out = []            # 대상 프로그램 stdout/stderr(pty)
         self.merged = []                # 위 둘을 도착 순서대로 섞은 로그(콘솔 패널 표시용)
+        self._chars = {"console": 0, "target": 0, "merged": 0}   # 각 버퍼의 글자 수(한도 적용용)
+        self._console_abs = 0           # 지금까지 콘솔에 쌓인 글자 수(앞부분이 잘려도 증가분을 구하려는 용도)
+        self._logl = threading.Lock()
         self.events = []                # 최근 비동기 이벤트 로그
         self.status = "loaded"          # loaded|running|stopped|exited|error
         self.last_stop = None           # 마지막 *stopped 정보
@@ -381,11 +426,12 @@ class DebugSession:
                 sbx = _sandbox_mod()
                 self.sandbox_info = sbx.describe(sbx.SandboxPolicy(mode="off"))
                 argv, extra = ["gdb"] + gdb_args + [self.path], {}
-            self.proc = subprocess.Popen(
+            self.proc = _SPAWNER.call(lambda: subprocess.Popen(
                 argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                text=True, bufsize=1, start_new_session=True, **extra)  # 새 프로세스 그룹(정리용)
+                text=True, bufsize=1, start_new_session=True, **extra))  # 새 프로세스 그룹(정리용)
             if launch is not None:
-                launch.attach(self.proc)         # cgroup 에 넣고 샌드박스를 풀어 준다
+                # cgroup 에 넣고 샌드박스를 풀어 주고, 네임스페이스를 붙들고, 총량 감시를 시작한다
+                launch.attach(self.proc, on_limit=self._limit_exceeded)
             self._alive = True
             _LIVE_SESSIONS.add(self)
             self._reader = threading.Thread(target=self._read_loop, daemon=True)
@@ -404,6 +450,11 @@ class DebugSession:
             self._send("-gdb-set mi-async on", timeout=2)
             self._send("-gdb-set pagination off", timeout=2)
             self._send("-gdb-set confirm off", timeout=2)
+            if launch is not None:
+                ok, why = sbx.verify_gdb_guard(launch, self.proc.pid)       # gdb 가 정말 덤프 불가인지 호스트에서 확인
+                sbx.mark_guard(launch.info, ok, why)
+                if not ok:
+                    self._log_merged(f"\n[샌드박스] 주의: 디버거 보호 미적용 — {why}\n")
             if self.sandbox_policy is not None and self.sandbox_policy.enabled and self.sandbox_policy.wall_seconds:
                 self._wall_timer = threading.Timer(self.sandbox_policy.wall_seconds, self._wall_expired)
                 self._wall_timer.daemon = True
@@ -413,6 +464,11 @@ class DebugSession:
             self.stop()
             raise
         return self.snapshot()
+
+    def _limit_exceeded(self, reason: str):
+        """감시 스레드가 총량 한도 초과를 알렸다."""
+        self._log_merged(f"\n[샌드박스] {reason}을 넘어 세션을 종료합니다.\n")
+        self.stop()
 
     def _wall_expired(self):
         """격리 정책의 실행 시간 제한을 넘으면 세션을 끝낸다."""
@@ -528,7 +584,13 @@ class DebugSession:
         try:
             while self._alive:
                 try:
-                    line = self.proc.stdout.readline()
+                    line = self.proc.stdout.readline(MI_LINE_MAX)
+                    if len(line) >= MI_LINE_MAX and not line.endswith("\n"):
+                        while True:                  # 너무 긴 줄(오작동·조작된 gdb): 줄 끝까지 읽어 버리고 넘어간다
+                            rest = self.proc.stdout.readline(MI_LINE_MAX)
+                            if rest == "" or rest.endswith("\n"):
+                                break
+                        continue
                 except Exception:
                     break
                 if line == "":
@@ -542,6 +604,12 @@ class DebugSession:
             # gdb가 끝났으면 디버깅도 끝난 것이다(status가 running에 고착되지 않게)
             if self.status in ("loaded", "running", "stopped"):
                 self.status = "exited"
+            launch = self._launch                  # gdb 가 사라졌다면 샌드박스에 남은 대상도 함께 정리한다
+            if launch is not None and not self._closing:
+                try:
+                    launch.reap()
+                except Exception:                  # noqa: BLE001
+                    pass
             # 어떤 이유로 끝나든 대기 중인 명령과 stop 대기자를 깨운다
             with self._plock:
                 pending = list(self._pending.values())
@@ -569,10 +637,8 @@ class DebugSession:
             text = decoder.decode(data)
             if not text:
                 continue
-            self.target_out.append(text)
+            self._push("target", self.target_out, text)
             self._log_merged(text)
-            if len(self.target_out) > 2000:
-                del self.target_out[:1000]
 
     def _handle_line(self, line: str):
         if not line or line == "(gdb) ":
@@ -611,13 +677,12 @@ class DebugSession:
             except Exception:
                 val = rest
             if kind == "@":
-                self.target_out.append(val)
+                self._push("target", self.target_out, val)
                 self._log_merged(val)
             else:
-                self.console.append(val)
+                self._push("console", self.console, val)
+                self._console_abs += len(val)
                 self._log_merged(val)
-                if len(self.console) > 2000:
-                    del self.console[:1000]
 
     def _on_exec_async(self, cls, results):
         if cls == "running":
@@ -704,9 +769,10 @@ class DebugSession:
 
     def console_cmd(self, text: str) -> dict:
         """사용자가 입력한 원시 gdb 명령(MI로 래핑)."""
-        before = len(self.console)
+        before = self._console_abs
         self._send(f'-interpreter-exec console {mi_quote(text)}', timeout=20)
-        return {"output": "".join(self.console[before:])}
+        gained = self._console_abs - before
+        return {"output": "".join(self.console)[-gained:] if gained > 0 else ""}
 
     # ---- 실행 제어 -----------------------------------------------------
     # 멈출 때까지 요청을 오래 붙들지 않는다: 시간 안에 안 멈추면 status=running 으로
@@ -1003,20 +1069,43 @@ class DebugSession:
             "sandbox": self.sandbox_info,
         }
 
+    def _push(self, name: str, buf: list, text: str):
+        """로그 버퍼에 덧붙이되 글자 수를 한도 안으로 유지한다(출력 폭주가 서버 메모리를 먹지 못하게)."""
+        if len(text) > LOG_LIMIT_CHARS:
+            text = text[-LOG_LIMIT_CHARS:]
+        with self._logl:
+            buf.append(text)
+            n = self._chars[name] + len(text)
+            if n > LOG_LIMIT_CHARS * 5 // 4:
+                drop = 0
+                while n > LOG_LIMIT_CHARS and drop < len(buf) - 1:
+                    n -= len(buf[drop])
+                    drop += 1
+                del buf[:drop]
+            if len(buf) > 20000:                  # 아주 잘게 쪼개진 출력은 앞쪽 절반을 하나로 합친다(데이터는 그대로)
+                half = len(buf) // 2
+                buf[:half] = ["".join(buf[:half])]
+            self._chars[name] = n
+
     def _log_merged(self, text: str):
-        self.merged.append(text)
-        if len(self.merged) > 4000:
-            del self.merged[:2000]
+        self._push("merged", self.merged, text)
 
-    def merged_output(self) -> str:
-        """프로그램 출력과 gdb 메시지를 도착 순서대로 이은 텍스트."""
-        return "".join(self.merged)
+    @staticmethod
+    def _tail(buf: list, tail) -> str:
+        text = "".join(buf)
+        return text if tail is None or len(text) <= tail else text[-tail:]
 
-    def target_output(self, clear: bool = False) -> str:
-        text = "".join(self.target_out)
+    def merged_output(self, tail: int | None = None) -> str:
+        """프로그램 출력과 gdb 메시지를 도착 순서대로 이은 텍스트(tail 이 있으면 뒤쪽 그만큼만)."""
+        return self._tail(self.merged, tail)
+
+    def target_output(self, clear: bool = False, tail: int | None = None) -> str:
+        text = self._tail(self.target_out, tail)
         if clear:
-            self.target_out.clear()
+            with self._logl:
+                self.target_out.clear()
+                self._chars["target"] = 0
         return text
 
-    def console_output(self) -> str:
-        return "".join(self.console)
+    def console_output(self, tail: int | None = None) -> str:
+        return self._tail(self.console, tail)

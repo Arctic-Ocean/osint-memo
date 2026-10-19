@@ -13,7 +13,7 @@ tests/sbxprobe.c 를 컴파일해 실제 격리 안에서 돌리고, 호스트�
 
 실행:  .venv/bin/python tests/test_sandbox.py [시나리오 이름...]   (bwrap·gdb·gcc 필요, 없으면 건너뜀)
 """
-import hashlib, os, re, shutil, signal, socket, subprocess, sys, tempfile, threading, time
+import hashlib, json, os, re, shutil, signal, socket, subprocess, sys, tempfile, threading, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -101,7 +101,8 @@ def host_procs(*markers):
 
 
 def sbx_leftovers():
-    return host_procs("/sandbox/sbxprobe", "rework-sbx", "rework-sandbox")
+    return [p for p in host_procs("/sandbox/sbxprobe", "--hostname rework-sandbox")
+            if not p[1].startswith(("/bin/bash", "bash ", "sh -c"))]       # 이 테스트를 부르는 셸 자신은 제외
 
 
 def wait_gone(secs=5.0):
@@ -113,8 +114,20 @@ def wait_gone(secs=5.0):
     return sbx_leftovers()
 
 
-def workdirs():
-    return [n for n in os.listdir(tempfile.gettempdir()) if n.startswith("rework-sbx-")]
+def workdirs(owner_pid=None):
+    """호스트에 남아 있는 작업 폴더. owner_pid 를 주면 그 서버가 만든 것만(폴더 안 .owner 에 서버 pid 가 있다)."""
+    out = []
+    for n in os.listdir(tempfile.gettempdir()):
+        if not n.startswith("rework-sbx-"):
+            continue
+        if owner_pid is not None:
+            try:
+                if int(open(os.path.join(tempfile.gettempdir(), n, ".owner")).read().strip()) != owner_pid:
+                    continue
+            except (OSError, ValueError):
+                continue
+        out.append(n)
+    return out
 
 
 def nfds():
@@ -145,15 +158,53 @@ def _():
         except ValueError:
             pass
     d = tempfile.mkdtemp()
-    sock = os.path.join(d, "s.sock")
+    sd = tempfile.mkdtemp()
+    sock = os.path.join(sd, "s.sock")
     srv = socket.socket(socket.AF_UNIX); srv.bind(sock)
     try:
-        sbx._validate_extra_ro([sock]); raise AssertionError("소켓 노출이 거부돼야 함")
+        for bad in (sock, sd):                       # 소켓 자체, 그리고 소켓이 '들어 있는' 폴더(network=none 우회 경로)
+            try:
+                sbx._validate_extra_ro([bad]); raise AssertionError(f"{bad} 노출이 거부돼야 함")
+            except ValueError:
+                pass
+    finally:
+        srv.close()
+    os.mkfifo(os.path.join(d, "f.fifo"))
+    try:
+        sbx._validate_extra_ro([d]); raise AssertionError("FIFO 가 든 폴더가 거부돼야 함")
+    except ValueError:
+        pass
+    os.unlink(os.path.join(d, "f.fifo"))
+    assert sbx._validate_extra_ro([d + "/"]) == [d], "끝 슬래시 정규화"
+    for p in ("/etc", "/home", "/usr", "/var", "/tmp", "/bin", "/lib"):      # 샌드박스가 정한 최소 루트를 통째로 되돌림
+        try:
+            sbx._validate_extra_ro([p]); raise AssertionError(f"{p} 노출이 거부돼야 함")
+        except ValueError:
+            pass
+    assert sbx._validate_extra_ro(["/etc/hostname"]) == ["/etc/hostname"], "파일 하나는 허용"
+    fake_home = tempfile.mkdtemp(); os.makedirs(os.path.join(fake_home, ".ssh")); os.makedirs(os.path.join(fake_home, "inputs"))
+    old_home = os.environ.get("HOME"); os.environ["HOME"] = fake_home
+    try:
+        for p in (fake_home, os.path.join(fake_home, ".ssh")):
+            try:
+                sbx._validate_extra_ro([p]); raise AssertionError(f"{p} 노출이 거부돼야 함(자격 증명 폴더)")
+            except ValueError:
+                pass
+        assert sbx._validate_extra_ro([os.path.join(fake_home, "inputs")]), "홈 아래 일반 폴더는 허용"
+    finally:
+        if old_home is None: os.environ.pop("HOME", None)
+        else: os.environ["HOME"] = old_home
+        shutil.rmtree(fake_home, ignore_errors=True)
+    big = tempfile.mkdtemp()
+    for i in range(8): open(os.path.join(big, f"f{i}"), "w").close()
+    saved, sbx.WALK_MAX_ENTRIES = sbx.WALK_MAX_ENTRIES, 5
+    try:
+        sbx._validate_extra_ro([big]); raise AssertionError("너무 큰 폴더는 거부돼야 함")
     except ValueError:
         pass
     finally:
-        srv.close()
-    assert sbx._validate_extra_ro([d + "/"]) == [d], "끝 슬래시 정규화"
+        sbx.WALK_MAX_ENTRIES = saved
+        shutil.rmtree(big, ignore_errors=True); shutil.rmtree(sd, ignore_errors=True)
     assert P.from_dict({"nope": 1}, strict=False).mode == "on", "저장 파일의 미지 키는 무시"
     # 설정 파일: 깨진 파일은 안전한 기본값, 저장은 원자적 교체, 요청별 덮어쓰기는 저장하지 않음
     cfgf = os.path.join(d, "sandbox.json"); open(cfgf, "w").write("{broken")
@@ -269,11 +320,11 @@ def _():
     s = DebugSession(exe, sandbox=sbx.SandboxPolicy())
     try:
         s.start()
-        wd = [n for n in workdirs() if n.startswith(f"rework-sbx-{os.getpid()}-")]
+        wd = workdirs(os.getpid())
         assert len(wd) == 1, wd
         copy = os.path.join(tempfile.gettempdir(), wd[0], "sbxprobe")
         mode = os.stat(copy).st_mode & 0o777
-        assert mode == 0o555, oct(mode)
+        assert mode == 0o500, oct(mode)
         s.run("sleep")
         time.sleep(0.6)
         # 실행 중에도 원본은 교체할 수 있고(ETXTBSY 없음) 실행 중인 복사본은 영향받지 않는다
@@ -283,9 +334,9 @@ def _():
     finally:
         s.stop()
         PROBE.pop("exe", None)                        # 원본을 바꿨으니 다시 컴파일
-    assert not [n for n in workdirs() if n.startswith(f"rework-sbx-{os.getpid()}-")], "작업 폴더 잔존"
+    assert not workdirs(os.getpid()), "작업 폴더 잔존"
     assert before != hashlib.sha256(open(exe, "rb").read()).hexdigest()
-    return "대상은 0555 복사본으로 실행, 원본 교체 가능, 종료 후 복사본 삭제"
+    return "대상은 0500 복사본으로 실행, 원본 교체 가능, 종료 후 복사본 삭제"
 
 
 # ---- 네트워크 ----------------------------------------------------------
@@ -482,7 +533,7 @@ def _():
             s.start(); raise AssertionError("읽을 수 없는 경로가 거부돼야 함")
         except DebugError as e:
             assert "읽을 수 없습니다" in str(e) and "chmod" in str(e), str(e)
-        assert not wait_gone() and not [n for n in workdirs() if n.startswith(f"rework-sbx-{os.getpid()}-")]
+        assert not wait_gone() and not workdirs(os.getpid())
         shutil.rmtree(d2, ignore_errors=True)
     shutil.rmtree(d, ignore_errors=True)
     return "추가 노출 경로는 읽기 전용, 읽을 수 없는 경로는 원인을 설명하며 거부"
@@ -519,10 +570,10 @@ def _():
     assert len(left) >= 3, f"탐침이 데몬을 만들지 못함: {left}"      # 정리가 일하는지 보이는 전제
     gone = wait_gone()
     assert not gone, f"세션 종료 후 프로세스가 남음(setsid·SIGTERM 무시 포함): {gone}"
-    assert not [n for n in workdirs() if n.startswith(f"rework-sbx-{os.getpid()}-")], "작업 폴더 잔존"
+    assert not workdirs(os.getpid()), "작업 폴더 잔존"
     assert nfds() == base_fds, f"fd 누수 {nfds() - base_fds}"
     cg = [p for base in ("/sys/fs/cgroup/memory", "/sys/fs/cgroup/pids", "/sys/fs/cgroup")
-          if os.path.isdir(base) for p in os.listdir(base) if p.startswith(f"rework-sbx-{os.getpid()}-")]
+          if os.path.isdir(base) for p in os.listdir(base) if p.startswith(f"rework-sbx-{os.getpid()}-")]   # cgroup 이름만 pid 를 쓴다
     assert not cg, f"cgroup 잔존: {cg}"
     return f"데몬 {len(left)}개(setsid·SIGTERM 무시)까지 6회 모두 정리, 작업 폴더·cgroup·fd 누수 0"
 
@@ -544,11 +595,263 @@ os.kill(os.getpid(), signal.SIGKILL)
     dead = int(p.stdout.split()[1])
     gone = wait_gone(8)
     assert not gone, f"서버가 SIGKILL 로 죽은 뒤 샌드박스가 남음: {gone}"
-    stale = [n for n in workdirs() if n.startswith(f"rework-sbx-{dead}-")]
+    stale = workdirs(dead)
     sbx._SWEPT["done"] = False                              # 다음 시작 때의 청소를 재현
     sbx._sweep_stale()
-    assert not [n for n in workdirs() if n.startswith(f"rework-sbx-{dead}-")], "남은 작업 폴더가 치워지지 않음"
+    assert not workdirs(dead), "남은 작업 폴더가 치워지지 않음"
     return f"서버 SIGKILL 후 프로세스 0개, 남은 작업 폴더 {len(stale)}개는 다음 시작 때 청소됨"
+
+
+
+# ---- 레드팀 지적 사항의 회귀 테스트 --------------------------------------------
+@scenario("gdb-unreachable-from-target")
+def _():
+    """대상이 같은 uid 의 gdb·init 의 메모리·fd·ptrace·pidfd_getfd 로 호스트 MI 파이프에 거짓 보고를 쓰지 못한다."""
+    s = DebugSession(probe_exe(), sandbox=sbx.SandboxPolicy())
+    try:
+        info = s.start()["sandbox"]
+        guard = [l for l in info["layers"] if l["id"] == "gdbguard"][0]
+        if not sbx.probe().as_pid1:
+            assert not guard["active"], "--as-pid-1 이 없으면 보호 층이 미적용으로 정직하게 표시돼야 함"
+            return "bwrap 이 --as-pid-1 을 지원하지 않아 건너뜀(미적용 표시 확인)"
+        assert guard["active"], f"gdb 보호가 확인되지 않음: {guard}"
+        threading.Thread(target=lambda: s.run("gdbprobe stay"), daemon=True).start()
+        t0 = time.time()
+        while time.time() - t0 < 15 and "forged=" not in s.target_output():
+            time.sleep(0.1)
+        out = s.target_output().replace("\r", "")
+        kv = parse(out)
+        assert kv.get("forged") == "0", out
+        bad = {k: v for k, v in kv.items() if k.startswith(("open_fd[", "open_mem[", "ptrace_attach[", "pidfd_getfd[",
+                                                            "process_vm_", "readlink[")) and v in ("OK", "STOLEN")}
+        assert not bad, f"gdb·init 에 접근할 수 있음: {bad}"
+        time.sleep(1.5)
+        assert s.snapshot()["status"] == "running", "거짓 *stopped 보고가 세션 상태를 바꿈"
+        assert "FORGED-BY-TARGET" not in s.merged_output(), "대상이 쓴 거짓 MI 레코드가 호스트에 도착함"
+        return "gdb(pid 1)가 덤프 불가 — /proc/<gdb>/{mem,fd}·ptrace·pidfd_getfd·process_vm 모두 거부, 거짓 보고 도착 0"
+    finally:
+        s.stop()
+
+
+@scenario("session-survives-starter-thread-exit")
+def _():
+    """--die-with-parent 는 Popen 을 호출한 '스레드'가 끝나면 발동한다. 웹 서버의 스레드풀 작업자가 놀다 사라져도 세션이 살아야 한다."""
+    box = {}
+
+    def starter():
+        box["s"] = DebugSession(probe_exe(), sandbox=sbx.SandboxPolicy())
+        box["s"].start()
+    t = threading.Thread(target=starter); t.start(); t.join()            # 시작한 스레드가 끝난다
+    s = box["s"]
+    try:
+        time.sleep(3.0)
+        assert s.snapshot()["alive"] and s.proc.poll() is None, "시작한 스레드가 끝나자 샌드박스가 죽음"
+        threading.Thread(target=lambda: s.run("sleep"), daemon=True).start()
+        time.sleep(2.0)
+        assert s.snapshot()["status"] == "running" and host_procs("/sandbox/sbxprobe")
+        return "시작한 스레드가 끝난 뒤에도 세션이 살아 있음(Popen 은 장수 스레드에서)"
+    finally:
+        s.stop()
+
+
+@scenario("namespace-pinned-no-cross-kill")
+def _():
+    """정리가 pid 네임스페이스 'inode 번호'로 프로세스를 찾는데, 네임스페이스가 사라지면 번호가 재사용되어 엉뚱한 세션을
+    죽일 수 있었다. ns fd 를 열어 붙들면 번호가 고정된다."""
+    A = DebugSession(probe_exe(), sandbox=sbx.SandboxPolicy())
+    B = DebugSession(probe_exe(), sandbox=sbx.SandboxPolicy())
+    try:
+        A.start(); B.start()
+        for x in (A, B):
+            threading.Thread(target=lambda x=x: x.run("sleep"), daemon=True).start()
+        time.sleep(1.5)
+        la, lb = A._launch, B._launch
+        assert la.ns_fd is not None and lb.ns_fd is not None, "네임스페이스를 붙들지 못함"
+        assert la.ns_inode == os.fstat(la.ns_fd).st_ino and la.ns_inode != lb.ns_inode
+        assert sbx.kill_pidns(sbx._pidns_inode(os.getpid())) == 0, "호스트 자신의 네임스페이스를 죽이려 함"
+        gdb_pid = None                                   # A 의 gdb 가 밖에서 죽는다(대상이 gdb 를 죽인 경우와 같다)
+        for c in [A.proc.pid] + sbx.descendants(A.proc.pid):
+            try:
+                nspid = open(f"/proc/{c}/status").read().split("NSpid:")[1].split("\n")[0].split()
+                if nspid[-1] == "1" and len(nspid) >= 2:
+                    gdb_pid = c
+            except (OSError, IndexError):
+                continue
+        assert gdb_pid, "A 의 gdb 를 찾지 못함"
+        os.kill(gdb_pid, signal.SIGKILL)
+        t0 = time.time()
+        while time.time() - t0 < 5 and A.snapshot()["alive"]:
+            time.sleep(0.1)
+        for _ in range(60):                              # 그 사이 다른 pid 네임스페이스가 많이 생겼다 사라진다
+            subprocess.run(["bwrap", "--unshare-user", "--unshare-pid", "--ro-bind", "/usr", "/usr", "--symlink", "usr/bin", "/bin",
+                            "--symlink", "usr/lib", "/lib", "--symlink", "usr/lib64", "/lib64", "--", "/usr/bin/true"],
+                           capture_output=True)
+        assert os.fstat(la.ns_fd).st_ino == la.ns_inode != lb.ns_inode, "붙든 네임스페이스의 번호가 바뀜"
+        A.stop()
+        assert B.snapshot()["alive"] and B.snapshot()["status"] == "running", "A 를 정리하다 B 가 죽음"
+        assert host_procs("/sandbox/sbxprobe"), "B 의 대상이 죽음"
+        return "A 의 gdb 가 죽고 네임스페이스가 많이 오간 뒤 A.stop() 해도 B 는 그대로(번호가 fd 로 고정됨)"
+    finally:
+        A.stop(); B.stop()
+
+
+@scenario("workdir-not-readable-by-others")
+def _():
+    s = DebugSession(probe_exe(), sandbox=sbx.SandboxPolicy())
+    try:
+        s.start()
+        wd = workdirs(os.getpid())
+        assert len(wd) == 1 and str(os.getpid()) not in wd[0], f"작업 폴더 이름에 서버 pid 가 있음: {wd}"
+        path = os.path.join(tempfile.gettempdir(), wd[0]); copy = os.path.join(path, "sbxprobe")
+        sc, sd = os.stat(copy), os.stat(path)
+        assert sc.st_mode & 0o077 == 0, f"복사본이 다른 계정에 열려 있음: {oct(sc.st_mode)}"
+        if IS_ROOT:
+            assert sd.st_mode & 0o777 == 0o711 and sc.st_uid == 65534, (oct(sd.st_mode), sc.st_uid)
+            if shutil.which("setpriv"):
+                r = subprocess.run(["setpriv", "--reuid=54321", "--regid=54321", "--clear-groups", "cat", copy],
+                                   capture_output=True)
+                assert r.returncode != 0 and not r.stdout, "다른 계정이 실행 중인 대상 복사본을 읽음"
+        else:
+            assert sd.st_mode & 0o777 == 0o700, oct(sd.st_mode)
+        return f"복사본 {oct(sc.st_mode & 0o777)}·폴더 {oct(sd.st_mode & 0o777)}, 이름에 pid 없음, 다른 계정은 읽지 못함"
+    finally:
+        s.stop()
+
+
+@scenario("nproc-counts-threads")
+def _():
+    """RLIMIT_NPROC 는 프로세스가 아니라 태스크(스레드 포함)를 센다. 같은 uid 의 다중 스레드 프로세스가 있어도 시작·동작해야 한다."""
+    uid = 65534 if IS_ROOT else os.geteuid()
+    code = ("import threading,time\n"
+            "for _ in range(250): threading.Thread(target=time.sleep,args=(90,),daemon=True).start()\n"
+            "time.sleep(90)")
+    cmd = (["setpriv", f"--reuid={uid}", f"--regid={uid}", "--clear-groups"] if IS_ROOT else []) + [sys.executable, "-c", code]
+    holder = subprocess.Popen(cmd)
+    try:
+        t0 = time.time()
+        while time.time() - t0 < 10 and sbx._count_uid_tasks(uid) < 250:
+            time.sleep(0.1)
+        n = sbx._count_uid_tasks(uid)
+        assert n >= 250, f"스레드를 세지 못함: {n}"
+        out, kv, snap = run_probe("forks 100", policy=sbx.SandboxPolicy(max_processes=40))
+        made = int(kv["forked"])
+        assert 5 <= made <= 60 and kv["fork_err"] == "Resource temporarily unavailable", kv
+        return f"같은 uid 의 스레드 {n}개가 있어도 시작·동작, fork {made}개에서 EAGAIN(허용 40)"
+    finally:
+        holder.kill(); holder.wait()
+
+
+@scenario("limit-total-cpu")
+def _():
+    """RLIMIT_CPU 는 프로세스마다 따로라 N 개로 fork 하면 N 배가 된다 — 총 CPU 시간 합계를 감시한다."""
+    P = sbx.SandboxPolicy(cpu_seconds=100, cpu_total_seconds=3, max_processes=64)
+    s = DebugSession(probe_exe(), sandbox=P)
+    try:
+        s.start()
+        t0 = time.time()
+        threading.Thread(target=lambda: s.run("cpuforks 4"), daemon=True).start()
+        while time.time() - t0 < 25 and s.snapshot()["alive"]:
+            time.sleep(0.2)
+        dt = time.time() - t0
+        assert not s.snapshot()["alive"], "총 CPU 한도를 넘겼는데 세션이 계속됨"
+        assert "총 CPU 시간 한도" in s.merged_output(), s.merged_output()[-300:]
+        assert dt < 20, f"{dt:.1f}s"
+    finally:
+        s.stop()
+    assert not wait_gone()
+    return f"프로세스 4개가 각자 한도(100초) 안에서 돌아도 합계 3초를 넘자 {dt:.1f}s 만에 세션 종료·정리"
+
+
+@scenario("limit-total-memory-without-cgroup")
+def _():
+    """cgroup 이 없는 일반 데스크톱: RLIMIT_AS 는 프로세스마다 따로라 총 메모리는 N 배가 된다 — 합계를 감시한다."""
+    real = sbx.CgroupLimit.create
+    sbx.CgroupLimit.create = classmethod(lambda cls, *a, **k: None)      # cgroup 을 못 쓰는 환경을 흉내
+    try:
+        P = sbx.SandboxPolicy(memory_mb=64, max_processes=32)
+        s = DebugSession(probe_exe(), sandbox=P)
+        try:
+            info = s.start()["sandbox"]
+            ids = {l["id"]: l for l in info["layers"]}
+            assert not ids["cgroup"]["active"] and "메모리 합계" in ids["total"]["detail"], ids["total"]
+            t0 = time.time()
+            threading.Thread(target=lambda: s.run("memforks 4 60"), daemon=True).start()
+            while time.time() - t0 < 25 and s.snapshot()["alive"]:
+                time.sleep(0.2)
+            dt = time.time() - t0
+            assert not s.snapshot()["alive"], "총 메모리 한도를 넘겼는데 세션이 계속됨"
+            assert "총 메모리 한도" in s.merged_output(), s.merged_output()[-300:]
+        finally:
+            s.stop()
+    finally:
+        sbx.CgroupLimit.create = real
+    assert not wait_gone()
+    return f"프로세스 4개×60MB(=240MB)가 합계 한도 128MB 를 넘자 {dt:.1f}s 만에 세션 종료"
+
+
+@scenario("output-flood-bounded")
+def _():
+    from app.debug import LOG_LIMIT_CHARS, LOG_TAIL_CHARS
+    s = DebugSession(probe_exe(), sandbox=sbx.SandboxPolicy())
+    try:
+        s.start()
+        threading.Thread(target=lambda: s.run("flood 60"), daemon=True).start()
+        t0 = time.time()
+        while time.time() - t0 < 60 and "flood-done" not in s.merged_output(tail=4096):
+            time.sleep(0.2)
+        assert "flood-done" in s.merged_output(tail=4096), "폭주 출력이 끝나지 않음"
+        held = {n: sum(len(x) for x in getattr(s, a))
+                for n, a in (("merged", "merged"), ("target", "target_out"), ("console", "console"))}
+        assert all(v <= LOG_LIMIT_CHARS * 5 // 4 + 70000 for v in held.values()), held
+        tail = s.merged_output(tail=LOG_TAIL_CHARS)
+        assert len(tail) <= LOG_TAIL_CHARS
+        assert len(json.dumps({"merged": tail})) <= LOG_TAIL_CHARS * 6 + 100, "응답 크기가 한도를 넘음"
+        t1 = time.time(); s.stop(); dt = time.time() - t1
+        assert dt < 8, f"폭주 뒤 stop 이 {dt:.1f}s"
+        return (f"60MB 출력 후 보관 {held['merged'] // 1000}K자(한도 {LOG_LIMIT_CHARS // 1000}K), "
+                f"API 응답 ≤ {LOG_TAIL_CHARS // 1000}K자, stop {dt:.1f}s")
+    finally:
+        s.stop()
+
+
+@scenario("config-concurrent-save")
+def _():
+    d = tempfile.mkdtemp()
+    cfg = sbx.SandboxConfig(os.path.join(d, "sandbox.json"))
+    errs = []
+
+    def w(i):
+        try:
+            for _ in range(25):
+                cfg.save({"memory_mb": 100 + i})
+        except Exception as e:             # noqa: BLE001
+            errs.append(e)
+    ts = [threading.Thread(target=w, args=(i,)) for i in range(8)]
+    [t.start() for t in ts]; [t.join() for t in ts]
+    assert not errs, errs[:2]
+    data = json.load(open(os.path.join(d, "sandbox.json")))
+    assert 100 <= data["memory_mb"] <= 107 and not [n for n in os.listdir(d) if ".tmp" in n], os.listdir(d)
+    shutil.rmtree(d, ignore_errors=True)
+    return "동시 저장 200회 — 예외 없음, 임시 파일 잔존 없음, 파일은 항상 올바른 JSON"
+
+
+@scenario("extra-ro-nested-socket-blocked-at-start")
+def _():
+    d = tempfile.mkdtemp(); os.chmod(d, 0o755)
+    open(os.path.join(d, "in.txt"), "w").write("x\n")
+    srv = socket.socket(socket.AF_UNIX); srv.bind(os.path.join(d, "app.sock")); srv.listen(1)
+    try:
+        # 설정 저장 때의 검증을 건너뛰고(= 나중에 소켓이 생긴 경우) 시작 직전 검증이 막는지 본다
+        P = sbx.SandboxPolicy(); P.extra_ro = [d]
+        s = DebugSession(probe_exe(), sandbox=P)
+        try:
+            s.start(); raise AssertionError("소켓이 든 폴더로 시작되면 안 됨")
+        except DebugError as e:
+            assert "소켓" in str(e), str(e)
+        assert not wait_gone() and not workdirs(os.getpid())
+        return "시작 직전 재검증이 폴더 안 소켓을 거부(검증 뒤 생긴 소켓도 막음)"
+    finally:
+        srv.close(); shutil.rmtree(d, ignore_errors=True)
 
 
 @scenario("describe-report")

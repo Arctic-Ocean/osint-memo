@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import io
 import os
+import re
 import shutil
 import threading
 import contextlib
@@ -24,7 +25,7 @@ from .analysis import Program
 from .project import Project
 from .decompile import Decompiler
 from .ai import AIConfig, chat as ai_chat
-from .debug import DebugSession, DebugError
+from .debug import DebugSession, DebugError, LOG_TAIL_CHARS
 from . import sandbox as sbx
 
 # ---- 경로 ---------------------------------------------------------------
@@ -44,12 +45,13 @@ _ALLOWED_HOSTS = {"127.0.0.1", "localhost", "[::1]"} | {
     h.strip().lower() for h in os.environ.get("REWORK_ALLOWED_HOSTS", "").split(",") if h.strip()}
 
 
-def _host_only(host: str) -> str:
+def _host_only(host: str) -> str | None:
+    """Host 헤더에서 호스트 이름만 뽑는다. 형식이 올바르지 않으면 None(`user@host` 같은 값은 거부)."""
     host = host.strip().lower()
-    if host.startswith("["):
-        end = host.find("]")
-        return host[:end + 1] if end != -1 else host
-    return host.rsplit(":", 1)[0] if host.count(":") == 1 else host
+    if not host or len(host) > 255:
+        return None
+    m = re.fullmatch(r"(\[[0-9a-f:.]+\]|[a-z0-9._-]+)(?::\d{1,5})?", host)
+    return m.group(1) if m else None
 
 
 @asynccontextmanager
@@ -87,11 +89,28 @@ class State:
 STATE = State()
 
 
+_UNSAFE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+
+
 @app.middleware("http")
-async def _local_host_only(request, call_next):
-    if _host_only(request.headers.get("host", "")) not in _ALLOWED_HOSTS:
+async def _local_only_same_origin(request, call_next):
+    """① Host 가 로컬 주소가 아니면 거절(DNS rebinding). ② 상태를 바꾸는 요청이 다른 출처의 웹페이지에서 온 것이면
+    거절(CSRF) — 브라우저가 붙이는 Sec-Fetch-Site·Origin 헤더는 페이지가 위조할 수 없다. multipart 업로드나 본문 없는
+    POST 는 CORS 사전 요청 없이 보낼 수 있어 FastAPI 의 JSON 검사만으로는 막히지 않는다. curl·스크립트처럼 그 헤더가
+    없는 요청은 통과한다."""
+    host = request.headers.get("host", "")
+    if _host_only(host) not in _ALLOWED_HOSTS:
         return JSONResponse({"detail": "허용되지 않은 Host 입니다. 로컬 주소(127.0.0.1·localhost)로 접속하세요."},
                             status_code=403)
+    if request.method in _UNSAFE_METHODS:
+        site = request.headers.get("sec-fetch-site")
+        origin = request.headers.get("origin")
+        cross = site is not None and site not in ("same-origin", "none")
+        if origin is not None:
+            m = re.fullmatch(r"https?://([^/]+)", origin.strip())
+            cross = cross or not m or m.group(1).lower() != host.strip().lower()
+        if cross:
+            return JSONResponse({"detail": "다른 출처의 페이지에서 보낸 요청은 허용하지 않습니다."}, status_code=403)
     return await call_next(request)
 
 
@@ -599,10 +618,15 @@ def api_debug_stdin(payload: dict = Body(...)):
 
 
 @app.get("/api/debug/output")
-def api_debug_output(clear: bool = False):
+def api_debug_output(clear: bool = False, full: bool = False):
+    """콘솔 패널이 쓰는 건 섞은 로그(merged)뿐이다. 뒤쪽 일정 글자 수만 돌려줘서(대상이 출력을 쏟아내도) 응답과
+    JSON 이스케이프 비용이 커지지 않게 한다. target·console 은 full=true(또는 clear=true)일 때만."""
     sess = STATE.dbg()
-    return {"target": sess.target_output(clear=clear), "console": sess.console_output(),
-            "merged": sess.merged_output()}
+    out = {"merged": sess.merged_output(tail=LOG_TAIL_CHARS)}
+    if full or clear:
+        out["target"] = sess.target_output(clear=clear, tail=LOG_TAIL_CHARS)
+        out["console"] = sess.console_output(tail=LOG_TAIL_CHARS)
+    return out
 
 
 # ---- 로컬 파일 탐색(파일 열기 UI용) ------------------------------------

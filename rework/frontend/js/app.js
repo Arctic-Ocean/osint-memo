@@ -36,8 +36,8 @@ function el(tag, attrs = {}, ...kids) {
   }
   return e;
 }
-const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) =>
-  ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) =>
+  ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const hx = (n) => "0x" + (n >>> 0 === n ? n.toString(16) : BigInt(n).toString(16));
 const hxa = (n) => (typeof n === "bigint" ? n : BigInt(n)).toString(16).padStart(8, "0");
 
@@ -787,8 +787,8 @@ async function loadSandbox(recheck = false) {
   if (S.sideView === "debug" && !S.dbg.active) renderDebugSidebar();
 }
 function sbxFormFrom(p) {
-  return { network: p.network, memory_mb: p.memory_mb, cpu_seconds: p.cpu_seconds, wall_seconds: p.wall_seconds,
-           max_processes: p.max_processes, extra_ro: (p.extra_ro || []).join("\n") };
+  return { network: p.network, memory_mb: p.memory_mb, cpu_seconds: p.cpu_seconds, cpu_total_seconds: p.cpu_total_seconds,
+           wall_seconds: p.wall_seconds, max_processes: p.max_processes, extra_ro: (p.extra_ro || []).join("\n") };
 }
 function sbxPayload() {
   const f = S.sbxForm || {};
@@ -800,6 +800,7 @@ function sbxPayload() {
   return {
     mode: S.sbxOff ? "off" : "on", network: f.network || "none",
     memory_mb: num(f.memory_mb, "메모리"), cpu_seconds: num(f.cpu_seconds, "CPU 시간"),
+    cpu_total_seconds: num(f.cpu_total_seconds, "총 CPU 시간"),
     wall_seconds: num(f.wall_seconds, "실행 시간"), max_processes: num(f.max_processes, "프로세스 수"),
     extra_ro: String(f.extra_ro || "").split("\n").map((x) => x.trim()).filter(Boolean),
   };
@@ -854,7 +855,8 @@ function sandboxCard() {
     if (f.network === "host") box.append(el("div", { class: "dbg-warn", style: "margin:0 0 6px" },
       "⚠ 대상이 이 컴퓨터의 네트워크(로컬 서비스 포함)로 통신할 수 있습니다."));
     const adv = el("details", { class: "sbx-adv" }, el("summary", {}, "자원 한도 · 추가 경로"));
-    adv.append(row("메모리(MB)", num("memory_mb", 64)), row("CPU 시간(초)", num("cpu_seconds", 1)),
+    adv.append(row("메모리(MB)", num("memory_mb", 64)), row("CPU 시간(초/프로세스)", num("cpu_seconds", 1)),
+      row("총 CPU(초)", num("cpu_total_seconds", 1)),
       row("실행 시간(초, 0=무제한)", num("wall_seconds", 0)), row("프로세스 수", num("max_processes", 1)),
       el("label", { class: "sbx-lbl" }, "추가로 읽기 전용 노출할 경로 (한 줄에 하나)"),
       el("textarea", { rows: "2", placeholder: "/home/me/inputs", oninput: (e) => { f.extra_ro = e.target.value; } }, f.extra_ro),
@@ -1034,20 +1036,24 @@ async function dbgDo(action) {
   setMsg(`디버거: ${action}…`);
   // 서버는 프로그램이 멈출 때까지(최대 EXEC_WAIT) 응답을 미룬다. 입력을 기다리는 프로그램이면 그동안
   // 화면이 '중단됨'으로 남고 프롬프트도 안 보이므로, 오래 걸리면 곧바로 '실행 중'으로 보이고 폴링한다.
+  let settled = false;                 // 응답이 도착했는가 — 도착한 뒤(상태를 새로 그리는 await 중)에 타이머가 '실행 중'으로
+                                       // 되돌려 놓고 폴링을 켜면, 뒤이은 stopDbgPoll 이 폴링을 꺼 화면이 '실행 중'에 갇힌다
   const early = setTimeout(() => {
-    if (!dbgBusy || !S.dbg.active) return;
+    if (settled || !dbgBusy || !S.dbg.active) return;
     S.dbg.state = { ...(S.dbg.state || {}), status: "running", stop_reason: null };
     rerenderDebugViews();
     startDbgPoll();
   }, 300);
   try {
     const r = await api.dbgExec(action, S.dbg.argsCache || "");
+    settled = true; clearTimeout(early);
     if (r.state.alive === false) { dbgEnded(); return; }     // gdb 가 죽은 것이지 프로그램이 끝난 것이 아니다
     S.dbg.state = r.state;
     await dbgRefresh();
     if (r.state.status === "running") startDbgPoll();
     else { stopDbgPoll(); if (r.state.status === "exited") toast("프로그램 종료 (코드 " + (r.state.exit_code ?? "?") + ")", "ok"); }
   } catch (err) {
+    settled = true; clearTimeout(early);
     toast("디버그 실패: " + err.message, "err");
     await dbgRefresh();   // 세션이 이미 사라졌다면 여기서 감지해 UI를 비활성으로 돌린다
   } finally {

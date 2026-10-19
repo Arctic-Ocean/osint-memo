@@ -196,7 +196,7 @@ def _():
     s = DebugSession(DEMO)
     class FakeOut:
         def __init__(self, lines): self.lines = list(lines)
-        def readline(self): return self.lines.pop(0) if self.lines else ""
+        def readline(self, n=-1): return self.lines.pop(0) if self.lines else ""
     class FakeProc:
         def __init__(self): self.stdout = FakeOut(["BOOM\n", "7^done,value=\"ok\"\n"])
         def poll(self): return None
@@ -833,6 +833,50 @@ def _():
         except Exception as e:
             assert getattr(e, "status_code", None) == 400, (bad, e)
     return "서로게이트는 DebugError, 불리언이 아닌 옵션은 HTTP 400"
+
+
+@scenario("mi-line-length-cap")
+def _():
+    """조작·오작동한 gdb 가 줄바꿈 없이 거대한 줄을 보내도 서버 메모리를 먹지 않고, 그 뒤 정상 레코드는 처리한다."""
+    s = DebugSession(DEMO)
+    class BigOut:
+        def __init__(self):
+            self.lines = ["X" * (m.MI_LINE_MAX * 3 + 17) + "\n", '9^done,value="ok"\n']
+            self.calls = 0
+        def readline(self, n=-1):
+            self.calls += 1
+            if not self.lines: return ""
+            cur = self.lines[0]
+            if n < 0 or len(cur) <= n:
+                return self.lines.pop(0)
+            self.lines[0] = cur[n:]
+            return cur[:n]
+    class FakeProc:
+        def __init__(self): self.stdout = BigOut()
+        def poll(self): return None
+    s.proc = FakeProc(); s._alive = True
+    slot = {"event": threading.Event(), "result": None}
+    s._pending["9"] = slot
+    t = threading.Thread(target=s._read_loop); t.start(); t.join(5)
+    assert slot["event"].is_set() and slot["result"]["class"] == "done", "거대한 줄 뒤의 정상 레코드를 못 받음"
+    assert sum(len(x) for x in s.console) + sum(len(x) for x in s.merged) < m.MI_LINE_MAX, "거대한 줄이 버퍼에 쌓임"
+    return f"{m.MI_LINE_MAX * 3 // 1024 // 1024}MB 짜리 한 줄은 버리고 다음 레코드를 정상 처리"
+
+
+@scenario("log-buffer-bounded")
+def _():
+    s = DebugSession(DEMO)
+    for i in range(3000):
+        s._push("merged", s.merged, "x" * 4096)
+    total = sum(len(x) for x in s.merged)
+    assert total <= m.LOG_LIMIT_CHARS * 5 // 4 + 4096, total
+    for i in range(50000):
+        s._push("console", s.console, "ab")                     # 아주 잘게 쪼개진 출력도 항목 수가 폭발하지 않는다
+    assert len(s.console) <= 20000 and "".join(s.console).startswith("ab") and sum(len(x) for x in s.console) == 100000
+    s._push("target", s.target_out, "y" * (m.LOG_LIMIT_CHARS * 3))        # 한도를 넘는 한 덩어리는 뒤쪽만 보관
+    assert sum(len(x) for x in s.target_out) == m.LOG_LIMIT_CHARS
+    assert len(s.merged_output(tail=1000)) == 1000
+    return f"12MB→{total // 1000}K자, 잘게 쪼갠 10만자는 무손실, 거대한 덩어리는 뒤 {m.LOG_LIMIT_CHARS // 1000}K자만"
 
 
 @scenario("parser-escapes")

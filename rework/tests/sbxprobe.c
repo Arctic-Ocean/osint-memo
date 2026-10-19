@@ -18,6 +18,8 @@
 #include <sys/syscall.h>
 #include <sys/un.h>
 #include <sys/wait.h>
+#include <sys/ptrace.h>
+#include <sys/uio.h>
 #include <unistd.h>
 
 extern char **environ;
@@ -257,6 +259,70 @@ int main(int argc, char **argv) {
             }
         }
         printf("daemons=3\n");
+        return 0;
+    }
+    if (!strcmp(mode, "gdbprobe")) {
+        /* 대상이 같은 uid 의 gdb(디버거)나 샌드박스 init 을 조작해 호스트로 이어진 MI 파이프로 거짓 출력을 보낼 수 있는가 */
+        pid_t pp = getppid();
+        printf("ppid=%d pid=%d\n", pp, getpid());
+        const char *forged = "~\"FORGED-BY-TARGET\\n\"\n*stopped,reason=\"exited-normally\"\n";
+        int forged_ok = 0;
+        for (int pid = 1; pid <= 2; pid++) {
+            char path[64];
+            for (int fd = 0; fd <= 2; fd++) {
+                snprintf(path, sizeof path, "/proc/%d/fd/%d", pid, fd);
+                char t[128]; ssize_t n = readlink(path, t, sizeof t - 1);
+                printf("readlink[%d/fd/%d]=%s\n", pid, fd, n > 0 ? "OK" : strerror(errno));
+                int w = open(path, O_WRONLY);
+                printf("open_fd[%d/fd/%d]=%s\n", pid, fd, w >= 0 ? "OK" : strerror(errno));
+                if (w >= 0) { if (write(w, forged, strlen(forged)) > 0) forged_ok = 1; close(w); }
+            }
+            snprintf(path, sizeof path, "/proc/%d/mem", pid);
+            int m = open(path, O_RDWR);
+            printf("open_mem[%d]=%s\n", pid, m >= 0 ? "OK" : strerror(errno));
+            if (m >= 0) close(m);
+            errno = 0; long r = ptrace(PTRACE_ATTACH, pid, 0, 0);
+            printf("ptrace_attach[%d]=%s\n", pid, r == 0 ? "OK" : strerror(errno));
+            if (r == 0) { int st; waitpid(pid, &st, 0); ptrace(PTRACE_DETACH, pid, 0, 0); }
+            long pfd = syscall(SYS_pidfd_open, pid, 0);
+            printf("pidfd_open[%d]=%s\n", pid, pfd >= 0 ? "OK" : strerror(errno));
+            for (int fd = 0; fd <= 2 && pfd >= 0; fd++) {
+                errno = 0; long st = syscall(SYS_pidfd_getfd, pfd, fd, 0);
+                printf("pidfd_getfd[%d:%d]=%s\n", pid, fd, st >= 0 ? "STOLEN" : strerror(errno));
+                if (st >= 0) { if (write((int)st, forged, strlen(forged)) > 0) forged_ok = 1; close((int)st); }
+            }
+            char buf[16]; struct iovec l = {buf, sizeof buf}, rm = {(void *)0x400000, sizeof buf};
+            errno = 0; long vr = syscall(SYS_process_vm_readv, pid, &l, 1, &rm, 1, 0);
+            printf("process_vm_readv[%d]=%s\n", pid, vr >= 0 ? "OK" : strerror(errno));
+            errno = 0; long vw = syscall(SYS_process_vm_writev, pid, &l, 1, &rm, 1, 0);
+            printf("process_vm_writev[%d]=%s\n", pid, vw >= 0 ? "OK" : strerror(errno));
+        }
+        printf("forged=%d\n", forged_ok);
+        if (argc > 2 && !strcmp(argv[2], "stay")) sleep(30);   /* 거짓 보고가 통했다면 이 사이에 상태가 바뀐다 */
+        return 0;
+    }
+    if (!strcmp(mode, "cpuforks")) {
+        int n = argc > 2 ? atoi(argv[2]) : 4;
+        for (int i = 0; i < n; i++) if (fork() == 0) { for (volatile unsigned long j = 0;; j++) {} }
+        printf("cpuforks=%d\n", n);
+        for (;;) pause();
+    }
+    if (!strcmp(mode, "memforks")) {
+        int n = argc > 2 ? atoi(argv[2]) : 4; long mb = argc > 3 ? atol(argv[3]) : 60;
+        for (int i = 0; i < n; i++)
+            if (fork() == 0) {
+                char *p = mmap(NULL, mb << 20, PROT_READ | PROT_WRITE, MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
+                if (p != MAP_FAILED) for (long k = 0; k < (mb << 20); k += 4096) p[k] = 1;
+                for (;;) pause();
+            }
+        printf("memforks=%d x %ldMB\n", n, mb);
+        for (;;) pause();
+    }
+    if (!strcmp(mode, "flood")) {
+        long mb = argc > 2 ? atol(argv[2]) : 20; static char blk[1 << 16];
+        memset(blk, 0, sizeof blk);                       /* NUL 바이트: JSON 으로는 6배(\u0000)로 부푼다 */
+        for (long i = 0; i < mb * 16; i++) { if (write(1, blk, sizeof blk) < 0) break; }
+        printf("\nflood-done\n");
         return 0;
     }
     if (!strcmp(mode, "sleep")) { printf("sleeping\n"); sleep(1000); return 0; }
