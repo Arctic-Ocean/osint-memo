@@ -17,6 +17,7 @@ const S = {
   sbx: null,             // 서버의 격리 상태·정책·보고서
   sbxForm: null,         // 사이드바 격리 설정 입력값(저장 전)
   sbxOff: false,         // 이번 세션만 비격리로 시작(저장되지 않음)
+  sbxNoGuard: false,     // 이번 세션만 '디버거 보호를 확인하지 못해도 시작'(저장되지 않음)
 };
 
 // ---- DOM 헬퍼 -----------------------------------------------------------
@@ -799,6 +800,7 @@ function sbxPayload() {
   };
   return {
     mode: S.sbxOff ? "off" : "on", network: f.network || "none",
+    ...(S.sbxNoGuard ? { require_gdb_guard: false } : {}),
     memory_mb: num(f.memory_mb, "메모리"), cpu_seconds: num(f.cpu_seconds, "CPU 시간"),
     cpu_total_seconds: num(f.cpu_total_seconds, "총 CPU 시간"),
     wall_seconds: num(f.wall_seconds, "실행 시간"), max_processes: num(f.max_processes, "프로세스 수"),
@@ -836,6 +838,17 @@ function sandboxCard() {
   } else if (sb.status.reason) {
     box.append(el("div", { class: "sbx-note" }, sb.status.reason));
   }
+  const guard = sb.guard || {};
+  if (!S.sbxOff && guard.ready === false) {
+    box.append(el("div", { class: "dbg-warn", style: "margin:0 0 6px" },
+      "⚠ 디버거 보호를 쓸 수 없습니다: " + (guard.reason || "알 수 없음") +
+      ". 그대로는 시작되지 않습니다(대상이 디버거의 보고를 위조할 수 있어서)."),
+      el("label", { class: "sbx-opt" + (S.sbxNoGuard ? " sel" : "") },
+        el("input", { type: "checkbox", ...(S.sbxNoGuard ? { checked: "" } : {}),
+          onchange: (e) => { S.sbxNoGuard = e.target.checked; renderDebugSidebar(); } }),
+        el("span", {}, el("b", {}, "디버거 보호 없이 시작(이번 한 번)"),
+          el("div", { class: "sbx-sub" }, "격리는 유지되지만 대상이 디버거 보고를 위조할 수 있습니다. 저장되지 않습니다."))));
+  }
   const radio = (off, title, sub) => el("label", { class: "sbx-opt" + (S.sbxOff === off ? " sel" : "") },
     el("input", { type: "radio", name: "sbx-mode", ...(S.sbxOff === off ? { checked: "" } : {}),
       onchange: () => { S.sbxOff = off; renderDebugSidebar(); } }),
@@ -853,7 +866,8 @@ function sandboxCard() {
       el("option", { value: "host", ...(f.network === "host" ? { selected: "" } : {}) }, "호스트 네트워크 공유 (위험)"));
     box.append(row("네트워크", net));
     if (f.network === "host") box.append(el("div", { class: "dbg-warn", style: "margin:0 0 6px" },
-      "⚠ 대상이 이 컴퓨터의 네트워크(로컬 서비스 포함)로 통신할 수 있습니다."));
+      "⚠ 대상이 이 컴퓨터의 네트워크(로컬 서비스·이 서버 포함)로 통신할 수 있습니다." +
+      (sb.server && sb.server.token_auth ? "" : " 서버를 `run.py --require-token` 으로 실행해야 시작할 수 있습니다.")));
     const adv = el("details", { class: "sbx-adv" }, el("summary", {}, "자원 한도 · 추가 경로"));
     adv.append(row("메모리(MB)", num("memory_mb", 64)), row("CPU 시간(초/프로세스)", num("cpu_seconds", 1)),
       row("총 CPU(초)", num("cpu_total_seconds", 1)),
@@ -919,6 +933,10 @@ function renderDebugSidebar() {
     st.status === "exited" && st.exit_code != null ? el("span", {}, ` · 종료코드 ${st.exit_code}`) : null,
     st.sandbox ? el("span", {}, " ") : null, sandboxBadge(st.sandbox));
   body.append(sline);
+  if (st.stop_reason === "debugger-died") body.append(el("div", { class: "dbg-warn" },
+    "⚠ 디버거(gdb)가 대상 종료 보고 없이 사라졌습니다. 대상이 디버거를 죽이려 했거나(분석 방해) 디버거가 비정상 종료한 것일 수 있습니다."));
+  if (st.status === "exited" && st.sandbox_live > 2) body.append(el("div", { class: "dbg-warn" },
+    `프로그램은 끝났지만 샌드박스 안에 프로세스가 ${st.sandbox_live - 2}개 남아 있습니다(데몬·자식). ⏹ 정지로 모두 종료됩니다.`));
   if (st.sandbox && !st.sandbox.enabled) body.append(el("div", { class: "dbg-warn" },
     "⚠ 이 세션은 격리 없이 실행 중입니다. 대상이 이 컴퓨터의 파일·네트워크에 그대로 접근할 수 있습니다."));
   if (st.sandbox && st.sandbox.enabled) {
@@ -1006,6 +1024,7 @@ async function dbgStart() {
 function dbgReset() {
   stopDbgPoll();
   S.sbxOff = false;                                  // 비격리는 한 세션에만 유효하다
+  S.sbxNoGuard = false;
   S.dbg = { active: false, state: null, regs: [], prevRegs: {}, stack: [], locals: [], breaks: [], disasm: [] };
   const dc = $("#panel-debugcon");                  // 다음 세션에서 콘솔 패널을 처음부터 다시 그리게 한다
   if (dc) { dc.dataset.rendered = ""; dc.innerHTML = ""; }

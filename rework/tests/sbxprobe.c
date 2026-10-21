@@ -18,8 +18,10 @@
 #include <sys/syscall.h>
 #include <sys/un.h>
 #include <sys/wait.h>
+#include <sys/prctl.h>
 #include <sys/ptrace.h>
 #include <sys/uio.h>
+#include <time.h>
 #include <unistd.h>
 
 extern char **environ;
@@ -323,6 +325,52 @@ int main(int argc, char **argv) {
         memset(blk, 0, sizeof blk);                       /* NUL 바이트: JSON 으로는 6배(\u0000)로 부푼다 */
         for (long i = 0; i < mb * 16; i++) { if (write(1, blk, sizeof blk) < 0) break; }
         printf("\nflood-done\n");
+        return 0;
+    }
+    if (!strcmp(mode, "killone")) {                  /* 샌드박스 pid 1(gdb)에 시그널을 보낸다 */
+        int sig = argc > 2 ? atoi(argv[2]) : 15;
+        errno = 0; int r = kill(1, sig);
+        printf("kill1[%d]=%s\n", sig, r ? strerror(errno) : "SENT");
+        sleep(30);
+        return 0;
+    }
+    if (!strcmp(mode, "cpuburst")) {                 /* 아주 짧게 사는 자식을 계속 만들어 CPU 를 태운다(표본 사이에 숨으려는 시도) */
+        int ms = argc > 2 ? atoi(argv[2]) : 40;
+        printf("cpuburst=%d\n", ms);
+        for (;;) {
+            pid_t p = fork();
+            if (p == 0) {
+                struct timespec t0, t; clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &t0);
+                do { clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &t); }
+                while ((t.tv_sec - t0.tv_sec) * 1000 + (t.tv_nsec - t0.tv_nsec) / 1000000 < ms);
+                _exit(0);
+            }
+            if (p < 0) { usleep(10000); continue; }
+            waitpid(p, 0, 0);
+        }
+    }
+    if (!strcmp(mode, "memcomm")) {                  /* 자식이 스스로 comm 을 gdb 로 바꾸고 메모리를 쓴다(메모리 감시 회피 시도) */
+        int n = argc > 2 ? atoi(argv[2]) : 4; long mb = argc > 3 ? atol(argv[3]) : 60;
+        for (int i = 0; i < n; i++)
+            if (fork() == 0) {
+                prctl(PR_SET_NAME, "gdb", 0, 0, 0);
+                char *p = mmap(NULL, mb << 20, PROT_READ | PROT_WRITE, MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
+                if (p != MAP_FAILED) for (long k = 0; k < (mb << 20); k += 4096) p[k] = 1;
+                for (;;) pause();
+            }
+        printf("memcomm=%d x %ldMB\n", n, mb);
+        for (;;) pause();
+    }
+    if (!strcmp(mode, "cat")) {                      /* 파일 내용을 그대로 출력(노출 경로가 정말 그 대상인지 확인) */
+        for (int i = 2; i < argc; i++) {
+            int fd = open(argv[i], O_RDONLY);
+            if (fd < 0) { printf("cat[%s]=ERR(%s)\n", argv[i], strerror(errno)); continue; }
+            char b[512]; ssize_t n = read(fd, b, sizeof b - 1);
+            if (n < 0) n = 0;
+            b[n] = 0; for (char *q = b; *q; q++) if (*q == '\n') *q = ' ';
+            printf("cat[%s]=%s\n", argv[i], b);
+            close(fd);
+        }
         return 0;
     }
     if (!strcmp(mode, "sleep")) { printf("sleeping\n"); sleep(1000); return 0; }

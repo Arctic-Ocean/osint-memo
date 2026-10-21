@@ -879,6 +879,45 @@ def _():
     return f"12MB→{total // 1000}K자, 잘게 쪼갠 10만자는 무손실, 거대한 덩어리는 뒤 {m.LOG_LIMIT_CHARS // 1000}K자만"
 
 
+@scenario("cstring-utf8-octal")
+def _():
+    """gdb 는 한글 같은 UTF-8 을 8진 이스케이프로 낸다 — 바이트마다 글자로 바꾸면 깨진다."""
+    got = m._parse_cstring('"\\355\\225\\234\\352\\270\\200 x=\\033[0m \\355\\225"', 0)[0]
+    assert got == "한글 x=\x1b[0m \ufffd", repr(got)               # 끊긴 바이트는 대체 문자
+    assert m._parse_cstring('"a\\303\\251b"', 0)[0] == "aéb"
+    assert m._parse_cstring('"\\xed\\x95\\x9c"', 0)[0] == "한"
+    return "\\355\\225\\234… 8진 바이트열이 '한글' 로 복원, 끊긴 바이트는 대체 문자"
+
+
+@scenario("events-bounded")
+def _():
+    s = DebugSession(DEMO)
+    for i in range(5000):
+        s._on_notify_async("thread-created", {})
+    assert len(s.events) <= 500, len(s.events)
+    return f"알림 5000개 → 보관 {len(s.events)}개"
+
+
+@scenario("gdb-write-nonblocking-timeout")
+def _():
+    """gdb 가 stdin 을 읽지 않으면 큰 쓰기가 영원히 걸리지 않고 시간 안에 오류가 된다."""
+    import subprocess as sp
+    s = DebugSession(DEMO)
+    s.proc = sp.Popen(["sleep", "30"], stdin=sp.PIPE, stdout=sp.PIPE, text=True)
+    s._alive = True
+    s._gdb_in_fd = s.proc.stdin.fileno(); os.set_blocking(s._gdb_in_fd, False)
+    t0 = time.time()
+    try:
+        s._gdb_write("x" * 400000, timeout=1.0)
+        raise AssertionError("가득 찬 파이프에 쓰기가 성공할 수 없음")
+    except DebugError as e:
+        assert "응답하지 않아" in str(e), str(e)
+    dt = time.time() - t0
+    assert dt < 3, f"{dt:.1f}s"
+    s.proc.kill(); s.proc.wait()
+    return f"읽지 않는 파이프에 400KB 쓰기 → {dt:.1f}s 만에 오류"
+
+
 @scenario("parser-escapes")
 def _():
     got = m._parse_cstring('"\\033[0mX\\000Y\\a\\x41\\"\\\\"', 0)[0]

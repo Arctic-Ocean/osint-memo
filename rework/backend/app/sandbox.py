@@ -69,7 +69,7 @@ _INT_RANGES = {
     "cpu_total_seconds": (1, 604800),
     "run_as_uid": (1, 4294967293),
 }
-_BOOLS = ("seccomp", "drop_privileges")
+_BOOLS = ("seccomp", "drop_privileges", "require_gdb_guard")
 
 
 @dataclass
@@ -87,6 +87,7 @@ class SandboxPolicy:
     extra_ro: list = field(default_factory=list)   # 읽기 전용으로 추가 노출할 호스트 경로
     seccomp: bool = True
     drop_privileges: bool = True      # root 로 실행 중이면 낮은 uid 로 낮춤
+    require_gdb_guard: bool = True    # 디버거 보호(gdb 를 대상이 못 건드리게)를 확인하지 못하면 시작하지 않는다(세션별로만 끌 수 있고 저장되지 않는다)
     run_as_uid: int = 65534
 
     @property
@@ -147,8 +148,8 @@ def _sensitive_paths() -> list:
         pass
     try:
         import pwd
-        for e in pwd.getpwall():
-            if e.pw_dir and (e.pw_uid >= 1000 or e.pw_uid == 0) and e.pw_dir not in ("/", "/nonexistent"):
+        for e in pwd.getpwall():                        # 시스템·서비스 계정(uid 1~999)의 홈도 자격 증명을 품을 수 있다
+            if e.pw_dir and e.pw_dir not in ("/", "/nonexistent", "/var/empty", "/dev/null"):
                 homes.add(e.pw_dir)
     except Exception:                                  # noqa: BLE001
         pass
@@ -161,15 +162,17 @@ def _sensitive_paths() -> list:
     return out
 
 
-def _scan_exposed_tree(real: str, shown: str):
+def _scan_exposed_tree(real: str, shown: str, scan_root: str | None = None):
     """디렉터리를 통째로 ro-bind 하면 안에 있는 소켓·FIFO·장치 파일·하위 마운트도 함께 노출된다.
     (호스트 프로세스의 UNIX 소켓에 연결하면 network=none 을 우회한다.) 하나라도 있으면 ValueError."""
-    if not os.path.isdir(real):
+    root0 = scan_root or real                      # 고정한 fd(/proc/self/fd/N)로 훑으면 훑는 도중에 경로가 바뀌어도 같은 대상을 본다
+    if not os.path.isdir(root0):
         return
     count = 0
-    for root, dirs, files in os.walk(real, followlinks=False):
+    for root, dirs, files in os.walk(root0, followlinks=False):
         for n in files + dirs:
             p = os.path.join(root, n)
+            shown_p = shown.rstrip("/") + p[len(root0.rstrip("/")):] if scan_root else p
             try:
                 st = os.lstat(p)
             except OSError:
@@ -180,18 +183,23 @@ def _scan_exposed_tree(real: str, shown: str):
                                  f"더 작은 폴더를 노출하세요: {shown}")
             m = st.st_mode
             if stat.S_ISSOCK(m) or stat.S_ISFIFO(m) or stat.S_ISCHR(m) or stat.S_ISBLK(m):
-                raise ValueError(f"소켓·FIFO·장치 파일이 들어 있어 노출할 수 없습니다: {p}")
+                raise ValueError(f"소켓·FIFO·장치 파일이 들어 있어 노출할 수 없습니다: {shown_p}")
             if stat.S_ISDIR(m) and os.path.ismount(p):
-                raise ValueError(f"하위에 다른 마운트가 있어 노출할 수 없습니다: {p}")
+                raise ValueError(f"하위에 다른 마운트가 있어 노출할 수 없습니다: {shown_p}")
 
 
-def _check_extra_ro(p) -> tuple:
-    """노출 경로 하나를 검증하고 (실경로, 정규화한 경로)를 돌려준다. 실경로는 한 번만 풀어 그대로 쓴다."""
+def _check_extra_ro(p, pin: bool = False) -> tuple:
+    """노출 경로 하나를 검증하고 (실경로, 정규화한 경로)를 돌려준다. 실경로는 한 번만 풀어 그대로 쓴다.
+    pin=True 면 검증한 바로 그 대상을 O_PATH fd 로 붙들고(그 fd 로 하위 검사까지 한다) (실경로, 정규화한 경로, fd)를
+    돌려준다 — bwrap 이 나중에 경로 문자열을 다시 찾아 마운트할 때 그 사이에 경로가 바뀌어도(rename·심볼릭 링크 교체)
+    검증하지 않은 곳이 붙지 않게 한다."""
     if not isinstance(p, str) or not p.strip():
         raise ValueError("extra_ro 의 각 항목은 비어 있지 않은 문자열이어야 합니다.")
     p = p.strip()
-    if "\x00" in p or "\n" in p or "\r" in p or len(p) > 4096:
+    if "\x00" in p or "\n" in p or "\r" in p:
         raise ValueError("경로에 개행·NUL 을 쓸 수 없습니다.")
+    if len(p) > 4096:
+        raise ValueError("경로가 너무 깁니다(4096자 초과).")
     if not p.startswith("/"):
         raise ValueError(f"절대 경로여야 합니다: {p}")
     norm = os.path.normpath(p)
@@ -223,8 +231,20 @@ def _check_extra_ro(p) -> tuple:
         raise ValueError(f"존재하지 않는 경로입니다: {p}")
     if not (stat.S_ISREG(st.st_mode) or stat.S_ISDIR(st.st_mode)):
         raise ValueError(f"파일이나 디렉터리만 노출할 수 있습니다(소켓·장치 불가): {p}")
-    _scan_exposed_tree(real, p)
-    return real, norm
+    if not pin:
+        _scan_exposed_tree(real, p)
+        return real, norm
+    fd = os.open(real, os.O_PATH | os.O_CLOEXEC)
+    try:
+        now = os.fstat(fd)
+        if (now.st_dev, now.st_ino) != (st.st_dev, st.st_ino) or os.path.realpath(f"/proc/self/fd/{fd}") != real:
+            raise ValueError(f"검사하는 사이에 경로가 바뀌었습니다: {p}")
+        os.set_inheritable(fd, True)
+        _scan_exposed_tree(real, p, scan_root=f"/proc/self/fd/{fd}")
+    except BaseException:
+        os.close(fd)
+        raise
+    return real, norm, fd
 
 
 def _validate_extra_ro(paths) -> list:
@@ -241,14 +261,21 @@ def _validate_extra_ro(paths) -> list:
 
 
 def resolve_extra_ro(paths) -> list:
-    """시작 직전에 다시 검증해 [(실경로, 대상 안 경로)] 를 만든다. 검증한 바로 그 실경로를 bind 에 쓰므로
-    (검증과 사용 사이에 심볼릭 링크를 바꿔치기할 틈이 없다) 설정 저장 때의 검증 결과를 믿지 않는다."""
+    """시작 직전에 다시 검증해 [(실경로, 대상 안 경로, 고정한 fd)] 를 만든다. 설정 저장 때의 검증 결과는 믿지 않고,
+    검증한 바로 그 대상을 fd 로 붙들어 bind 에 쓴다(호출자가 fd 를 닫아야 한다 — 실패 시에는 여기서 모두 닫는다)."""
     out, seen = [], set()
-    for p in paths or []:
-        real, norm = _check_extra_ro(p)
-        if norm not in seen:
+    try:
+        for p in paths or []:
+            real, norm, fd = _check_extra_ro(p, pin=True)
+            if norm in seen:
+                os.close(fd)
+                continue
             seen.add(norm)
-            out.append((real, norm))
+            out.append((real, norm, fd))
+    except BaseException:
+        for _, _, fd in out:
+            os.close(fd)
+        raise
     return out
 
 
@@ -290,10 +317,13 @@ class SandboxConfig:
             except Exception:
                 self.policy = SandboxPolicy()   # 깨진 설정은 안전한 기본값(격리 켬)으로
         self.policy.mode = "on"                 # 비격리는 저장된 기본값이 될 수 없다(시작할 때마다 직접 선택)
+        self.policy.require_gdb_guard = True    # 디버거 보호를 건너뛰는 것도 마찬가지
 
     def save(self, patch: dict) -> SandboxPolicy:
         if isinstance(patch, dict) and patch.get("mode", "on") != "on":
             raise ValueError("비격리는 저장할 수 없습니다. 신뢰하는 파일을 디버깅할 때마다 직접 선택하세요.")
+        if isinstance(patch, dict) and patch.get("require_gdb_guard", True) is not True:
+            raise ValueError("디버거 보호 요구를 끄는 설정은 저장할 수 없습니다. 시작할 때마다 직접 선택하세요.")
         with self._lock:                                   # 동시 저장이 서로의 임시 파일을 가로채지 않게
             new = SandboxPolicy.from_dict(patch, base=self.policy)
             tmp = f"{self.path}.tmp-{os.urandom(4).hex()}"
@@ -533,7 +563,9 @@ class CgroupLimit:
 
     @classmethod
     def sweep_stale(cls):
-        """서버가 비정상 종료(SIGKILL 등)해 남은 이전 실행의 cgroup 을 치운다(이름에 서버 pid 가 있다)."""
+        """서버가 비정상 종료(SIGKILL 등)해 남은 이전 실행의 cgroup 을 치운다. 이름은 rework-sbx-<pid ns inode>-<서버 pid>-<무작위>
+        이며 '같은 pid 네임스페이스'에서 서버 pid 가 사라진 것만 지운다(다른 네임스페이스의 살아 있는 서버를 건드리지 않게)."""
+        own_ns = _pidns_inode(os.getpid()) or 0
         bases = [b for b in (cls._v2_base(), cls._v1_base("memory"), cls._v1_base("pids")) if b]
         for base in bases:
             try:
@@ -541,9 +573,18 @@ class CgroupLimit:
             except OSError:
                 continue
             for n in names:
-                m = re.fullmatch(r"rework-sbx-(\d+)-\w+", n)
-                if m and not _pid_alive(int(m.group(1))):
-                    cls([os.path.join(base, n)], "stale").cleanup()
+                m = re.fullmatch(r"rework-sbx-(\d+)-(\d+)-\w+", n)
+                if not m or int(m.group(1)) != own_ns:
+                    continue
+                try:
+                    if not _pid_alive(int(m.group(2))):
+                        cls([os.path.join(base, n)], "stale").cleanup()
+                except Exception:                        # noqa: BLE001
+                    continue
+
+    def contains_all(self, pids: list) -> bool:
+        have = set(self.procs())
+        return all(p in have for p in pids)
 
     def procs(self) -> list:
         out = []
@@ -593,6 +634,8 @@ class SandboxStatus:
     cgroup: bool = False
     disable_userns: bool = False
     as_pid1: bool = False          # gdb 를 pid 네임스페이스의 init 으로 둘 수 있는가(init 프로세스 노출 방지)
+    gdb_python: bool = False       # gdb 에 Python 이 있는가(PR_SET_DUMPABLE 로 gdb 를 보호하려면 필요)
+    guard_ready: bool = False      # 디버거 보호(as_pid1 + gdb_python)를 쓸 수 있는가
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -648,6 +691,18 @@ def probe(force: bool = False) -> SandboxStatus:
         return st
 
 
+def _gdb_has_python() -> bool:
+    gdb = shutil.which("gdb")
+    if not gdb:
+        return False
+    try:
+        r = subprocess.run([gdb, "--batch", "-nx", "-ex", "python print(8675309)"], capture_output=True,
+                           text=True, timeout=15)
+        return "8675309" in (r.stdout or "")
+    except Exception:                                    # noqa: BLE001
+        return False
+
+
 def _probe_uncached() -> SandboxStatus:
     if platform.system() != "Linux":
         return SandboxStatus(False, "Linux 가 아닙니다.", "격리 실행은 Linux 전용입니다. Windows 는 WSL2 나 VM 안에서 rework 를 실행하세요.")
@@ -658,6 +713,8 @@ def _probe_uncached() -> SandboxStatus:
                        running_as_root=(os.geteuid() == 0), seccomp=seccomp_supported(),
                        cgroup=CgroupLimit.available(), disable_userns=_bwrap_supports(bw, "--disable-userns"),
                        as_pid1=_bwrap_supports(bw, "--as-pid-1"))
+    st.gdb_python = _gdb_has_python()
+    st.guard_ready = st.as_pid1 and st.gdb_python
     policy = SandboxPolicy()
     attempts = [("낮춘 uid", _drop_kwargs(policy))]
     if st.running_as_root:
@@ -725,7 +782,7 @@ SB_TTY = "/dev/rework-tty"
 
 
 def _bwrap_argv(policy: SandboxPolicy, bwrap: str, *, command: list, fds: _FdBag,
-                target_src: str | None = None, target_name: str = "target",
+                target_src: str | None = None, target_fd: int | None = None, target_name: str = "target",
                 tty_src: str | None = None, seccomp_fd: int | None = None,
                 block_fd: int | None = None, probing: bool = False,
                 disable_userns: bool = False, as_pid1: bool = False, extra: list = ()) -> list:
@@ -770,10 +827,12 @@ def _bwrap_argv(policy: SandboxPolicy, bwrap: str, *, command: list, fds: _FdBag
           "--size", str(policy.tmp_mb * 1024 * 1024), "--tmpfs", "/tmp", "--chdir", "/tmp"]
     if tty_src:
         a += ["--dev-bind", tty_src, SB_TTY]          # 호스트 pty 하나만 노출
-    if target_src:
+    if target_fd is not None:                # 임시 폴더가 noexec 일 때: 샌드박스 tmpfs 안에 내용을 복사해 둔다
+        a += ["--perms", "0555", "--file", str(target_fd), f"{SB_TARGET_DIR}/{target_name}"]
+    elif target_src:
         a += ["--ro-bind", target_src, f"{SB_TARGET_DIR}/{target_name}"]
-    for real, dest in extra:                 # resolve_extra_ro 가 방금 검증한 실경로를 그대로 쓴다
-        a += ["--ro-bind", real, dest]
+    for real, dest, fd in extra:             # 검증하며 붙들어 둔 fd 로 bind — 이후에 경로가 바뀌어도 검증한 대상이 붙는다
+        a += ["--ro-bind", f"/proc/self/fd/{fd}", dest]
     # bwrap 의 루트와 /dev 는 쓰기 가능한 tmpfs(크기 제한 없음) — 잠가야 RAM 을 무제한으로 쓰지 못한다.
     # 쓸 수 있는 곳은 크기가 정해진 /tmp 와 /dev/shm 뿐이다.
     a += ["--remount-ro", "/dev", "--remount-ro", "/"]
@@ -877,7 +936,26 @@ def _ppid_map() -> dict:
     return m
 
 
-def descendants(pid: int) -> list:
+def _children_of(pid: int):
+    """/proc/<pid>/task/*/children 로 직계 자식 pid 목록을 얻는다. 커널이 지원하지 않으면 None."""
+    out = []
+    try:
+        tids = os.listdir(f"/proc/{pid}/task")
+    except OSError:
+        return out
+    for t in tids:
+        try:
+            with open(f"/proc/{pid}/task/{t}/children") as fh:
+                out += [int(x) for x in fh.read().split()]
+        except FileNotFoundError:
+            if os.path.isdir(f"/proc/{pid}/task/{t}"):
+                return None                          # children 파일이 없는 커널
+        except (OSError, ValueError):
+            continue
+    return out
+
+
+def _descendants_slow(pid: int) -> list:
     pm = _ppid_map()
     out, frontier = [], [pid]
     while frontier:
@@ -888,6 +966,22 @@ def descendants(pid: int) -> list:
     return out
 
 
+def descendants(pid: int) -> list:
+    """pid 의 모든 자손. 직계 자식 파일을 따라가므로 비용이 호스트의 전체 프로세스 수가 아니라 자손 수에 비례한다
+    (children 파일이 없는 커널에서는 /proc 전체를 훑는다)."""
+    out, frontier, seen = [], [pid], {pid}
+    while frontier:
+        kids = _children_of(frontier.pop())
+        if kids is None:
+            return _descendants_slow(pid)
+        for k in kids:
+            if k not in seen:
+                seen.add(k)
+                out.append(k)
+                frontier.append(k)
+    return out
+
+
 def _pidns_inode(pid: int) -> int | None:
     try:
         return os.stat(f"/proc/{pid}/ns/pid").st_ino
@@ -895,10 +989,22 @@ def _pidns_inode(pid: int) -> int | None:
         return None
 
 
+def _nspid(pid: int) -> list:
+    """호스트 pid 의 네임스페이스별 pid 목록(마지막이 가장 안쪽). 읽지 못하면 빈 목록."""
+    try:
+        with open(f"/proc/{pid}/status") as fh:
+            for line in fh:
+                if line.startswith("NSpid:"):
+                    return [int(x) for x in line.split()[1:]]
+    except (OSError, ValueError):
+        pass
+    return []
+
+
 def kill_pidns(inode: int, exclude: int | None = None) -> int:
     """pid 네임스페이스 inode 가 같은 모든 프로세스를 죽인다(남은 것이 없을 때까지).
-    inode 는 반드시 '열어 둔 ns fd' 로 고정된 값이어야 한다(Launch.ns_fd) — 그렇지 않으면 다른 네임스페이스가
-    같은 번호를 물려받아 엉뚱한 프로세스를 죽일 수 있다. 호스트 자신의 네임스페이스는 절대 죽이지 않는다."""
+    inode 는 반드시 '열어 둔 ns fd' 로 고정된 값이어야 한다(Launch.ns_fd) — 그렇지 않으면 다른 네임스페이스가 같은 번호를
+    물려받아 엉뚱한 프로세스를 죽일 수 있다. 호스트 자신의 네임스페이스는 절대 죽이지 않는다."""
     if inode is None or inode == _pidns_inode(os.getpid()):
         return 0
     killed = 0
@@ -923,17 +1029,15 @@ def kill_pidns(inode: int, exclude: int | None = None) -> int:
 
 # ---- 총량 감시(호스트 쪽) ----------------------------------------------------------
 _CLK_TCK = os.sysconf("SC_CLK_TCK") if hasattr(os, "sysconf") else 100
-_UNMETERED_COMM = ("gdb", "bwrap")     # 총 메모리는 대상 쪽만 센다(gdb 몫은 따로 허용)
 
 
-def _proc_cpu_ticks(pid: int):
-    """(comm, utime+stime) — 읽을 수 없으면 None."""
+def _proc_times(pid: int):
+    """(utime, stime, cutime, cstime) tick — 읽을 수 없으면 None. comm 에 ')' 나 공백이 있어도 마지막 ')' 기준으로 읽는다."""
     try:
         with open(f"/proc/{pid}/stat") as fh:
             st = fh.read()
-        comm = st[st.index("(") + 1:st.rindex(")")]
         f = st[st.rindex(")") + 2:].split()
-        return comm, int(f[11]) + int(f[12])
+        return int(f[11]), int(f[12]), int(f[13]), int(f[14])
     except (OSError, ValueError, IndexError):
         return None
 
@@ -955,21 +1059,32 @@ def _proc_pss_kb(pid: int) -> int:
 
 
 class ResourceWatch(threading.Thread):
-    """샌드박스 전체의 CPU 시간 합계·(cgroup 이 없을 때) 메모리 합계·프로세스 수를 감시해 넘으면 on_limit 를 부른다.
-    rlimit 는 프로세스마다 따로 적용되므로 fork 로 한도가 곱해지는 것(N 프로세스 × cpu_seconds)을 이것이 막는다."""
+    """샌드박스 전체의 CPU 시간 합계·메모리 합계·프로세스 수를 감시해 넘으면 on_limit 를 부른다.
+    rlimit 는 프로세스마다 따로 적용되므로 fork 로 한도가 곱해지는 것(N 프로세스 × cpu_seconds)을 이것이 막는다.
 
-    def __init__(self, root_pid: int, policy: SandboxPolicy, meter_memory: bool, on_limit, interval: float = 0.5):
+    CPU 는 표본을 뽑아 더하지 않고 '살아 있는 모든 프로세스의 (utime+stime+cutime+cstime) 합'으로 구한다.
+    죽은 프로세스의 시간은 그것을 wait 한 부모의 cutime/cstime 에, 부모가 죽었다면 pid 1(gdb)의 cutime 에 쌓이므로
+    아주 짧게 살다 죽는 자식이 표본 사이에 숨을 수 없다(좀비도 /proc 에 남아 있는 동안 센다)."""
+
+    def __init__(self, launch: "Launch", policy: SandboxPolicy, on_limit, interval: float = 0.5):
         super().__init__(daemon=True, name="rework-sbx-watch")
-        self.root_pid, self.policy, self.meter_memory = root_pid, policy, meter_memory
-        self.on_limit, self.interval = on_limit, interval
+        self.launch, self.policy, self.on_limit, self.interval = launch, policy, on_limit, interval
         self._stop_ev = threading.Event()
-        self._seen: dict = {}            # pid -> 마지막으로 본 CPU tick
-        self._dead_ticks = 0
         self.cpu_seconds_used = 0.0
         self.mem_mb_used = 0.0
+        self.live_count = 0                # 샌드박스 안의 프로세스 수(gdb·대상·남은 것 모두)
+        self.errors = 0
 
     def stop(self):
         self._stop_ev.set()
+
+    def _exclude(self) -> set:
+        """메모리 합계에서 뺄 프로세스: 디버거 쪽(바깥 bwrap·gdb·init). comm 이 아니라 pid 로 식별한다(대상이 이름을 바꿀 수 있다)."""
+        ex = {self.launch.root_pid, self.launch.init_host_pid}
+        if self.launch.gdb_host_pid:
+            ex.add(self.launch.gdb_host_pid)
+        ex.discard(None)
+        return ex
 
     def run(self):
         cpu_limit = self.policy.cpu_total_seconds
@@ -977,39 +1092,59 @@ class ResourceWatch(threading.Thread):
         proc_limit = self.policy.max_processes + 16
         while not self._stop_ev.wait(self.interval):
             try:
-                pids = [self.root_pid] + descendants(self.root_pid)
-            except OSError:
+                reason = self._tick(cpu_limit, mem_limit_kb, proc_limit)
+            except Exception:                              # noqa: BLE001  감시 스레드는 어떤 경우에도 죽지 않는다
+                self.errors += 1
                 continue
-            live, mem_kb = {}, 0
-            for pid in pids:
-                r = _proc_cpu_ticks(pid)
-                if r is None:
-                    continue
-                comm, ticks = r
-                live[pid] = ticks
-                if self.meter_memory and comm not in _UNMETERED_COMM:
-                    mem_kb += _proc_pss_kb(pid)
-            for pid, ticks in self._seen.items():       # 사라진 프로세스의 CPU 는 마지막 값으로 누적한다
-                if pid not in live:
-                    self._dead_ticks += ticks
-            self._seen = live
-            self.cpu_seconds_used = (self._dead_ticks + sum(live.values())) / _CLK_TCK
-            self.mem_mb_used = mem_kb / 1024
-            reason = None
-            if self.cpu_seconds_used > cpu_limit:
-                reason = f"총 CPU 시간 한도({cpu_limit}초)"
-            elif self.meter_memory and mem_kb > mem_limit_kb:
-                reason = f"총 메모리 한도({self.policy.memory_mb * 2}MB)"
-            elif len(live) > proc_limit:
-                reason = f"프로세스 수 한도({self.policy.max_processes})"
             if reason:
                 try:
                     self.on_limit(reason)
                 finally:
                     return
 
+    def _tick(self, cpu_limit, mem_limit_kb, proc_limit):
+        root = self.launch.root_pid
+        pids = [root] + descendants(root)
+        if self.launch.gdb_host_pid is None and not self.launch.as_pid1:      # init 모드: gdb 는 init 의 첫 자식(ns pid 2)
+            for p in pids:
+                ns = _nspid(p)
+                if len(ns) >= 2 and ns[-1] == 2:
+                    self.launch.gdb_host_pid = p
+                    break
+        ex = self._exclude()
+        ticks, mem_kb, live = 0, 0, 0
+        for pid in pids:
+            t = _proc_times(pid)
+            if t is None:
+                continue
+            live += 1
+            ticks += sum(t)
+            if pid not in ex:
+                mem_kb += _proc_pss_kb(pid)
+        self.live_count = live
+        self.cpu_seconds_used = ticks / _CLK_TCK
+        self.mem_mb_used = mem_kb / 1024
+        if self.cpu_seconds_used > cpu_limit:
+            return f"총 CPU 시간 한도({cpu_limit}초)"
+        if mem_kb > mem_limit_kb:
+            return f"총 메모리 한도({self.policy.memory_mb * 2}MB)"
+        if live > proc_limit:
+            return f"프로세스 수 한도({self.policy.max_processes})"
+        return None
+
 
 # ---- 실행 준비 ----------------------------------------------------------------
+def _set_layer(info: dict, layer_id: str, active: bool, detail: str | None = None):
+    """보고서의 한 층 상태를 바꾸고 요약을 다시 만든다."""
+    for l in info.get("layers", []):
+        if l["id"] == layer_id:
+            l["active"] = bool(active)
+            if detail is not None:
+                l["detail"] = detail
+    inactive = [l["label"] for l in info.get("layers", []) if not l["active"]]
+    info["summary"] = "격리 실행" + (f" — 주의: {', '.join(inactive)}" if inactive else "")
+
+
 @dataclass
 class Launch:
     argv: list
@@ -1024,36 +1159,29 @@ class Launch:
     block_w: int | None = None
     ns_fd: int | None = None           # 샌드박스 pid 네임스페이스를 가리키는 열린 fd — 네임스페이스를 붙들어 inode 재사용을 막는다
     ns_inode: int | None = None
-    root_pid: int | None = None
+    root_pid: int | None = None        # 바깥 bwrap 의 호스트 pid
+    init_host_pid: int | None = None   # 샌드박스 pid 1 프로세스의 호스트 pid
+    gdb_host_pid: int | None = None    # gdb 의 호스트 pid(--as-pid-1 이면 init 과 같다)
     as_pid1: bool = False
+    cg_ok: bool = False                # gdb·대상이 실제로 cgroup 에 담겼음을 확인했는가
     watch: "ResourceWatch | None" = None
     _policy: "SandboxPolicy | None" = None
+    _proc: object = None
     _fds: _FdBag | None = None
     _blocked: bool = False
+    _cleaned: bool = False
+    _lock: threading.Lock = field(default_factory=threading.Lock)
 
-    def attach(self, proc, on_limit=None):
-        """Popen 직후 호출: cgroup 에 넣고 샌드박스를 풀어 준다(--block-fd), 네임스페이스를 고정하고 감시를 시작한다."""
-        self.root_pid = proc.pid
-        try:
-            if self.cgroup:
-                pids = [proc.pid] + descendants(proc.pid)
-                for p in pids:
-                    self.cgroup.add(p)
-        finally:
-            if self.block_w is not None:
-                try:
-                    os.write(self.block_w, b"x")
-                finally:
-                    os.close(self.block_w)
-                    self.block_w = None
-        # 샌드박스 pid 네임스페이스를 fd 로 붙든다. 열린 fd 가 있는 동안 네임스페이스가 유지되어 inode 번호가 다른
-        # 네임스페이스에 재사용되지 않는다(정리 때 엉뚱한 프로세스를 죽이는 것을 막는다).
-        deadline = time.monotonic() + 5.0
-        outer = _pidns_inode(proc.pid)
-        while time.monotonic() < deadline and self.ns_fd is None:
+    def _find_ns(self, proc, outer, deadline: float):
+        """샌드박스 pid 네임스페이스를 fd 로 붙든다. 열린 fd 가 있는 동안 네임스페이스가 유지되어 inode 번호가 다른
+        네임스페이스에 재사용되지 않는다(정리 때 엉뚱한 프로세스를 죽이는 것을 막는다)."""
+        while time.monotonic() < deadline and self.ns_fd is None and proc.poll() is None:
             for c in descendants(proc.pid):
                 ino = _pidns_inode(c)
                 if ino and ino != outer:
+                    ns = _nspid(c)
+                    if not ns or ns[-1] != 1:         # init(ns pid 1) 만 고른다
+                        continue
                     try:
                         fd = os.open(f"/proc/{c}/ns/pid", os.O_RDONLY | os.O_CLOEXEC)
                     except OSError:
@@ -1061,30 +1189,61 @@ class Launch:
                     if os.fstat(fd).st_ino != ino:        # 그 사이 프로세스가 바뀌었다
                         os.close(fd)
                         continue
-                    self.ns_fd, self.ns_inode = fd, ino
-                    break
-            else:
-                time.sleep(0.02)
+                    self.ns_fd, self.ns_inode, self.init_host_pid = fd, ino, c
+                    if self.as_pid1:
+                        self.gdb_host_pid = c
+                    return
+            time.sleep(0.01)
+
+    def attach(self, proc, on_limit=None):
+        """Popen 직후 호출. ① 샌드박스 init 이 생길 때까지 기다리며 네임스페이스를 붙들고 ② cgroup 이 있으면 그때 이미 있는
+        모든 프로세스(바깥 bwrap·init)를 cgroup 에 넣어 실제로 담겼는지 확인한 뒤 ③ --block-fd 를 풀어 command 를 실행하게
+        하고 ④ 감시를 시작한다. (bwrap 은 init 을 --block-fd 를 읽기 '전에' fork 하므로, 풀기 전에 담아야 gdb·대상이
+        cgroup 을 물려받는다.)"""
+        self.root_pid, self._proc = proc.pid, proc
+        outer = _pidns_inode(proc.pid)
+        try:
+            self._find_ns(proc, outer, time.monotonic() + 3.0)
+            if self.cgroup:
+                pids = [proc.pid] + descendants(proc.pid)
+                for p in pids:
+                    self.cgroup.add(p)
+                self.cg_ok = self.cgroup.contains_all(pids) and (self.init_host_pid in pids)
+                _set_layer(self.info, "cgroup", self.cg_ok,
+                           None if self.cg_ok else "cgroup 에 샌드박스 프로세스를 담지 못해 미적용(총량 감시로 근사)")
+        finally:
+            if self.block_w is not None:
+                try:
+                    os.write(self.block_w, b"x")
+                finally:
+                    os.close(self.block_w)
+                    self.block_w = None
+        if self.ns_fd is None:                                 # 아직 init 이 안 보였다면(느린 시스템) 조금 더 기다린다
+            self._find_ns(proc, outer, time.monotonic() + 2.0)
         if on_limit is not None:
-            self.watch = ResourceWatch(proc.pid, self._policy, meter_memory=self.cgroup is None,
-                                       on_limit=on_limit)
+            self.watch = ResourceWatch(self, self._policy, on_limit=on_limit)
             self.watch.start()
 
     def reap(self):
         """샌드박스 안에 남은 모든 프로세스를 죽인다(gdb 가 사라졌을 때·정리할 때)."""
-        if self.ns_fd is not None:
+        fd = self.ns_fd                                        # 한 번만 읽는다(다른 스레드의 cleanup 과 겹쳐도 안전)
+        if fd is not None:
             try:
-                kill_pidns(os.fstat(self.ns_fd).st_ino, exclude=os.getpid())
-            except OSError:
+                kill_pidns(os.fstat(fd).st_ino, exclude=os.getpid())
+            except (OSError, TypeError):
                 pass
-        elif self.root_pid:                                   # 네임스페이스를 못 붙들었다면 자손이라도 죽인다
-            for c in descendants(self.root_pid):
+        elif self.root_pid and self._proc is not None and self._proc.poll() is None:
+            for c in descendants(self.root_pid):               # 바깥 bwrap 이 아직 살아 있을 때만(회수된 pid 를 건드리지 않게)
                 try:
                     os.kill(c, signal.SIGKILL)
                 except OSError:
                     pass
 
     def cleanup(self, outer_pid: int | None = None):
+        with self._lock:                                       # 리더 스레드(gdb 사망)와 stop() 이 동시에 불러도 한 번만
+            if self._cleaned:
+                return
+            self._cleaned = True
         if self.watch is not None:
             self.watch.stop()
             self.watch = None
@@ -1092,12 +1251,12 @@ class Launch:
         if self.cgroup:
             self.cgroup.cleanup()
             self.cgroup = None
-        if self.ns_fd is not None:
+        fd, self.ns_fd = self.ns_fd, None
+        if fd is not None:
             try:
-                os.close(self.ns_fd)
+                os.close(fd)
             except OSError:
                 pass
-            self.ns_fd = None
         if self.block_w is not None:
             try:
                 os.close(self.block_w)
@@ -1110,7 +1269,10 @@ class Launch:
 
 
 # ---- gdb 보호 확인 ------------------------------------------------------------------
-GDB_GUARD_ARGS = ["-iex", "python import ctypes; ctypes.CDLL(None).prctl(4, 0, 0, 0, 0)",   # PR_SET_DUMPABLE=0
+# PR_SET_DUMPABLE=0 으로 같은 uid 의 대상이 gdb 를 건드리지 못하게 하고, SIGTERM·SIGHUP 을 무시해 대상이 gdb(pid 1)를
+# 종료시키지 못하게 한다(호스트는 SIGKILL·-gdb-exit·stdin EOF 로 끝낼 수 있다).
+GDB_GUARD_ARGS = ["-iex", "python import ctypes, signal; ctypes.CDLL(None).prctl(4, 0, 0, 0, 0); "
+                          "signal.signal(signal.SIGTERM, signal.SIG_IGN); signal.signal(signal.SIGHUP, signal.SIG_IGN)",
                   "-iex", "maint set worker-threads 1"]      # gdb 의 작업 스레드가 프로세스 수 한도를 갉아먹지 않게
 
 
@@ -1121,12 +1283,8 @@ def verify_gdb_guard(launch: Launch, root_pid: int) -> tuple:
         return False, "bwrap 이 --as-pid-1 을 지원하지 않아 init 프로세스가 대상에게 노출됩니다"
     gdb_pid = None
     for c in [root_pid] + descendants(root_pid):
-        try:
-            with open(f"/proc/{c}/status") as fh:
-                ns_pids = next((l.split()[1:] for l in fh if l.startswith("NSpid:")), [])
-        except OSError:
-            continue
-        if ns_pids and ns_pids[-1] == "1" and len(ns_pids) >= 2:
+        ns = _nspid(c)
+        if len(ns) >= 2 and ns[-1] == 1:
             gdb_pid = c
             break
     if gdb_pid is None:
@@ -1146,21 +1304,28 @@ def verify_gdb_guard(launch: Launch, root_pid: int) -> tuple:
 
 def mark_guard(info: dict, ok: bool, why: str = ""):
     """시작 후 확인한 gdb 보호 결과를 격리 보고서에 반영한다."""
-    for l in info.get("layers", []):
-        if l["id"] == "gdbguard":
-            l["active"] = bool(ok)
-            l["detail"] = ("gdb 를 덤프 불가로 만들어 대상이 gdb 의 메모리·fd·ptrace 에 접근할 수 없음" if ok
-                           else f"미적용: {why}. 대상이 디버거의 보고를 위조할 수 있습니다")
-    inactive = [l["label"] for l in info.get("layers", []) if not l["active"]]
-    info["summary"] = "격리 실행" + (f" — 주의: {', '.join(inactive)}" if inactive else "")
+    _set_layer(info, "gdbguard", ok,
+               "gdb 를 덤프 불가로 만들고 SIGTERM·SIGHUP 을 무시해, 대상이 gdb 의 메모리·fd·ptrace 에 접근하거나 gdb 를 종료시킬 수 없음"
+               if ok else f"미적용: {why}. 대상이 디버거의 보고를 위조할 수 있습니다")
+
+
+def guard_unavailable_reason(status: SandboxStatus) -> str | None:
+    """디버거 보호를 쓸 수 없는 이유(쓸 수 있으면 None)."""
+    if not status.as_pid1:
+        return "bubblewrap 이 --as-pid-1 을 지원하지 않습니다(0.8 이상 필요: 설치된 버전 %s)" % (status.version or "?")
+    if not status.gdb_python:
+        return "gdb 에 Python 지원이 없습니다(배포판의 gdb 전체 패키지를 설치하세요)"
+    return None
 
 
 def _pid_alive(pid: int) -> bool:
+    if not (1 <= pid <= 4194304):
+        return True                                            # 올바르지 않은 값은 '살아 있음'으로 보고 건드리지 않는다
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
         return False
-    except OSError:
+    except (OSError, OverflowError):
         return True
     return True
 
@@ -1169,27 +1334,38 @@ _SWEPT = {"done": False}
 WORKDIR_PREFIX = "rework-sbx-"
 
 
+def _own_ns() -> int:
+    return _pidns_inode(os.getpid()) or 0
+
+
 def _sweep_stale():
-    """이전 서버가 비정상 종료해 남긴 작업 폴더·cgroup 을 한 번 치운다(폴더의 .owner 에 서버 pid 가 있다)."""
+    """이전 서버가 비정상 종료해 남긴 작업 폴더·cgroup 을 한 번 치운다. 폴더의 .owner 에는 '서버 pid 와 pid 네임스페이스
+    inode' 가 들어 있고, 같은 네임스페이스에서 그 pid 가 사라진 것만 치운다(다른 네임스페이스의 서버는 건드리지 않는다)."""
     if _SWEPT["done"]:
         return
-    _SWEPT["done"] = True
+    own = _own_ns()
     base = tempfile.gettempdir()
     try:
-        for n in os.listdir(base):
-            if not n.startswith(WORKDIR_PREFIX):
-                continue
-            d = os.path.join(base, n)
-            try:
-                with open(os.path.join(d, ".owner")) as fh:
-                    pid = int(fh.read().strip())
-            except (OSError, ValueError):
-                continue
-            if not _pid_alive(pid):
-                shutil.rmtree(d, ignore_errors=True)
+        names = os.listdir(base)
     except OSError:
+        names = []
+    for n in names:
+        if not n.startswith(WORKDIR_PREFIX):
+            continue
+        d = os.path.join(base, n)
+        try:
+            with open(os.path.join(d, ".owner")) as fh:
+                parts = fh.read().split()
+            pid, ns = int(parts[0]), int(parts[1]) if len(parts) > 1 else own
+            if ns == own and pid != os.getpid() and not _pid_alive(pid) and not os.path.islink(d):
+                shutil.rmtree(d, ignore_errors=True)
+        except Exception:                                      # noqa: BLE001  하나가 이상해도 나머지는 계속 치운다
+            continue
+    try:
+        CgroupLimit.sweep_stale()
+    except Exception:                                          # noqa: BLE001
         pass
-    CgroupLimit.sweep_stale()
+    _SWEPT["done"] = True
 
 
 def prepare(policy: SandboxPolicy, target_path: str, tty_src: str, gdb_args: list) -> Launch:
@@ -1201,55 +1377,69 @@ def prepare(policy: SandboxPolicy, target_path: str, tty_src: str, gdb_args: lis
     status = probe()
     if not status.available:
         raise SandboxError(status.reason + (" " + status.hint if status.hint else ""))
+    if policy.require_gdb_guard:
+        why = guard_unavailable_reason(status)
+        if why:
+            raise SandboxError(f"디버거 보호를 쓸 수 없어 시작하지 않습니다: {why}. 격리는 유지하되 대상이 디버거의 보고를 "
+                               "위조할 수 있다는 위험을 감수하려면 ‘디버거 보호 없이 시작’을 선택하세요.")
     gdb = resolve_gdb()
     kw = _drop_kwargs(policy) if status.drop_ok else {}
     uid = kw.get("user")
     gid = kw.get("group", uid)
     name = re.sub(r"[^A-Za-z0-9._-]", "_", os.path.basename(target_path)) or "target"
 
+    fds = _FdBag()
     try:
-        extra = resolve_extra_ro(policy.extra_ro)             # 시작 직전에 다시 검증하고 그 실경로를 그대로 쓴다
+        extra = resolve_extra_ro(policy.extra_ro)             # 시작 직전에 다시 검증하며 대상을 fd 로 붙든다
     except ValueError as e:
         raise SandboxError(str(e))
-    if uid is not None:                       # 낮춘 uid 가 읽지 못하는 경로는 시작 전에 알려 준다
-        for real, dest in extra:
-            bad = _accessible_as(uid, gid, real)
-            if bad:
-                raise SandboxError(f"추가 노출 경로 {dest} 를 격리 사용자(uid {uid})가 읽을 수 없습니다"
-                                   f"({bad} 의 권한). `chmod o+rx` 후 다시 시도하세요.")
-
-    _sweep_stale()
-    workdir = tempfile.mkdtemp(prefix=WORKDIR_PREFIX)         # 이름에 서버 pid 를 넣지 않는다(mountinfo 로 새지 않게)
-    fds = _FdBag()
+    fds.fds.extend(fd for _, _, fd in extra)
+    workdir = None
     cg = None
     block_r = block_w = None
     try:
+        if uid is not None:                   # 낮춘 uid 가 읽지 못하는 경로는 시작 전에 알려 준다
+            for real, dest, _fd in extra:
+                bad = _accessible_as(uid, gid, real)
+                if bad:
+                    raise SandboxError(f"추가 노출 경로 {dest} 를 격리 사용자(uid {uid})가 읽을 수 없습니다"
+                                       f"({bad} 의 권한). `chmod o+rx` 후 다시 시도하세요.")
+        try:
+            _sweep_stale()
+        except Exception:                                      # noqa: BLE001  청소 실패가 시작을 막지 않게
+            pass
+        workdir = tempfile.mkdtemp(prefix=WORKDIR_PREFIX)     # 이름에 서버 pid 를 넣지 않는다(mountinfo 로 새지 않게)
         with open(os.path.join(workdir, ".owner"), "w") as fh:
-            fh.write(str(os.getpid()))
+            fh.write(f"{os.getpid()} {_own_ns()}")
         copy = os.path.join(workdir, name)
         shutil.copyfile(target_path, copy)
+        # 복사본을 먼저 잠그고 폴더는 마지막에 연다(폴더가 열린 채 복사본이 0644 인 순간이 없게)
         if uid is not None:
-            # 폴더는 root 소유 0711(낮춘 uid 는 지나가기만), 복사본은 그 uid 소유 0500: 같은 컴퓨터의 다른 계정은 읽지 못한다
-            os.chmod(workdir, 0o711)
             os.chown(copy, uid, gid)
             os.chmod(copy, 0o500)
+            os.chmod(workdir, 0o711)          # 폴더는 root 소유 0711: 낮춘 uid 는 지나가기만 한다
         else:
-            os.chmod(workdir, 0o700)
-            os.chmod(copy, 0o500)
+            os.chmod(copy, 0o500)             # 폴더는 mkdtemp 의 0700 그대로
+        target_fd = None
+        if os.statvfs(workdir).f_flag & getattr(os, "ST_NOEXEC", 8):
+            # 임시 폴더가 noexec 로 마운트돼 있으면 bind 한 복사본을 실행할 수 없다 → 샌드박스의 tmpfs 에 내용을 복사해 넣는다
+            with open(copy, "rb") as fh:
+                target_fd = fds.data(fh.read())
 
         seccomp_fd = None
         if policy.seccomp and seccomp_supported():
             bpf = build_seccomp_bpf()
             if bpf:
                 seccomp_fd = fds.data(bpf)
-        cg = CgroupLimit.create(f"rework-sbx-{os.getpid()}-{os.path.basename(workdir)[len(WORKDIR_PREFIX):]}",
+        cg = CgroupLimit.create(f"rework-sbx-{_own_ns()}-{os.getpid()}-{os.path.basename(workdir)[len(WORKDIR_PREFIX):]}",
                                 (policy.memory_mb * 2 + GDB_AS_MARGIN_MB) * 1024 * 1024, policy.max_processes + 8)
         if cg:
             block_r, block_w = os.pipe()
             os.set_inheritable(block_r, True)
             fds.fds.append(block_r)
 
-        argv = _bwrap_argv(policy, status.bwrap, fds=fds, target_src=copy, target_name=name,
+        argv = _bwrap_argv(policy, status.bwrap, fds=fds, target_src=None if target_fd is not None else copy,
+                           target_fd=target_fd, target_name=name,
                            tty_src=tty_src, seccomp_fd=seccomp_fd, block_fd=block_r,
                            disable_userns=status.disable_userns, as_pid1=status.as_pid1, extra=extra,
                            command=[gdb] + GDB_GUARD_ARGS + gdb_args + [f"{SB_TARGET_DIR}/{name}"])
@@ -1263,17 +1453,17 @@ def prepare(policy: SandboxPolicy, target_path: str, tty_src: str, gdb_args: lis
                         cgroup=cg, block_w=block_w, as_pid1=status.as_pid1, _fds=fds)
         launch._policy = policy
         return launch
-    except Exception:
-        for fd in (block_w,):
-            if fd is not None:
-                try:
-                    os.close(fd)
-                except OSError:
-                    pass
+    except BaseException:
+        if block_w is not None:
+            try:
+                os.close(block_w)
+            except OSError:
+                pass
         if cg:
             cg.cleanup()
         fds.close()
-        shutil.rmtree(workdir, ignore_errors=True)
+        if workdir:
+            shutil.rmtree(workdir, ignore_errors=True)
         raise
 
 
@@ -1324,8 +1514,8 @@ def describe(policy: SandboxPolicy, status: SandboxStatus | None = None, *, secc
                    f"프로세스(스레드) +{allow}, 파일 {policy.max_file_mb}MB, 낮은 우선순위"
                    + (f" (계정의 ulimit -u 때문에 요청값 {policy.max_processes}보다 줄었음)" if allow < policy.max_processes else "")},
         {"id": "total", "label": "총량 감시(전체 합계)", "active": True,
-         "detail": f"CPU 합계 {policy.cpu_total_seconds}초" + ("" if cg_on else f", 메모리 합계 {policy.memory_mb * 2}MB(1초 이내 근사)")
-                   + f", 프로세스 {policy.max_processes}개 초과 시 세션을 끝냅니다"},
+         "detail": f"CPU 합계 {policy.cpu_total_seconds}초(죽은 자식의 시간까지 포함), 메모리 합계 {policy.memory_mb * 2}MB(0.5초 간격 근사),"
+                   f" 프로세스 {policy.max_processes}개 초과 시 세션을 끝냅니다"},
         {"id": "cgroup", "label": "cgroup 총 메모리·프로세스 한도", "active": cg_on,
          "detail": (f"메모리 {policy.memory_mb * 2 + GDB_AS_MARGIN_MB}MB, 프로세스 {policy.max_processes + 8}" if cg_on
                     else "권한이 없거나 지원하지 않아 미적용(위 총량 감시로 근사)")},

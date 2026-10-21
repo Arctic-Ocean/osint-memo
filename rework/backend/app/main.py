@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import hmac
 import io
 import os
 import re
@@ -16,7 +17,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, UploadFile, File, Body
 from starlette.concurrency import run_in_threadpool
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from .model import function_to_dict, section_to_dict
@@ -63,8 +64,8 @@ async def lifespan(_app):
         _teardown_debug()
 
 
-app = FastAPI(title="rework", docs_url="/api/docs", openapi_url="/api/openapi.json",
-              lifespan=lifespan)
+# 자동 문서(/api/docs·/redoc)는 외부 CDN 의 스크립트를 앱 출처에서 실행하므로 끈다
+app = FastAPI(title="rework", docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
 
 
 # ---- 세션 상태 ----------------------------------------------------------
@@ -90,6 +91,16 @@ STATE = State()
 
 
 _UNSAFE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+# 선택 기능: REWORK_TOKEN(또는 run.py --require-token)이 있으면 모든 /api/ 요청에 토큰이 필요하다. 이 컴퓨터의 다른 사용자·
+# 프로세스(그리고 network=host 로 127.0.0.1 에 닿는 샌드박스 대상)가 API 를 부르지 못하게 한다. 토큰은 주소의 ?token= 으로
+# 한 번 전달하면 HttpOnly·SameSite=Strict 쿠키로 저장되고, 스크립트는 X-Rework-Token 헤더를 쓴다.
+AUTH_TOKEN = os.environ.get("REWORK_TOKEN") or None
+_SEC_HEADERS = {
+    "X-Frame-Options": "DENY",
+    "Content-Security-Policy": "frame-ancestors 'none'; object-src 'none'; base-uri 'none'",
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "no-referrer",
+}
 
 
 @app.middleware("http")
@@ -97,21 +108,48 @@ async def _local_only_same_origin(request, call_next):
     """① Host 가 로컬 주소가 아니면 거절(DNS rebinding). ② 상태를 바꾸는 요청이 다른 출처의 웹페이지에서 온 것이면
     거절(CSRF) — 브라우저가 붙이는 Sec-Fetch-Site·Origin 헤더는 페이지가 위조할 수 없다. multipart 업로드나 본문 없는
     POST 는 CORS 사전 요청 없이 보낼 수 있어 FastAPI 의 JSON 검사만으로는 막히지 않는다. curl·스크립트처럼 그 헤더가
-    없는 요청은 통과한다."""
-    host = request.headers.get("host", "")
+    없는 요청은 통과한다. ③ 토큰 인증이 켜져 있으면 /api/ 에 토큰을 요구한다. ④ 프레임 삽입·MIME 스니핑을 막는 헤더."""
+    def deny(code: int, msg: str):
+        r = JSONResponse({"detail": msg}, status_code=code)
+        for k, v in _SEC_HEADERS.items():
+            r.headers[k] = v
+        return r
+
+    hdrs = request.headers
+    for name in ("host", "origin", "sec-fetch-site"):       # 같은 헤더가 여러 개면 서버·프록시마다 해석이 달라질 수 있다
+        if len(hdrs.getlist(name)) > 1:
+            return deny(400, f"{name} 헤더가 여러 개입니다.")
+    host = hdrs.get("host", "")
     if _host_only(host) not in _ALLOWED_HOSTS:
-        return JSONResponse({"detail": "허용되지 않은 Host 입니다. 로컬 주소(127.0.0.1·localhost)로 접속하세요."},
-                            status_code=403)
+        return deny(403, "허용되지 않은 Host 입니다. 로컬 주소(127.0.0.1·localhost)로 접속하세요.")
     if request.method in _UNSAFE_METHODS:
-        site = request.headers.get("sec-fetch-site")
-        origin = request.headers.get("origin")
+        site = hdrs.get("sec-fetch-site")
+        origin = hdrs.get("origin")
         cross = site is not None and site not in ("same-origin", "none")
         if origin is not None:
-            m = re.fullmatch(r"https?://([^/]+)", origin.strip())
-            cross = cross or not m or m.group(1).lower() != host.strip().lower()
+            m = re.fullmatch(r"(https?)://([^/]+)", origin.strip())
+            cross = cross or not m or m.group(1) != request.url.scheme or m.group(2).lower() != host.strip().lower()
         if cross:
-            return JSONResponse({"detail": "다른 출처의 페이지에서 보낸 요청은 허용하지 않습니다."}, status_code=403)
-    return await call_next(request)
+            return deny(403, "다른 출처의 페이지에서 보낸 요청은 허용하지 않습니다.")
+    if AUTH_TOKEN:
+        path = request.url.path
+        given = request.query_params.get("token")
+        if path == "/" and given is not None:
+            if hmac.compare_digest(given, AUTH_TOKEN):
+                r = RedirectResponse("/", status_code=303)
+                r.set_cookie("rework_token", AUTH_TOKEN, httponly=True, samesite="strict", path="/")
+                for k, v in _SEC_HEADERS.items():
+                    r.headers[k] = v
+                return r
+            return deny(401, "토큰이 올바르지 않습니다.")
+        if path.startswith("/api/"):
+            tok = hdrs.get("x-rework-token") or request.cookies.get("rework_token") or ""
+            if not hmac.compare_digest(tok, AUTH_TOKEN):
+                return deny(401, "인증이 필요합니다. 서버 콘솔에 출력된 주소(?token=…)로 접속하거나 X-Rework-Token 헤더를 보내세요.")
+    resp = await call_next(request)
+    for k, v in _SEC_HEADERS.items():
+        resp.headers[k] = v
+    return resp
 
 
 def parse_addr(v) -> int:
@@ -435,7 +473,9 @@ SANDBOX_CFG = sbx.SandboxConfig(os.path.join(DATA_DIR, "sandbox.json"))
 def _sandbox_report() -> dict:
     status = sbx.probe()
     return {"status": status.to_dict(), "policy": SANDBOX_CFG.policy.to_dict(),
-            "report": sbx.describe(SANDBOX_CFG.policy, status, potential=True)}
+            "report": sbx.describe(SANDBOX_CFG.policy, status, potential=True),
+            "guard": {"ready": status.guard_ready, "reason": sbx.guard_unavailable_reason(status)},
+            "server": {"token_auth": bool(AUTH_TOKEN)}}
 
 
 @app.get("/api/sandbox/status")
@@ -475,6 +515,10 @@ def api_debug_start(payload: dict = Body(...)):
         policy = SANDBOX_CFG.effective(payload.get("sandbox"))
     except ValueError as e:
         raise HTTPException(400, str(e))
+    if policy.enabled and policy.network == "host" and not AUTH_TOKEN:
+        # 호스트 네트워크를 공유하면 대상이 127.0.0.1 의 이 서버 API 에 닿아 격리를 끄고 다시 시작하는 것까지 할 수 있다
+        raise HTTPException(400, "호스트 네트워크 공유는 토큰 인증이 켜져 있을 때만 쓸 수 있습니다. "
+                                 "서버를 `run.py --require-token` 으로 다시 실행하세요.")
     with STATE.dbg_lock:           # 동시 시작·정지가 세션을 새거나 교차 종료하지 않도록 직렬화
         _teardown_debug()
         try:

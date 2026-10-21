@@ -47,6 +47,13 @@ def mi_quote(s: str) -> str:
     return '"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
+def _wait_writable(fd: int, timeout: float):
+    """fd 가 쓰기 가능해질 때까지 최대 timeout 초 기다린다(select 의 FD_SETSIZE 한계가 없는 poll)."""
+    p = select.poll()
+    p.register(fd, select.POLLOUT)
+    p.poll(max(1, int(timeout * 1000)))
+
+
 def _sandbox_mod():
     """샌드박스 모듈. 패키지(app.debug)로 불러왔을 때와 테스트가 파일 경로로 직접 불러왔을 때 모두 동작."""
     try:
@@ -175,9 +182,18 @@ _HEX = "0123456789abcdefABCDEF"
 
 def _parse_cstring(s: str, i: int):
     # s[i] == '"'
+    # gdb 는 0x80 이상 바이트(한글 등 UTF-8)와 제어 문자를 8진 \NNN 으로 낸다. 연속한 바이트를 모아 UTF-8 로 해석해야
+    # 글자가 깨지지 않는다(바이트마다 chr() 로 바꾸면 '한' 이 'í\x95\x9c' 처럼 된다).
     i += 1
     out = []
+    raw = bytearray()
     n = len(s)
+
+    def flush():
+        if raw:
+            out.append(raw.decode("utf-8", errors="replace"))
+            raw.clear()
+
     while i < n:
         c = s[i]
         if c == "\\":
@@ -190,23 +206,37 @@ def _parse_cstring(s: str, i: int):
                 j = i
                 while j < n and j < i + 3 and s[j] in _OCT:
                     j += 1
-                out.append(chr(int(s[i:j], 8) & 0xFF))
+                v = int(s[i:j], 8) & 0xFF
+                if v >= 0x80:
+                    raw.append(v)
+                else:
+                    flush()
+                    out.append(chr(v))
                 i = j
                 continue
             if e == "x" and i + 1 < n and s[i + 1] in _HEX:
                 j = i + 1
                 while j < n and j < i + 3 and s[j] in _HEX:
                     j += 1
-                out.append(chr(int(s[i + 1:j], 16)))
+                v = int(s[i + 1:j], 16)
+                if v >= 0x80:
+                    raw.append(v)
+                else:
+                    flush()
+                    out.append(chr(v))
                 i = j
                 continue
+            flush()
             out.append(_SIMPLE_ESC.get(e, e))
         elif c == '"':
+            flush()
             i += 1
             return "".join(out), i
         else:
+            flush()
             out.append(c)
         i += 1
+    flush()
     return "".join(out), i
 
 
@@ -368,6 +398,9 @@ class DebugSession:
         self.merged = []                # 위 둘을 도착 순서대로 섞은 로그(콘솔 패널 표시용)
         self._chars = {"console": 0, "target": 0, "merged": 0}   # 각 버퍼의 글자 수(한도 적용용)
         self._console_abs = 0           # 지금까지 콘솔에 쌓인 글자 수(앞부분이 잘려도 증가분을 구하려는 용도)
+        self._gdb_in_fd = None          # gdb 의 stdin 파이프(논블로킹)
+        self._diag: list = []           # gdb·bwrap 이 MI 가 아닌 형식으로 낸 줄(시작 실패 원인 진단용, 최대 20줄)
+        self._inferior_exited = False   # 대상이 끝났다는 *stopped,exited 를 gdb 로부터 받았는가
         self._logl = threading.Lock()
         self.events = []                # 최근 비동기 이벤트 로그
         self.status = "loaded"          # loaded|running|stopped|exited|error
@@ -426,9 +459,22 @@ class DebugSession:
                 sbx = _sandbox_mod()
                 self.sandbox_info = sbx.describe(sbx.SandboxPolicy(mode="off"))
                 argv, extra = ["gdb"] + gdb_args + [self.path], {}
-            self.proc = _SPAWNER.call(lambda: subprocess.Popen(
-                argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                text=True, bufsize=1, start_new_session=True, **extra))  # 새 프로세스 그룹(정리용)
+            try:
+                self.proc = _SPAWNER.call(lambda: subprocess.Popen(
+                    argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                    text=True, encoding="utf-8", errors="replace", bufsize=1,
+                    start_new_session=True, **extra))  # 새 프로세스 그룹(정리용)
+            except BlockingIOError as e:
+                raise DebugError(f"프로세스를 만들 수 없습니다(프로세스 수 한도·메모리 부족일 수 있습니다): {e}")
+            except OSError as e:
+                if launch is not None:             # bwrap 실행 파일을 못 쓰는 경우 등(권한·경로)
+                    raise DebugError(f"격리 프로세스(bwrap)를 시작하지 못했습니다: {e}")
+                raise
+            try:
+                self._gdb_in_fd = self.proc.stdin.fileno()
+                os.set_blocking(self._gdb_in_fd, False)          # gdb 가 읽지 않아도 우리 쪽이 영원히 걸리지 않게
+            except (OSError, ValueError):
+                self._gdb_in_fd = None
             if launch is not None:
                 # cgroup 에 넣고 샌드박스를 풀어 주고, 네임스페이스를 붙들고, 총량 감시를 시작한다
                 launch.attach(self.proc, on_limit=self._limit_exceeded)
@@ -454,6 +500,9 @@ class DebugSession:
                 ok, why = sbx.verify_gdb_guard(launch, self.proc.pid)       # gdb 가 정말 덤프 불가인지 호스트에서 확인
                 sbx.mark_guard(launch.info, ok, why)
                 if not ok:
+                    if self.sandbox_policy.require_gdb_guard:           # 기본: 확인하지 못하면 시작하지 않는다(fail closed)
+                        raise DebugError(f"디버거 보호를 확인하지 못해 시작하지 않습니다: {why}. 격리는 유지하되 위험을 감수하려면 "
+                                         "‘디버거 보호 없이 시작’을 선택하세요.")
                     self._log_merged(f"\n[샌드박스] 주의: 디버거 보호 미적용 — {why}\n")
             if self.sandbox_policy is not None and self.sandbox_policy.enabled and self.sandbox_policy.wall_seconds:
                 self._wall_timer = threading.Timer(self.sandbox_policy.wall_seconds, self._wall_expired)
@@ -490,8 +539,7 @@ class DebugSession:
             try:
                 if proc is not None and proc.poll() is None:
                     try:
-                        proc.stdin.write("-gdb-exit\n")
-                        proc.stdin.flush()
+                        self._gdb_write("-gdb-exit\n", timeout=0.5)       # 응답 없는 gdb 에 막히지 않고 바로 kill 로 넘어간다
                     except Exception:
                         pass
                     try:
@@ -595,19 +643,29 @@ class DebugSession:
                     break
                 if line == "":
                     break
+                if line[0] not in "0123456789^*+=~@&(\n":       # MI 가 아닌 줄(bwrap·gdb 의 오류 메시지 등): 시작 실패 진단용으로 보관
+                    self._diag.append(line.strip()[:300])
+                    del self._diag[:-20]
                 try:
                     self._handle_line(line.rstrip("\n"))
                 except Exception:
                     continue   # 한 줄의 파싱·상태 예외가 리더를 죽이지 못하게 한다
         finally:
             self._alive = False
+            died = (not self._inferior_exited) and (not self._closing) and self.status in ("loaded", "running", "stopped")
+            if died and self._launch is not None:
+                # 대상이 끝났다는 보고 없이 gdb 가 사라졌다 — 대상이 gdb 에 신호를 보내 죽였거나 gdb 가 비정상 종료한 것이다.
+                # 정상 종료와 구분해서 알린다(분석을 방해하려는 시도일 수 있다).
+                self.last_stop = {"reason": "debugger-died"}
+                self._log_merged("\n[샌드박스] 디버거(gdb)가 대상 종료 보고 없이 사라졌습니다 — 대상이 디버거를 죽이려 했거나 "
+                                 "디버거가 비정상 종료한 것일 수 있습니다.\n")
             # gdb가 끝났으면 디버깅도 끝난 것이다(status가 running에 고착되지 않게)
             if self.status in ("loaded", "running", "stopped"):
                 self.status = "exited"
-            launch = self._launch                  # gdb 가 사라졌다면 샌드박스에 남은 대상도 함께 정리한다
+            launch = self._launch                  # gdb 가 사라졌다면 샌드박스에 남은 대상·cgroup·작업 폴더도 함께 정리한다
             if launch is not None and not self._closing:
                 try:
-                    launch.reap()
+                    launch.cleanup()
                 except Exception:                  # noqa: BLE001
                     pass
             # 어떤 이유로 끝나든 대기 중인 명령과 stop 대기자를 깨운다
@@ -622,10 +680,14 @@ class DebugSession:
     def _pty_loop(self, master):
         # read() 청크 경계에서 멀티바이트 문자(한글)가 잘려도 깨지지 않도록 증분 디코더를 쓴다
         decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+        poller = select.poll()                      # select() 는 fd 1024 이상에서 실패한다(서버 fd 가 많을 때)
+        try:
+            poller.register(master, select.POLLIN)
+        except (OSError, ValueError):
+            return
         while self._alive and not self._closing:
             try:
-                ready, _, _ = select.select([master], [], [], 0.2)
-                if not ready:
+                if not poller.poll(20):             # 20ms: 대상 출력과 gdb 메시지의 도착 순서 차이를 줄인다
                     continue
                 data = os.read(master, 4096)
             except BlockingIOError:
@@ -686,12 +748,14 @@ class DebugSession:
 
     def _on_exec_async(self, cls, results):
         if cls == "running":
+            self._inferior_exited = False
             self.status = "running"
             self.last_stop = None
         elif cls == "stopped":
             reason = results.get("reason", "")
             self.last_stop = results
             if reason.startswith("exited"):
+                self._inferior_exited = True
                 self.status = "exited"
                 self.exit_code = _decode_exit_code(
                     results.get("exit-code", "0" if reason == "exited-normally" else None))
@@ -706,6 +770,8 @@ class DebugSession:
 
     def _on_notify_async(self, cls, results):
         self.events.append({"t": cls})
+        if len(self.events) > 500:                  # =thread-created 같은 알림이 폭주해도 메모리가 늘지 않게
+            del self.events[:250]
         if cls == "thread-group-started":
             if self._launch is None:             # 격리 실행의 pid 는 네임스페이스 안의 번호라 호스트에서 쓰면 안 된다
                 try:
@@ -735,9 +801,35 @@ class DebugSession:
             self.load_bias = rt - st
 
     # ---- 명령 전송 -----------------------------------------------------
+    def _not_active(self) -> "DebugError":
+        rc = self.proc.poll() if self.proc else None
+        why = f" (gdb 종료 코드 {rc})" if rc is not None else ""
+        diag = " | ".join(self._diag[-5:])
+        return DebugError("디버그 세션이 활성 상태가 아닙니다." + why + (f" 출력: {diag}" if diag else ""))
+
+    def _gdb_write(self, text: str, timeout: float = 5.0):
+        """gdb 의 stdin 에 쓴다. gdb 가 읽지 않아 파이프가 가득 차도 timeout 안에 오류로 돌려준다(요청 스레드가 영원히 걸리지 않게)."""
+        fd = self._gdb_in_fd
+        data = text.encode("utf-8", errors="replace")
+        if fd is None:                                         # 논블로킹 설정에 실패한 환경: 예전 방식
+            self.proc.stdin.write(text)
+            self.proc.stdin.flush()
+            return
+        view, sent, deadline = memoryview(data), 0, time.monotonic() + timeout
+        while sent < len(data):
+            try:
+                sent += os.write(fd, view[sent:])
+            except BlockingIOError:
+                left = deadline - time.monotonic()
+                if left <= 0:
+                    raise DebugError("gdb 가 응답하지 않아 명령을 보낼 수 없습니다(입력 파이프가 가득 참).")
+                _wait_writable(fd, min(left, 0.2))
+
     def _send(self, mi_command: str, timeout: float = 10.0) -> dict:
         if self._closed or not self._alive or not self.proc or self.proc.poll() is not None:
-            raise DebugError("디버그 세션이 활성 상태가 아닙니다.")
+            raise self._not_active()
+        if len(mi_command) > 1_000_000:
+            raise DebugError("MI 명령이 너무 깁니다(1MB 초과).")
         # 모든 MI 명령이 지나는 단일 지점: 개행이 섞이면 명령이 둘로 갈라져
         # 토큰 없는 두 번째 명령이 실행되고 결과 매칭이 어긋난다.
         if any(c in mi_command for c in "\r\n\x00"):
@@ -752,8 +844,11 @@ class DebugSession:
             with self._plock:
                 self._pending[tok] = slot
             try:
-                self.proc.stdin.write(f"{tok}{mi_command}\n")
-                self.proc.stdin.flush()
+                self._gdb_write(f"{tok}{mi_command}\n")
+            except DebugError:
+                with self._plock:
+                    self._pending.pop(tok, None)
+                raise
             except Exception as e:
                 with self._plock:
                     self._pending.pop(tok, None)
@@ -1032,7 +1127,7 @@ class DebugSession:
                     if left <= 0:
                         fail = "full"
                         break
-                    select.select([], [fd], [], min(left, 0.2))
+                    _wait_writable(fd, min(left, 0.2))
                 except OSError as e:
                     fail = f"전송 실패: {e}"
                     break
@@ -1067,7 +1162,14 @@ class DebugSession:
             "load_bias": self.load_bias,
             "pid": proc.pid if proc else None,
             "sandbox": self.sandbox_info,
+            "sandbox_live": self._sandbox_live(),
         }
+
+    def _sandbox_live(self):
+        """샌드박스 안에 살아 있는 프로세스 수(감시 스레드가 센 값). 대상이 끝났는데 남은 프로세스가 있는지 알리는 데 쓴다."""
+        launch = self._launch
+        w = launch.watch if launch is not None else None
+        return w.live_count if w is not None else None
 
     def _push(self, name: str, buf: list, text: str):
         """로그 버퍼에 덧붙이되 글자 수를 한도 안으로 유지한다(출력 폭주가 서버 메모리를 먹지 못하게)."""

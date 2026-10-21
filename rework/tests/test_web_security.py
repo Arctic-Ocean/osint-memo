@@ -8,11 +8,12 @@
 
 실행:  .venv/bin/python tests/test_web_security.py
 """
-import http.client, os, shutil, socket, subprocess, sys, tempfile, time
+import http.client, json, os, shutil, socket, subprocess, sys, tempfile, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 RESULTS = []
+LAST = {"headers": {}}
 
 
 def free_port():
@@ -28,13 +29,15 @@ def req(port, method, path, headers=None, body=None, host="__default__"):
         host = f"127.0.0.1:{port}"
     if host is not None:
         c.putheader("Host", host)
-    for k, v in (headers or {}).items():
+    items = headers.items() if isinstance(headers, dict) else (headers or [])
+    for k, v in items:
         c.putheader(k, v)
     if body is not None:
         c.putheader("Content-Length", str(len(body)))
     c.endheaders(body)
     r = c.getresponse()
     data = r.read()
+    LAST["headers"] = {k.lower(): v for k, v in r.getheaders()}
     c.close()
     return r.status, data
 
@@ -46,6 +49,60 @@ MP_HEADERS = {"Content-Type": "multipart/form-data; boundary=XB"}
 
 def check(name, ok, detail=""):
     RESULTS.append((name, "PASS" if ok else "FAIL", detail))
+
+
+def token_section():
+    """토큰 인증(--require-token / REWORK_TOKEN): 같은 컴퓨터의 다른 사용자·프로세스(와 network=host 대상)가 API 를 못 부른다."""
+    data = tempfile.mkdtemp(prefix="rework-web-tok-")
+    port = free_port()
+    py = os.path.join(ROOT, ".venv", "bin", "python")
+    py = py if os.path.exists(py) else sys.executable
+    tok = "T0ken-" + os.urandom(6).hex()
+    proc = subprocess.Popen([py, os.path.join(ROOT, "run.py"), "--port", str(port)],
+                            env={**os.environ, "REWORK_DATA": data, "REWORK_TOKEN": tok},
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        t0 = time.time()
+        while time.time() - t0 < 20:
+            try:
+                if req(port, "GET", "/")[0] in (200, 303):
+                    break
+            except OSError:
+                time.sleep(0.2)
+        st, _ = req(port, "GET", "/api/sandbox/status")
+        check("토큰 없이 API 호출은 401", st == 401, f"{st}")
+        st, _ = req(port, "POST", "/api/debug/stop", {}, b"")
+        check("토큰 없이 POST 도 401", st == 401, f"{st}")
+        st, _ = req(port, "GET", "/api/sandbox/status", {"X-Rework-Token": "wrong"})
+        check("틀린 토큰 헤더는 401", st == 401, f"{st}")
+        st, body = req(port, "GET", "/api/sandbox/status", {"X-Rework-Token": tok})
+        check("올바른 토큰 헤더는 통과하고 서버가 토큰 인증 켜짐을 알림", st == 200 and json.loads(body)["server"]["token_auth"] is True, f"{st}")
+        st, _ = req(port, "GET", "/?token=wrong")
+        check("틀린 ?token= 은 401", st == 401, f"{st}")
+        st, _ = req(port, "GET", f"/?token={tok}")
+        cookie = LAST["headers"].get("set-cookie", "")
+        check("올바른 ?token= 은 HttpOnly·SameSite=Strict 쿠키를 주고 이동", st == 303 and "rework_token=" in cookie
+              and "HttpOnly" in cookie and "SameSite=strict" in cookie.replace("Strict", "strict"), f"{st} {cookie[:80]}")
+        ck = cookie.split(";")[0]
+        st, _ = req(port, "GET", "/api/sandbox/status", {"Cookie": ck})
+        check("쿠키만으로도 통과(브라우저 UI)", st == 200, f"{st}")
+        st, _ = req(port, "GET", "/api/sandbox/status", {"Cookie": ck}, host="evil.com")
+        check("토큰이 있어도 Host 위조는 403", st == 403, f"{st}")
+        st, _ = req(port, "POST", "/api/debug/stop", {"Cookie": ck, "Origin": "http://evil.example"}, b"")
+        check("토큰(쿠키)이 실려도 교차 출처 POST 는 403", st == 403, f"{st}")
+        st, _ = req(port, "POST", "/api/open", {"X-Rework-Token": tok, "Content-Type": "application/json"},
+                    json.dumps({"path": os.path.join(ROOT, "samples", "demo_elf")}).encode())
+        st, body = req(port, "POST", "/api/debug/start", {"X-Rework-Token": tok, "Content-Type": "application/json"},
+                       json.dumps({"breakpoints": [], "sandbox": {"network": "host"}}).encode())
+        check("토큰 인증이 켜져 있으면 network=host 시작 가능", st == 200, f"{st} {body[:120]!r}")
+        req(port, "POST", "/api/debug/stop", {"X-Rework-Token": tok}, b"")
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+        shutil.rmtree(data, ignore_errors=True)
 
 
 def main():
@@ -107,7 +164,6 @@ def main():
         check("차단된 교차 출처 업로드는 파일을 만들지 않음",
               not os.path.exists(uploads) or not os.listdir(uploads), str(os.listdir(uploads) if os.path.exists(uploads) else []))
         st, body = req(port, "GET", "/api/sandbox/status")
-        import json
         check("차단된 설정 변경은 적용되지 않음", json.loads(body)["policy"]["memory_mb"] == 2048)
 
         # ---- 정상 요청은 통과 ----
@@ -120,6 +176,29 @@ def main():
         check("같은 출처 업로드는 처리됨(서버가 받아 분석 시도)", st != 403, f"{st}")
         st, _ = req(port, "GET", "/api/sandbox/status", {"Origin": "http://evil.example", "Sec-Fetch-Site": "cross-site"})
         check("GET 은 막지 않음(부작용 없음, 응답은 CORS 로 못 읽음)", st == 200, f"{st}")
+
+        # ---- 보안 헤더·문서·중복 헤더·스킴 ----
+        st, _ = req(port, "GET", "/")
+        h = LAST["headers"]
+        check("응답에 프레임 삽입 차단·nosniff 헤더", h.get("x-frame-options") == "DENY" and "frame-ancestors 'none'" in h.get("content-security-policy", "")
+              and h.get("x-content-type-options") == "nosniff" and h.get("referrer-policy") == "no-referrer", str({k: h.get(k) for k in ("x-frame-options", "content-security-policy")}))
+        st, _ = req(port, "GET", "/api/sandbox/status")
+        check("API 응답에도 보안 헤더", LAST["headers"].get("x-frame-options") == "DENY")
+        docs = [req(port, "GET", u)[0] for u in ("/api/docs", "/redoc", "/api/openapi.json", "/docs")]
+        check("외부 CDN 스크립트를 쓰는 자동 문서는 꺼져 있음", all(c == 404 for c in docs), str(docs))
+        dup = [req(port, "POST", "/api/debug/stop", [("Origin", f"http://127.0.0.1:{P}"), ("Origin", "http://evil.example")], b"")[0],
+               req(port, "POST", "/api/debug/stop", [("Sec-Fetch-Site", "same-origin"), ("Sec-Fetch-Site", "cross-site")], b"")[0],
+               req(port, "GET", "/api/sandbox/status", [("Host", "evil.com")])[0]]
+        check("같은 헤더가 여러 개인 요청은 400", dup == [400, 400, 400], str(dup))
+        st, _ = req(port, "POST", "/api/debug/stop", {"Origin": f"https://127.0.0.1:{P}"}, b"")
+        check("스킴이 다른 Origin(https)은 거부", st == 403, f"{st}")
+        # network=host 는 토큰 인증이 꺼져 있으면 시작하지 않는다(대상이 127.0.0.1 의 API 에 닿아 격리를 끌 수 있으므로)
+        st, body = req(port, "POST", "/api/open", {"Content-Type": "application/json"},
+                       json.dumps({"path": os.path.join(ROOT, "samples", "demo_elf")}).encode())
+        st, body = req(port, "POST", "/api/debug/start", {"Content-Type": "application/json"},
+                       json.dumps({"breakpoints": [], "sandbox": {"network": "host"}}).encode())
+        check("토큰 인증 없이 network=host 는 400", st == 400 and "토큰" in body.decode(), f"{st} {body[:120]!r}")
+        req(port, "POST", "/api/debug/stop", {}, b"")
     finally:
         proc.terminate()
         try:
@@ -127,6 +206,7 @@ def main():
         except subprocess.TimeoutExpired:
             proc.kill()
         shutil.rmtree(data, ignore_errors=True)
+    token_section()
     w = max(len(n) for n, _, _ in RESULTS)
     bad = 0
     for n, s, d in RESULTS:
