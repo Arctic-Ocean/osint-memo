@@ -176,7 +176,15 @@ function showError(message, hint) {
   if (win) win.loadFile(path.join(PAGES, 'error.html'));
 }
 
-async function boot() {
+let booting = null;
+/** 동시에 두 번 부팅하지 않는다(‘다시 시작’ 연타·모드 전환 중 재시작). */
+function boot() {
+  if (booting) return booting;
+  booting = bootOnce().catch((e) => { showError(`시작 중 오류: ${e && e.message ? e.message : e}`, ''); }).finally(() => { booting = null; });
+  return booting;
+}
+
+async function bootOnce() {
   showSplash();
   if (backend) { await backend.stop().catch(() => {}); }
   backend = new Backend(backendOpts());
@@ -264,7 +272,12 @@ for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => app.quit());
 
 app.whenReady().then(async () => {
   if (!app.hasSingleInstanceLock()) return;
-  config = new Config(path.join(app.getPath('userData'), 'config.json'));
+  const userData = app.getPath('userData');
+  try {                                                   // 설정·로그·데이터가 든 사용자 폴더는 본인만(다른 로컬 사용자가 AI 키·분석 내용을 못 읽게)
+    fs.mkdirSync(userData, { recursive: true, mode: 0o700 });
+    if (process.platform !== 'win32') fs.chmodSync(userData, 0o700);
+  } catch { /* 권한을 못 바꿔도 시작은 한다 */ }
+  config = new Config(path.join(userData, 'config.json'));
   hardenSession();
   pendingOpen = fileArg(process.argv.slice(app.isPackaged ? 1 : 2));
   createWindow();

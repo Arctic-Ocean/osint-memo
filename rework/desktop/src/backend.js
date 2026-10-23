@@ -4,7 +4,8 @@
  *
  *  - 포트는 백엔드가 `--port 0` 으로 직접 고른다(미리 바인딩한 소켓을 쓰므로 포트를 알아냈다 닫는 경쟁이 없다). 표준 출력의
  *    `REWORK_PORT=<번호>` 한 줄로 받는다.
- *  - 토큰은 셸이 만든 무작위 값이며 환경 변수로만 넘긴다(명령줄·로그에 남기지 않는다).
+ *  - 토큰은 셸이 만든 무작위 값이며 표준 입력 첫 줄로만 넘긴다(명령줄·환경 변수·로그에 남기지 않는다 — 같은 사용자의 다른 프로세스가
+ *    /proc/<pid>/environ 으로 환경 변수를 읽을 수 있다).
  *  - 표준 입력 파이프를 열어 둔다: 셸이 어떤 이유로든 죽으면 파이프가 닫혀 백엔드가 스스로 종료한다(고아 방지).
  */
 const { spawn, spawnSync } = require('node:child_process');
@@ -24,20 +25,21 @@ function newToken() {
 /** 개발 중에는 저장소의 venv·run.py, 설치본에서는 묶여 들어온 실행 파일을 쓴다. */
 function resolveCommand({ packaged, resourcesPath, repoRoot, mode, platform = process.platform, env = process.env, exists = fs.existsSync }) {
   const exe = platform === 'win32' ? 'rework-backend.exe' : 'rework-backend';
-  if (env.REWORK_BACKEND_BIN) return { cmd: env.REWORK_BACKEND_BIN, args: ['--desktop', '--port', '0'], cwd: undefined, kind: 'env' };
+  const ARGS = ['--desktop', '--token-stdin', '--port', '0'];
+  if (!packaged && env.REWORK_BACKEND_BIN) return { cmd: env.REWORK_BACKEND_BIN, args: ARGS, cwd: undefined, kind: 'env' };   // 개발용 지정은 설치본에서 무시한다
   if (mode === 'wsl') {
     // Windows 에서 WSL2 안의 리눅스 백엔드를 실행한다(디버거·격리 실행은 리눅스에서만 동작한다)
     const linuxBin = packaged ? path.join(resourcesPath, 'backend-wsl', 'rework-backend')
                               : path.join(repoRoot, 'desktop', 'build', 'backend-wsl', 'rework-backend');
-    return { cmd: 'wsl.exe', args: ['--exec', toWslPath(linuxBin), '--desktop', '--port', '0'], cwd: undefined, kind: 'wsl', wslBin: linuxBin };
+    return { cmd: 'wsl.exe', args: ['--exec', toWslPath(linuxBin), ...ARGS], cwd: undefined, kind: 'wsl', wslBin: linuxBin };
   }
   if (packaged) {
     const bin = path.join(resourcesPath, 'backend', exe);
-    return { cmd: bin, args: ['--desktop', '--port', '0'], cwd: path.dirname(bin), kind: 'bundled' };
+    return { cmd: bin, args: ARGS, cwd: path.dirname(bin), kind: 'bundled' };
   }
   const venvPy = platform === 'win32' ? path.join(repoRoot, '.venv', 'Scripts', 'python.exe') : path.join(repoRoot, '.venv', 'bin', 'python');
-  const py = env.REWORK_PYTHON || (exists(venvPy) ? venvPy : (platform === 'win32' ? 'python' : 'python3'));
-  return { cmd: py, args: [path.join(repoRoot, 'run.py'), '--desktop', '--port', '0'], cwd: repoRoot, kind: 'dev' };
+  const py = (!packaged && env.REWORK_PYTHON) || (exists(venvPy) ? venvPy : (platform === 'win32' ? 'python' : 'python3'));
+  return { cmd: py, args: [path.join(repoRoot, 'run.py'), ...ARGS], cwd: repoRoot, kind: 'dev' };
 }
 
 /** Windows 경로 → WSL 경로. `C:\a\b` → `/mnt/c/a/b`, `\\wsl.localhost\Ubuntu\home\x` → `/home/x`. 변환할 수 없으면 그대로. */
@@ -94,12 +96,9 @@ class Backend extends EventEmitter {
     this._openLog();
     const spec = resolveCommand({ ...this.opts, repoRoot: this.opts.repoRoot, mode: this.opts.mode });
     this.spec = spec;
-    const env = { ...process.env, REWORK_TOKEN: this.token, REWORK_DESKTOP: '1', PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8' };
-    if (spec.kind === 'wsl') {
-      env.WSLENV = [env.WSLENV, 'REWORK_TOKEN', 'REWORK_DESKTOP', 'PYTHONUNBUFFERED', 'PYTHONIOENCODING'].filter(Boolean).join(':');
-    } else {
-      env.REWORK_DATA = this.opts.dataDir;                       // WSL 에서는 리눅스 홈(~/.rework/data)을 쓴다
-    }
+    const env = { ...process.env, PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8' };
+    delete env.REWORK_TOKEN;                                      // 토큰은 환경에 두지 않는다(아래에서 표준 입력으로 넘긴다)
+    if (spec.kind !== 'wsl') env.REWORK_DATA = this.opts.dataDir; // WSL 에서는 리눅스 홈(~/.rework/data)을 쓴다
     this._log(`[셸] 백엔드 시작: ${spec.kind} ${path.basename(spec.cmd)}`);
     let proc;
     try {
@@ -129,6 +128,7 @@ class Backend extends EventEmitter {
       });
     });
     proc.stdin.on('error', () => { /* 종료 중 EPIPE 무시 */ });
+    try { proc.stdin.write(this.token + '\n'); } catch { /* 종료된 프로세스: exit 이벤트가 처리 */ }
     const deadline = Date.now() + timeoutMs;
     let timer;
     try {

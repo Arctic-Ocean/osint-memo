@@ -73,6 +73,10 @@ try {
   const ck = await page.evaluate(() => document.cookie);
   check('2. 토큰이 쿠키·주소·자바스크립트 어디에도 노출되지 않음', ck === '' && !page.url().includes('token'), `cookie="${ck}"`);
 
+  const bpid = backendPids()[0];
+  const benv = fs.readFileSync(`/proc/${bpid}/environ`, 'utf8');
+  check('2. 백엔드 프로세스의 환경 변수·명령줄에 토큰이 없다(표준 입력으로만 전달)', !/REWORK_TOKEN/.test(benv) && !/token/i.test(fs.readFileSync(`/proc/${bpid}/cmdline`, 'utf8').replace('--token-stdin', '')), `pid ${bpid}`);
+
   // ---- 3. 렌더러 격리 ----
   const iso = await page.evaluate(() => ({ req: typeof window.require, proc: typeof window.process, mod: typeof window.module,
     desk: window.reworkDesktop ? Object.keys(window.reworkDesktop).sort().join(',') : null, shell: typeof window.reworkShell }));

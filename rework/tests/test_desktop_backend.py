@@ -42,10 +42,18 @@ def req(port, method, path, token=None, body=None):
     raise RuntimeError("서버가 응답하지 않음")
 
 
-def start_desktop(data, token):
-    env = {**os.environ, "REWORK_DATA": data, "REWORK_TOKEN": token}
-    p = subprocess.Popen([PY, os.path.join(ROOT, "run.py"), "--desktop", "--port", "0"], stdin=subprocess.PIPE,
-                         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env, text=True)
+def start_desktop(data, token, via_stdin=True):
+    env = {k: v for k, v in os.environ.items() if k != "REWORK_TOKEN"}
+    env["REWORK_DATA"] = data
+    args = [PY, os.path.join(ROOT, "run.py"), "--desktop", "--port", "0"]
+    if via_stdin:
+        args.append("--token-stdin")
+    else:
+        env["REWORK_TOKEN"] = token
+    p = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env, text=True)
+    if via_stdin:
+        p.stdin.write(token + "\n")
+        p.stdin.flush()
     t0 = time.time()
     while time.time() - t0 < 30:
         line = p.stdout.readline()
@@ -75,6 +83,9 @@ def desktop_section():
         check("토큰 없이 API 는 401", st == 401, st)
         st, body, hdr = req(port, "GET", "/api/about", tok)
         about = json.loads(body)
+        environ = open(f"/proc/{p.pid}/environ", "rb").read()
+        check("표준 입력으로 받은 토큰은 프로세스 환경(/proc/<pid>/environ)에도 명령줄에도 없다",
+              tok.encode() not in environ and b"REWORK_TOKEN" not in environ and tok.encode() not in open(f"/proc/{p.pid}/cmdline", "rb").read(), "")
         check("토큰이 있으면 200, 데스크톱 모드 표시", st == 200 and about["desktop"] is True and about["version"], body[:120])
         check("데이터 폴더가 0700 으로 만들어짐", os.stat(data).st_mode & 0o777 == 0o700, oct(os.stat(data).st_mode & 0o777))
         st, _, _ = req(port, "POST", "/api/ai/config", tok, {"provider": "ollama", "api_key": "sk-secret"})
@@ -105,7 +116,22 @@ def desktop_section():
         shutil.rmtree(os.path.dirname(data), ignore_errors=True)
     r = subprocess.run([PY, os.path.join(ROOT, "run.py"), "--desktop", "--port", "0"], capture_output=True, text=True, timeout=30,
                        env={**os.environ, "REWORK_TOKEN": ""})
-    check("--desktop 은 REWORK_TOKEN 이 없으면 시작하지 않음", r.returncode != 0 and "REWORK_TOKEN" in r.stderr, (r.stderr or r.stdout).strip()[:80])
+    check("--desktop 은 토큰이 없으면 시작하지 않음", r.returncode != 0 and "토큰" in r.stderr, (r.stderr or r.stdout).strip()[:80])
+    for label, inp in (("짧은 토큰", "abc\n"), ("비 ASCII 토큰", "한글토큰한글토큰한글토큰한글토큰\n"), ("빈 입력", "")):
+        r = subprocess.run([PY, os.path.join(ROOT, "run.py"), "--desktop", "--token-stdin", "--port", "0"], input=inp, capture_output=True,
+                           text=True, timeout=30, env={k: v for k, v in os.environ.items() if k != "REWORK_TOKEN"})
+        check(f"--token-stdin: {label}은 거부", r.returncode != 0 and "토큰" in r.stderr, (r.stderr or "").strip()[:70])
+    d3 = os.path.join(tempfile.mkdtemp(prefix="rework-desk3-"), "data")
+    p3, port3 = start_desktop(d3, "env-token-0123456789", via_stdin=False)
+    try:
+        st, _, _ = req(port3, "GET", "/api/about", "env-token-0123456789")
+        check("환경 변수 토큰(스크립트·개발용)도 여전히 받는다", st == 200, st)
+    finally:
+        p3.stdin.close()
+        wait_exit(p3, 20)
+        if p3.poll() is None:
+            p3.kill()
+        shutil.rmtree(os.path.dirname(d3), ignore_errors=True)
 
 
 def windows_like_section():

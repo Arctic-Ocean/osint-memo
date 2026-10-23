@@ -20,6 +20,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 DESKTOP = os.path.dirname(HERE)
 REPO = os.path.dirname(DESKTOP)
 IS_WIN = sys.platform == "win32"
+PYINSTALLER_VERSION = "6.22.3"
 
 
 def run(cmd, **kw):
@@ -31,9 +32,12 @@ def smoke(exe: str) -> None:
     """만든 실행 파일을 데스크톱 모드로 띄워 REWORK_PORT·토큰 인증·정적 UI·표준 입력 EOF 종료를 확인한다."""
     token = "smoke-" + os.urandom(6).hex()
     data = tempfile.mkdtemp(prefix="rework-smoke-")
-    env = {**os.environ, "REWORK_TOKEN": token, "REWORK_DATA": data}
-    p = subprocess.Popen([exe, "--desktop", "--port", "0"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+    env = {k: v for k, v in os.environ.items() if k != "REWORK_TOKEN"}
+    env["REWORK_DATA"] = data
+    p = subprocess.Popen([exe, "--desktop", "--token-stdin", "--port", "0"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                          stderr=subprocess.STDOUT, env=env, text=True)
+    p.stdin.write(token + "\n")                              # 셸과 같은 방식: 토큰은 표준 입력 첫 줄로
+    p.stdin.flush()
     try:
         port = None
         t0 = time.time()
@@ -104,7 +108,9 @@ def main():
         run([args.python, "-m", "venv", venv])
     py = os.path.join(venv, "Scripts" if IS_WIN else "bin", "python" + (".exe" if IS_WIN else ""))
     run([py, "-m", "pip", "install", "--quiet", "--upgrade", "pip"])
-    run([py, "-m", "pip", "install", "--quiet", "-r", os.path.join(REPO, "backend", "requirements.txt"), "pyinstaller"])
+    lock = os.path.join(REPO, "backend", "requirements.lock")          # 릴리스는 테스트를 통과한 고정 버전으로(공급망·재현성)
+    run([py, "-m", "pip", "install", "--quiet", "-r", lock if os.path.exists(lock) else os.path.join(REPO, "backend", "requirements.txt"),
+         f"pyinstaller=={PYINSTALLER_VERSION}"])
 
     for d in (out, work):
         shutil.rmtree(d, ignore_errors=True)

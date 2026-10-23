@@ -28,7 +28,7 @@ test('resolveCommand: 설치본·개발·WSL·환경 지정', () => {
   const base = { packaged: true, resourcesPath: '/opt/rework/resources', repoRoot: '/repo', mode: 'native', platform: 'linux', env: {}, exists: () => false };
   let c = resolveCommand(base);
   assert.equal(c.cmd, '/opt/rework/resources/backend/rework-backend');
-  assert.deepEqual(c.args, ['--desktop', '--port', '0']);
+  assert.deepEqual(c.args, ['--desktop', '--token-stdin', '--port', '0']);
   c = resolveCommand({ ...base, platform: 'win32', resourcesPath: 'C:\\app\\resources' });
   assert.ok(c.cmd.endsWith('rework-backend.exe'));
   c = resolveCommand({ ...base, packaged: false });
@@ -40,8 +40,11 @@ test('resolveCommand: 설치본·개발·WSL·환경 지정', () => {
   c = resolveCommand({ ...base, platform: 'win32', mode: 'wsl', resourcesPath: 'C:\\app\\resources' });
   assert.equal(c.cmd, 'wsl.exe'); assert.equal(c.args[0], '--exec');
   assert.ok(c.args[1].startsWith('/mnt/c/'), c.args[1]);
-  c = resolveCommand({ ...base, env: { REWORK_BACKEND_BIN: '/x/bin' } });
+  c = resolveCommand({ ...base, packaged: false, env: { REWORK_BACKEND_BIN: '/x/bin' } });
   assert.equal(c.cmd, '/x/bin');
+  // 설치본은 환경 변수로 실행 파일·파이썬을 바꿀 수 없다(환경을 쥔 쪽이 앱 권한으로 임의 프로그램을 돌리는 통로가 되지 않게)
+  c = resolveCommand({ ...base, env: { REWORK_BACKEND_BIN: '/evil/bin', REWORK_PYTHON: '/evil/py' } });
+  assert.equal(c.cmd, '/opt/rework/resources/backend/rework-backend');
 });
 
 test('Config: 저장·재로드·깨진 파일은 기본값·권한 0600', () => {

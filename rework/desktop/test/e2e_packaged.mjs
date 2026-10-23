@@ -69,6 +69,8 @@ try {
   check('2. 백엔드는 PyInstaller 번들 실행 파일(하나)', bp.length === 1, bp.join(','));
   const about = await page.evaluate(() => fetch('/api/about').then((r) => r.json()));
   check('2. 동결(frozen) 백엔드·데스크톱 모드·사용자 데이터 폴더', about.frozen === true && about.desktop === true && about.data_dir.startsWith(path.join(tmp, 'cfg')), JSON.stringify(about).slice(0, 200));
+  const benv = fs.readFileSync(`/proc/${bp[0]}/environ`, 'utf8');
+  check('3. 백엔드 프로세스의 환경 변수·명령줄에 토큰이 없다(표준 입력으로만 전달)', !/REWORK_TOKEN/.test(benv) && !/token/i.test(fs.readFileSync(`/proc/${bp[0]}/cmdline`, 'utf8').replace('--token-stdin', '')), `pid ${bp[0]}`);
   const st0 = await get(port, '/api/about');
   check('3. 토큰 없이는 401', st0.status === 401, st0.status);
   const dmode = fs.statSync(about.data_dir).mode & 0o777;

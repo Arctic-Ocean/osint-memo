@@ -4,8 +4,9 @@
 데스크톱 앱(Electron 셸)은 이 실행기를 `--desktop --port 0` 으로 부른다:
   - `--port 0` : 운영체제가 빈 포트를 고르고, 이미 바인딩한 소켓으로 서버를 띄운다(포트를 먼저 알아내 닫았다 다시 여는 경쟁이 없다).
     고른 포트는 표준 출력의 `REWORK_PORT=<번호>` 한 줄로 알린다.
-  - `--desktop` : 환경 변수 REWORK_TOKEN(셸이 만든 무작위 토큰)이 반드시 있어야 하고(없으면 시작하지 않는다), 토큰을 출력하지 않으며,
+  - `--desktop` : 토큰(셸이 만든 무작위 값)이 반드시 있어야 하고(없으면 시작하지 않는다), 토큰을 출력하지 않으며,
     표준 입력이 닫히면(부모인 셸이 죽으면) 스스로 종료해 고아 프로세스(와 그 안의 샌드박스)가 남지 않게 한다.
+  - `--token-stdin` : 토큰을 환경 변수가 아니라 표준 입력 첫 줄로 받는다(환경 변수는 같은 사용자의 다른 프로세스가 읽을 수 있다).
 """
 import argparse
 import os
@@ -33,6 +34,19 @@ def _other_login_accounts():
         if (e.pw_uid >= 1000 or e.pw_uid == 0) and not e.pw_shell.endswith(("nologin", "false")):
             out.append(e.pw_name)
     return out
+
+
+def _restore_host_library_path():
+    """PyInstaller 는 번들 라이브러리를 찾게 LD_LIBRARY_PATH 를 바꿔 놓는다. 그대로 두면 이 프로세스가 띄우는 시스템 프로그램(gdb·bwrap)이
+    번들된 라이브러리를 대신 읽어 깨질 수 있으므로, 원래 값으로 되돌린다(glibc 는 시작 때 한 번만 읽으므로 이 프로세스에는 영향이 없다)."""
+    if not getattr(sys, "frozen", False):
+        return
+    for var in ("LD_LIBRARY_PATH", "DYLD_LIBRARY_PATH"):
+        orig = os.environ.get(var + "_ORIG")
+        if orig is not None:
+            os.environ[var] = orig
+        else:
+            os.environ.pop(var, None)
 
 
 def _bind(host: str, port: int):
@@ -68,12 +82,20 @@ def main():
     ap.add_argument("--require-token", action="store_true",
                     help="모든 /api 요청에 무작위 토큰을 요구한다(같은 컴퓨터의 다른 사용자·프로세스 차단, network=host 사용에 필요)")
     ap.add_argument("--desktop", action="store_true",
-                    help="데스크톱 셸이 띄우는 모드(REWORK_TOKEN 필수·토큰 비출력·표준 입력이 닫히면 종료)")
+                    help="데스크톱 셸이 띄우는 모드(토큰 필수·토큰 비출력·표준 입력이 닫히면 종료)")
+    ap.add_argument("--token-stdin", action="store_true",
+                    help="토큰을 표준 입력 첫 줄로 받는다(환경 변수는 같은 사용자의 다른 프로세스가 /proc/<pid>/environ 으로 읽을 수 있다)")
     args = ap.parse_args()
 
+    _restore_host_library_path()
+    if args.token_stdin:
+        line = sys.stdin.buffer.readline().decode("utf-8", "replace").strip()
+        if len(line) < 16 or not line.isascii():
+            sys.exit("--token-stdin: 표준 입력 첫 줄에 16자 이상의 ASCII 토큰이 필요합니다.")
+        os.environ["REWORK_TOKEN"] = line
     if args.desktop:
         if not os.environ.get("REWORK_TOKEN"):
-            sys.exit("--desktop 은 환경 변수 REWORK_TOKEN 이 필요합니다.")
+            sys.exit("--desktop 은 토큰(REWORK_TOKEN 환경 변수 또는 --token-stdin)이 필요합니다.")
         os.environ["REWORK_DESKTOP"] = "1"
     elif args.require_token and not os.environ.get("REWORK_TOKEN"):
         import secrets
@@ -95,7 +117,8 @@ def main():
 
     from app.main import app
     sock, port = _bind(args.host, args.port)
-    config = uvicorn.Config(app, host=args.host, port=port, timeout_graceful_shutdown=5)
+    config = uvicorn.Config(app, host=args.host, port=port, timeout_graceful_shutdown=5,
+                            access_log=not args.desktop)           # 데스크톱: 요청마다 한 줄씩 쌓이는 접근 로그는 끈다(로그 파일이 부풀지 않게)
     server = uvicorn.Server(config)
     if args.desktop:
         threading.Thread(target=_watch_stdin, args=(server,), daemon=True, name="rework-stdin-watch").start()
