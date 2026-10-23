@@ -6,6 +6,9 @@ Program: 로드된 바이너리 하나를 둘러싼 중심 객체.
 """
 from __future__ import annotations
 
+import bisect
+import threading
+
 from .model import BinaryModel, Function
 from .disasm import Disassembler
 from . import strings as strings_mod
@@ -27,6 +30,7 @@ class Program:
 
         # 인덱스
         self._func_by_addr = {f.vaddr: f for f in model.functions}
+        self._func_addrs = sorted(self._func_by_addr)      # 이분 탐색용(함수가 수만 개여도 '다음 함수' 찾기가 O(log n))
         self._sym_by_addr = {}
         for s in model.symbols:
             if s.vaddr and s.vaddr not in self._sym_by_addr:
@@ -40,6 +44,7 @@ class Program:
         self.xref_to: dict[int, list] = {}
         self._func_size_cache: dict[int, int] = {}
         self._built = False
+        self._build_lock = threading.Lock()          # 같은 파일에 대한 첫 요청이 겹쳐도 xref 가 한 번만 만들어지게
 
         # PLT 스텁 → 임포트 이름 해석 (printf/puts/strcmp 등)
         self.plt_names: dict[int, str] = {}
@@ -80,11 +85,8 @@ class Program:
     # ---- 함수 경계 ------------------------------------------------------
 
     def _next_func_addr(self, addr: int) -> int:
-        nxt = None
-        for a in self._func_by_addr:
-            if a > addr and (nxt is None or a < nxt):
-                nxt = a
-        return nxt if nxt is not None else 0
+        i = bisect.bisect_right(self._func_addrs, addr)
+        return self._func_addrs[i] if i < len(self._func_addrs) else 0
 
     def function_size(self, f: Function) -> int:
         if f.vaddr in self._func_size_cache:
@@ -115,6 +117,11 @@ class Program:
     def build_xrefs(self):
         if self._built:
             return
+        with self._build_lock:
+            if not self._built:                      # 기다리는 동안 다른 스레드가 이미 만들었을 수 있다
+                self._build_xrefs()
+
+    def _build_xrefs(self):
         total = 0
         for f in self.model.functions:
             if f.is_import:

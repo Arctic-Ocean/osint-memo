@@ -39,6 +39,15 @@ UPLOADS_DIR = os.path.join(DATA_DIR, "uploads")
 os.makedirs(PROJECTS_DIR, exist_ok=True)
 os.makedirs(UPLOADS_DIR, exist_ok=True)
 
+# 분석(열기·업로드)할 수 있는 파일의 최대 크기. 서버는 파일을 통째로 메모리에 올리고 파싱 결과가 그 몇 배가 되므로
+# 상한이 없으면 큰 파일 하나로 서버(와 거기서 도는 디버깅 세션)가 메모리 부족으로 죽을 수 있다.
+try:
+    MAX_FILE_MB = max(1, int(os.environ.get("REWORK_MAX_FILE_MB", "512")))
+except ValueError:
+    MAX_FILE_MB = 512
+MAX_FILE_BYTES = MAX_FILE_MB * 1024 * 1024
+FUNCTIONS_PAGE_MAX = 50000          # /api/functions 한 번에 돌려줄 최대 항목 수
+
 # 로컬 전용 서버: Host 헤더가 로컬 주소가 아니면 거절한다(DNS rebinding 으로 외부 웹페이지가
 # 이 API 를 부르는 것 — 예: 격리를 끄고 프로그램 실행 — 을 막는다). 원격 접속이 필요하면
 # REWORK_ALLOWED_HOSTS=호스트1,호스트2 로 명시한다.
@@ -95,6 +104,19 @@ _UNSAFE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 # 프로세스(그리고 network=host 로 127.0.0.1 에 닿는 샌드박스 대상)가 API 를 부르지 못하게 한다. 토큰은 주소의 ?token= 으로
 # 한 번 전달하면 HttpOnly·SameSite=Strict 쿠키로 저장되고, 스크립트는 X-Rework-Token 헤더를 쓴다.
 AUTH_TOKEN = os.environ.get("REWORK_TOKEN") or None
+if AUTH_TOKEN is not None and not AUTH_TOKEN.isascii():
+    # 헤더·쿠키·주소를 거치며 인코딩이 달라지므로 ASCII 만 받는다(run.py --require-token 이 만드는 토큰은 ASCII 다)
+    raise RuntimeError("REWORK_TOKEN 은 ASCII 문자(영문·숫자·기호)로만 구성해야 합니다.")
+
+
+def _token_ok(given) -> bool:
+    """상수 시간 비교. 비 ASCII·이상한 값이 와도 예외 없이 거부한다."""
+    try:
+        return hmac.compare_digest(str(given).encode("utf-8", "surrogateescape"), AUTH_TOKEN.encode("utf-8"))
+    except Exception:                                      # noqa: BLE001
+        return False
+
+
 _SEC_HEADERS = {
     "X-Frame-Options": "DENY",
     "Content-Security-Policy": "frame-ancestors 'none'; object-src 'none'; base-uri 'none'",
@@ -122,7 +144,9 @@ async def _local_only_same_origin(request, call_next):
     host = hdrs.get("host", "")
     if _host_only(host) not in _ALLOWED_HOSTS:
         return deny(403, "허용되지 않은 Host 입니다. 로컬 주소(127.0.0.1·localhost)로 접속하세요.")
-    if request.method in _UNSAFE_METHODS:
+    if request.method in _UNSAFE_METHODS or request.url.path.startswith("/api/"):
+        # 상태를 바꾸는 요청은 물론 GET API 도 다른 출처가 부르지 못하게 한다: 쿠키(SameSite)는 '사이트' 단위라 같은 호스트의
+        # 다른 포트에서 도는 서비스의 페이지가 보낸 요청에도 실려 가기 때문이다(포트는 사이트 구분에 쓰이지 않는다).
         site = hdrs.get("sec-fetch-site")
         origin = hdrs.get("origin")
         cross = site is not None and site not in ("same-origin", "none")
@@ -135,7 +159,7 @@ async def _local_only_same_origin(request, call_next):
         path = request.url.path
         given = request.query_params.get("token")
         if path == "/" and given is not None:
-            if hmac.compare_digest(given, AUTH_TOKEN):
+            if _token_ok(given):
                 r = RedirectResponse("/", status_code=303)
                 r.set_cookie("rework_token", AUTH_TOKEN, httponly=True, samesite="strict", path="/")
                 for k, v in _SEC_HEADERS.items():
@@ -144,7 +168,7 @@ async def _local_only_same_origin(request, call_next):
             return deny(401, "토큰이 올바르지 않습니다.")
         if path.startswith("/api/"):
             tok = hdrs.get("x-rework-token") or request.cookies.get("rework_token") or ""
-            if not hmac.compare_digest(tok, AUTH_TOKEN):
+            if not _token_ok(tok):
                 return deny(401, "인증이 필요합니다. 서버 콘솔에 출력된 주소(?token=…)로 접속하거나 X-Rework-Token 헤더를 보내세요.")
     resp = await call_next(request)
     for k, v in _SEC_HEADERS.items():
@@ -152,21 +176,135 @@ async def _local_only_same_origin(request, call_next):
     return resp
 
 
+@app.exception_handler(Exception)
+async def _unhandled(request, exc):
+    """처리되지 않은 예외: 경로·트레이스백을 응답에 싣지 않고(서버 로그에는 남는다) 보안 헤더를 붙여 돌려준다.
+    (Starlette 의 기본 500 응답은 위 미들웨어를 거치지 않아 헤더가 빠진다.)"""
+    r = JSONResponse({"detail": "서버 내부 오류가 발생했습니다. 서버 로그를 확인하세요."}, status_code=500)
+    for k, v in _SEC_HEADERS.items():
+        r.headers[k] = v
+    return r
+
+
+class _UploadLimit:
+    """/api/upload 의 요청 본문이 MAX_FILE_BYTES 를 넘으면 읽던 중에도 끊고 413 을 돌려준다(순수 ASGI 라 본문을 버퍼링하지 않는다).
+    FastAPI 는 본문을 읽다 난 예외를 400 으로 바꿔 버리므로, 한도를 넘는 순간 여기서 직접 413 을 보내고 앱에는 연결이
+    끊긴 것으로 보이게 한 뒤 앱이 뒤늦게 내는 응답은 버린다."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http" or scope["method"] != "POST" or scope["path"] != "/api/upload":
+            return await self.app(scope, receive, send)
+        limit = MAX_FILE_BYTES + (1 << 20)                  # multipart 머리글 몫
+        rejected = False
+
+        async def reject():
+            body = ('{"detail":"파일이 너무 큽니다(최대 %d MB). REWORK_MAX_FILE_MB 로 늘릴 수 있습니다."}' % MAX_FILE_MB).encode()
+            hdrs = [(b"content-type", b"application/json"), (b"content-length", str(len(body)).encode()),
+                    (b"connection", b"close")] + [(k.lower().encode(), v.encode()) for k, v in _SEC_HEADERS.items()]
+            await send({"type": "http.response.start", "status": 413, "headers": hdrs})
+            await send({"type": "http.response.body", "body": body})
+
+        cl = dict(scope["headers"]).get(b"content-length", b"")
+        if cl.isdigit() and int(cl) > limit:
+            return await reject()
+        total = 0
+
+        async def limited_receive():
+            nonlocal total, rejected
+            if rejected:
+                return {"type": "http.disconnect"}
+            msg = await receive()
+            if msg["type"] == "http.request":
+                total += len(msg.get("body", b""))
+                if total > limit:
+                    rejected = True
+                    await reject()
+                    return {"type": "http.disconnect"}
+            return msg
+
+        async def guarded_send(msg):
+            if not rejected:
+                await send(msg)
+
+        await self.app(scope, limited_receive, guarded_send)
+
+
+app.add_middleware(_UploadLimit)
+
+
+_ADDR_MAX = (1 << 64) - 1
+
+
 def parse_addr(v) -> int:
+    if isinstance(v, bool):
+        raise HTTPException(400, "주소 형식이 아닙니다.")
     if isinstance(v, int):
-        return v
-    s = str(v).strip().lower()
-    try:
-        return int(s, 16) if s.startswith("0x") else int(s, 0)
-    except ValueError:
+        n = v
+    else:
+        s = str(v).strip().lower()
         try:
-            return int(s, 16)
+            n = int(s, 16) if s.startswith("0x") else int(s, 0)
         except ValueError:
-            raise HTTPException(400, f"주소 형식이 아닙니다: {v}")
+            try:
+                n = int(s, 16)
+            except ValueError:
+                raise HTTPException(400, f"주소 형식이 아닙니다: {v}")
+    if not (0 <= n <= _ADDR_MAX):
+        raise HTTPException(400, f"주소 범위를 벗어났습니다: {v}")
+    return n
+
+
+def _need(payload: dict, key: str):
+    """필수 키가 없으면 KeyError(500) 대신 400."""
+    if not isinstance(payload, dict) or key not in payload:
+        raise HTTPException(400, f"{key} 가 필요합니다.")
+    return payload[key]
+
+
+def _str_field(payload: dict, key: str, default: str = "", maxlen: int = 4096) -> str:
+    """문자열 필드를 꺼내 검증한다(문자열이 아니거나, 짝 없는 서로게이트처럼 JSON·SQLite 로 못 나가는 값은 400)."""
+    v = payload.get(key, default)
+    if v is None:
+        return default
+    if not isinstance(v, str):
+        raise HTTPException(400, f"{key} 는 문자열이어야 합니다.")
+    try:
+        v.encode("utf-8")
+    except UnicodeEncodeError:
+        raise HTTPException(400, f"{key} 에 올바르지 않은 문자가 있습니다.")
+    if len(v) > maxlen:
+        raise HTTPException(400, f"{key} 가 너무 깁니다(최대 {maxlen}자).")
+    return v
 
 
 # ---- 파일 열기 ----------------------------------------------------------
+PROGRAMS_KEEP = 8          # 메모리·SQLite 연결(fd)에 남겨 둘 열어 본 파일 수. 넘으면 가장 오래 안 쓴 것부터 닫는다
+
+
+def _remember_program(sha: str, prog: Program):
+    """열어 본 파일을 보관하되 개수를 제한한다(서로 다른 파일을 계속 열어도 fd·메모리가 무한히 늘지 않게)."""
+    old = STATE.programs.pop(sha, None)          # 다시 열었다면 맨 뒤(가장 최근)로
+    STATE.programs[sha] = prog
+    if old is not None and old is not prog:
+        old.project.close()
+    while len(STATE.programs) > PROGRAMS_KEEP:
+        victim = next(k for k in STATE.programs if k != sha)
+        STATE.programs.pop(victim).project.close()
+
+
 def _open_path(path: str) -> dict:
+    if not isinstance(path, str):
+        raise HTTPException(400, "path 는 문자열이어야 합니다.")
+    try:
+        size = os.path.getsize(path)
+    except (OSError, ValueError):
+        size = 0                                  # 없는 파일 등은 load() 가 알맞은 오류를 낸다
+    if size > MAX_FILE_BYTES:
+        raise HTTPException(400, f"파일이 너무 큽니다({size >> 20}MB > 최대 {MAX_FILE_MB}MB). "
+                                 "서버를 시작할 때 REWORK_MAX_FILE_MB 로 상한을 늘릴 수 있습니다.")
     try:
         model, raw, lief_bin = load(path)
     except LoadError as e:
@@ -179,7 +317,7 @@ def _open_path(path: str) -> dict:
         "name": model.name, "path": model.path, "fmt": model.fmt, "arch": model.arch,
     })
     prog = Program(model, raw, lief_bin, project)
-    STATE.programs[model.sha256] = prog
+    _remember_program(model.sha256, prog)
     STATE.current = model.sha256
     return model.summary()
 
@@ -198,20 +336,21 @@ def _teardown_debug():
 
 @app.post("/api/open")
 def api_open(payload: dict = Body(...)):
-    path = payload.get("path", "")
-    if not path:
+    path = _str_field(payload, "path")
+    if not path or "\0" in path:
         raise HTTPException(400, "path가 필요합니다.")
     _teardown_debug()
     return _open_path(os.path.expanduser(path))
 
 
-def _save_upload(dest: str, data: bytes) -> None:
-    """임시 파일에 쓴 뒤 원자적으로 교체한다. 같은 이름의 바이너리가 아직 실행 중이어도
-    (open-for-write만 막는) ETXTBSY 없이 디렉터리 항목만 바꾼다."""
+def _save_upload(dest: str, src) -> None:
+    """src(파일 객체)를 조각으로 읽어 임시 파일에 쓴 뒤 원자적으로 교체한다. 같은 이름의 바이너리가 아직 실행 중이어도
+    (open-for-write만 막는) ETXTBSY 없이 디렉터리 항목만 바꾼다. 통째로 메모리에 올리지 않는다."""
     tmp = f"{dest}.part-{os.urandom(4).hex()}"
     try:
         with open(tmp, "wb") as fh:
-            fh.write(data)
+            src.seek(0)
+            shutil.copyfileobj(src, fh, 1 << 20)
         os.replace(tmp, dest)
     except BaseException:
         try:
@@ -224,12 +363,15 @@ def _save_upload(dest: str, data: bytes) -> None:
 @app.post("/api/upload")
 async def api_upload(file: UploadFile = File(...)):
     name = os.path.basename(file.filename or "") or "upload.bin"
+    try:
+        name.encode("utf-8")
+    except UnicodeEncodeError:                    # 파일 이름이 올바른 UTF-8 이 아니면 JSON 으로 나갈 수 없다
+        name = name.encode("utf-8", "replace").decode("utf-8")
     dest = os.path.join(UPLOADS_DIR, name)
-    data = await file.read()
     # 종료 대기·파일 쓰기는 블로킹이므로 이벤트 루프 밖(스레드풀)에서 수행한다
     await run_in_threadpool(_teardown_debug)
     try:
-        await run_in_threadpool(_save_upload, dest, data)
+        await run_in_threadpool(_save_upload, dest, file.file)
     except OSError as e:
         raise HTTPException(400, f"파일 저장 실패: {e}")
     return _open_path(dest)
@@ -248,6 +390,8 @@ def api_sections():
 
 @app.get("/api/functions")
 def api_functions(query: str = "", offset: int = 0, limit: int = 300):
+    offset = max(0, offset)
+    limit = max(0, min(limit, FUNCTIONS_PAGE_MAX))
     prog = STATE.prog()
     prog.build_xrefs()
     items = prog.model.functions
@@ -281,9 +425,9 @@ def api_decompile(addr: str):
 @app.post("/api/varname")
 def api_varname(payload: dict = Body(...)):
     prog = STATE.prog()
-    func = parse_addr(payload["func"])
-    slot = str(payload.get("slot", ""))
-    prog.project.set_varname(func, slot, payload.get("name", ""))
+    func = parse_addr(_need(payload, "func"))
+    slot = _str_field(payload, "slot", maxlen=256)
+    prog.project.set_varname(func, slot, _str_field(payload, "name", maxlen=256))
     return {"func": func, "slot": slot, "names": prog.project.get_varnames(func)}
 
 
@@ -347,24 +491,24 @@ def api_navigate(addr: str):
 @app.post("/api/rename")
 def api_rename(payload: dict = Body(...)):
     prog = STATE.prog()
-    addr = parse_addr(payload["addr"])
-    prog.project.set_name(addr, payload.get("name", ""))
+    addr = parse_addr(_need(payload, "addr"))
+    prog.project.set_name(addr, _str_field(payload, "name", maxlen=256))
     return {"addr": addr, "name": prog.name_for(addr)}
 
 
 @app.post("/api/comment")
 def api_comment(payload: dict = Body(...)):
     prog = STATE.prog()
-    addr = parse_addr(payload["addr"])
-    prog.project.set_comment(addr, payload.get("text", ""))
+    addr = parse_addr(_need(payload, "addr"))
+    prog.project.set_comment(addr, _str_field(payload, "text", maxlen=65536))
     return {"addr": addr, "comment": prog.project.get_comment(addr)}
 
 
 @app.post("/api/bookmark")
 def api_bookmark(payload: dict = Body(...)):
     prog = STATE.prog()
-    addr = parse_addr(payload["addr"])
-    on = prog.project.toggle_bookmark(addr, payload.get("label", ""))
+    addr = parse_addr(_need(payload, "addr"))
+    on = prog.project.toggle_bookmark(addr, _str_field(payload, "label", maxlen=256))
     return {"addr": addr, "bookmarked": on}
 
 
@@ -509,6 +653,9 @@ def _dbg_guard(fn):
 @app.post("/api/debug/start")
 def api_debug_start(payload: dict = Body(...)):
     prog = STATE.prog()
+    if prog.model.fmt != "ELF":
+        raise HTTPException(400, f"{prog.model.fmt} 형식은 이 컴퓨터의 gdb 로 실행·디버깅할 수 없습니다(리눅스 ELF 만 지원). "
+                                 "정적 분석(디스어셈블·디컴파일)은 그대로 쓸 수 있습니다.")
     if not shutil.which("gdb"):
         raise HTTPException(400, "GDB를 찾을 수 없습니다. 설치한 뒤 다시 시도하세요 (예: apt install gdb).")
     try:                           # 저장된 정책 위에 이번 요청의 값을 덮는다(저장하지 않음)
@@ -548,7 +695,8 @@ def api_debug_stop():
 
 
 @app.get("/api/debug/state")
-def api_debug_state():
+async def api_debug_state():
+    # 스레드풀이 느린 분석 요청으로 가득 차도 상태 조회는 막히지 않도록 이벤트 루프에서 바로 처리한다(블로킹 호출 없음)
     if not STATE.debug:
         return {"state": {"status": "none", "alive": False}}
     return {"state": STATE.debug.snapshot()}
@@ -575,9 +723,9 @@ def api_debug_break(payload: dict = Body(...)):
         loc = payload.get("location") or payload.get("addr")
         return _dbg_guard(lambda: sess.break_insert(str(loc)))
     if op == "delete":
-        return _dbg_guard(lambda: sess.break_delete(payload["number"]))
+        return _dbg_guard(lambda: sess.break_delete(_need(payload, "number")))
     if op == "toggle":
-        return _dbg_guard(lambda: sess.break_toggle(payload["number"], payload.get("enable", True)))
+        return _dbg_guard(lambda: sess.break_toggle(_need(payload, "number"), payload.get("enable", True)))
     raise HTTPException(400, f"알 수 없는 op: {op}")
 
 
@@ -593,7 +741,9 @@ def api_debug_registers():
 
 @app.get("/api/debug/stack")
 def api_debug_stack():
-    return {"stack": _dbg_guard(STATE.dbg().stack)}
+    sess = STATE.dbg()
+    frames = _dbg_guard(sess.stack)
+    return {"stack": frames, "truncated": sess._stack_truncated}
 
 
 @app.get("/api/debug/locals")
@@ -614,13 +764,13 @@ def api_debug_eval(payload: dict = Body(...)):
 @app.post("/api/debug/setvar")
 def api_debug_setvar(payload: dict = Body(...)):
     sess = STATE.dbg()
-    return _dbg_guard(lambda: sess.set_var(payload["expr"], payload["value"]))
+    return _dbg_guard(lambda: sess.set_var(_need(payload, "expr"), _need(payload, "value")))
 
 
 @app.post("/api/debug/setreg")
 def api_debug_setreg(payload: dict = Body(...)):
     sess = STATE.dbg()
-    return _dbg_guard(lambda: sess.set_register(payload["name"], payload["value"]))
+    return _dbg_guard(lambda: sess.set_register(_need(payload, "name"), _need(payload, "value")))
 
 
 @app.get("/api/debug/mem")
@@ -631,7 +781,7 @@ def api_debug_mem(addr: str, count: int = 128):
 @app.post("/api/debug/writemem")
 def api_debug_writemem(payload: dict = Body(...)):
     sess = STATE.dbg()
-    return _dbg_guard(lambda: sess.write_memory(payload["addr"], payload["hex"]))
+    return _dbg_guard(lambda: sess.write_memory(_need(payload, "addr"), _need(payload, "hex")))
 
 
 @app.post("/api/debug/console")
@@ -664,8 +814,11 @@ def api_debug_stdin(payload: dict = Body(...)):
 @app.get("/api/debug/output")
 def api_debug_output(clear: bool = False, full: bool = False):
     """콘솔 패널이 쓰는 건 섞은 로그(merged)뿐이다. 뒤쪽 일정 글자 수만 돌려줘서(대상이 출력을 쏟아내도) 응답과
-    JSON 이스케이프 비용이 커지지 않게 한다. target·console 은 full=true(또는 clear=true)일 때만."""
-    sess = STATE.dbg()
+    JSON 이스케이프 비용이 커지지 않게 한다. target·console 은 full=true(또는 clear=true)일 때만.
+    세션이 한도·디버거 사망으로 끝난 뒤에도 다음 시작 전까지는 마지막 로그를 돌려준다(왜 끝났는지 볼 수 있게)."""
+    sess = STATE.debug
+    if sess is None:
+        raise HTTPException(400, "디버그 세션이 없습니다. 먼저 디버깅을 시작하세요.")
     out = {"merged": sess.merged_output(tail=LOG_TAIL_CHARS)}
     if full or clear:
         out["target"] = sess.target_output(clear=clear, tail=LOG_TAIL_CHARS)
@@ -677,12 +830,18 @@ def api_debug_output(clear: bool = False, full: bool = False):
 @app.get("/api/fs")
 def api_fs(path: str = ""):
     path = os.path.expanduser(path) if path else os.path.expanduser("~")
+    if "\0" in path:
+        raise HTTPException(400, "경로에 올바르지 않은 문자가 있습니다.")
     path = os.path.abspath(path)
     if not os.path.isdir(path):
         path = os.path.dirname(path) or "/"
     try:
         entries = []
         for name in sorted(os.listdir(path)):
+            try:
+                name.encode("utf-8")
+            except UnicodeEncodeError:          # 올바른 UTF-8 이 아닌 이름은 JSON 으로 낼 수 없다(목록 전체가 500 이 되지 않게 건너뜀)
+                continue
             full = os.path.join(path, name)
             try:
                 is_dir = os.path.isdir(full)

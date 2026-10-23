@@ -980,7 +980,8 @@ def _():
 def _():
     """대상이 pid 1(gdb)에 SIGTERM·SIGHUP 을 보내 디버거를 죽이는 anti-debug 가 통하지 않는다."""
     results = []
-    for sig in (15, 1, 9, 2):
+    # 15·1 은 무시, 6·7·8·11(ABRT·BUS·FPE·SEGV)은 gdb 가 스스로 핸들러를 거는 치명 신호, 9 는 pid 1 이라 무시, 2·3 은 gdb 가 처리
+    for sig in (15, 1, 9, 2, 3, 6, 7, 8, 11):
         s = DebugSession(probe_exe(), sandbox=sbx.SandboxPolicy())
         try:
             s.start()
@@ -995,7 +996,7 @@ def _():
             results.append(sig)
         finally:
             s.stop()
-    return f"SIGTERM·SIGHUP·SIGKILL·SIGINT 를 pid 1 에 보내도 gdb 가 살아 있음 {results}"
+    return f"시그널 {results} 를 pid 1 에 보내도 gdb 가 살아 있음"
 
 
 @scenario("gdb-death-is-reported-and-cleaned")
@@ -1295,6 +1296,181 @@ def _():
     finally:
         s.stop()
     return "격리 보고서가 실제 적용된 층을 정직하게 나열(비격리·host 네트워크 표시 포함)"
+
+
+# ---- 3차 검토 반영 ------------------------------------------------------
+@scenario("gdb-cpu-not-limited-by-target-limit")
+def _():
+    """프로세스당 CPU 한도는 대상 프로세스에만 걸린다. 디버거(gdb)가 그 한도를 넘게 CPU 를 써도(조건부 중단점·fork 많은 대상) 죽지 않는다."""
+    P = sbx.SandboxPolicy(cpu_seconds=3)
+    s = DebugSession(probe_exe(), sandbox=P)
+    try:
+        s.start()
+        s.console_cmd('python import time; t = time.time(); exec("while time.time() - t < 5: pass")')   # gdb 가 5초 동안 CPU 를 쓴다
+        snap = s.snapshot()
+        assert snap["alive"], f"gdb 가 대상용 CPU 한도(3초)에 걸려 죽음: {snap}"
+        assert not snap["end_reason"], snap["end_reason"]
+        w = s._launch.watch
+        time.sleep(1.0)
+        assert w.gdb_cpu_seconds >= 3.5, f"gdb CPU 를 따로 집계하지 못함: {w.gdb_cpu_seconds}"
+        assert w.cpu_seconds_used < 3, f"gdb 자신의 CPU 가 총 CPU 합계에 들어감: {w.cpu_seconds_used}"
+        s.console_cmd("print 1")                                   # 여전히 응답한다
+    finally:
+        s.stop()
+    assert not wait_gone()
+    return "gdb 가 CPU 5초를 써도(한도 3초) 세션 유지, 총 CPU 합계에는 미포함"
+
+
+@scenario("per-process-cpu-limit-kills-only-target")
+def _():
+    """프로세스당 CPU 한도를 넘은 대상은 감시 스레드가 SIGKILL 한다. 세션과 gdb 는 그대로이고 사유가 로그에 남는다."""
+    P = sbx.SandboxPolicy(cpu_seconds=2)
+    s = DebugSession(probe_exe(), sandbox=P)
+    try:
+        s.start()
+        t0 = time.time()
+        s.run("cpu")
+        while time.time() - t0 < 12 and s.snapshot()["status"] != "exited":
+            time.sleep(0.1)
+        snap = s.snapshot()
+        dt = time.time() - t0
+        assert snap["status"] == "exited" and snap["alive"], snap
+        assert dt < 8, f"{dt:.1f}s"
+        m = s.merged_output()
+        assert "프로세스당 CPU 시간 한도(2초)" in m, m[-400:]
+        assert "SIGKILL" in m or "terminated with signal" in m, m[-400:]
+        s.console_cmd("print 2")                                    # gdb 는 멀쩡하다
+    finally:
+        s.stop()
+    assert not wait_gone()
+    return f"CPU 2초 한도 → {dt:.1f}s 에 대상만 종료, 사유 기록, gdb 유지"
+
+
+@scenario("persisting-protection-off-is-refused")
+def _():
+    """seccomp·권한 낮추기를 끄는 값도 mode=off·require_gdb_guard=false 처럼 저장되지 않는다(세션별 덮어쓰기로만)."""
+    d = tempfile.mkdtemp()
+    cfgf = os.path.join(d, "sandbox.json")
+    cfg = sbx.SandboxConfig(cfgf)
+    for patch in ({"seccomp": False}, {"drop_privileges": False}, {"mode": "off"}, {"require_gdb_guard": False}):
+        try:
+            cfg.save(patch); raise AssertionError(f"저장되면 안 됨: {patch}")
+        except ValueError:
+            pass
+    with open(cfgf, "w") as fh:
+        json.dump({"seccomp": False, "drop_privileges": False, "memory_mb": 300}, fh)
+    p = sbx.SandboxConfig(cfgf).policy
+    assert p.seccomp is True and p.drop_privileges is True and p.memory_mb == 300, p
+    eff = cfg.effective({"seccomp": False})
+    assert eff.seccomp is False and cfg.policy.seccomp is True                  # 이번 세션에만
+    shutil.rmtree(d, ignore_errors=True)
+    return "seccomp·drop_privileges 끄기는 저장·불러오기에서 무효, 세션별 덮어쓰기만 허용"
+
+
+@scenario("leftover-count-is-fresh")
+def _():
+    """끝난 시점에 남은 프로세스 수를 새로 센다: 정상 종료는 0, 데몬을 남기면 정확히 그 수(감시 스레드의 마지막 표본을 쓰지 않는다)."""
+    out, kv, snap = run_probe("id")
+    assert snap["status"] == "exited"
+    s = DebugSession(probe_exe(), sandbox=sbx.SandboxPolicy())
+    try:
+        s.start()
+        s.run("id")
+        t0 = time.time()
+        while time.time() - t0 < 10 and s.snapshot()["status"] != "exited":
+            time.sleep(0.05)
+        snap = s.snapshot()
+        assert snap["status"] == "exited" and snap["sandbox_leftover"] == 0, snap
+    finally:
+        s.stop()
+    s = DebugSession(probe_exe(), sandbox=sbx.SandboxPolicy())
+    try:
+        s.start()
+        s.run("daemon")
+        t0 = time.time()
+        while time.time() - t0 < 10 and s.snapshot()["status"] != "exited":
+            time.sleep(0.05)
+        time.sleep(0.3)
+        snap = s.snapshot()
+        assert snap["status"] == "exited" and snap["sandbox_leftover"] == 6, snap       # 데몬 3개 × (자신 + 자식)
+    finally:
+        s.stop()
+    assert not wait_gone()
+    return "정상 종료 → 남은 0개, 데몬 3쌍 → 정확히 6개"
+
+
+@scenario("end-reason-and-log-survive-limit-kill")
+def _():
+    """한도로 세션이 끝나면 사유(end_reason)와 마지막 로그가 남아, 화면이 '왜 끝났는지' 보여 줄 수 있다."""
+    P = sbx.SandboxPolicy(cpu_seconds=100, cpu_total_seconds=3, max_processes=64)
+    s = DebugSession(probe_exe(), sandbox=P)
+    try:
+        s.start()
+        threading.Thread(target=lambda: s.run("cpuforks"), daemon=True).start()
+        t0 = time.time()
+        while time.time() - t0 < 15 and s.snapshot()["alive"]:
+            time.sleep(0.1)
+        snap = s.snapshot()
+        assert not snap["alive"], "총 CPU 한도가 세션을 끝내지 못함"
+        assert snap["end_reason"] and "총 CPU" in snap["end_reason"], snap
+        assert "[샌드박스]" in s.merged_output() and "총 CPU" in s.merged_output()
+    finally:
+        s.stop()
+    assert not wait_gone()
+    return f"종료 사유 보존: {snap['end_reason']}"
+
+
+@scenario("debugger-died-reason-and-log")
+def _():
+    """gdb 가 사라지면 end_reason 이 채워지고 로그가 남는다(공격으로 오인되지 않도록 CPU 받침 한도 사유는 따로 표시)."""
+    s = DebugSession(probe_exe(), sandbox=sbx.SandboxPolicy())
+    try:
+        s.start()
+        threading.Thread(target=lambda: s.run("sleep"), daemon=True).start()
+        time.sleep(1.0)
+        os.kill(s._launch.init_host_pid, signal.SIGKILL)
+        t0 = time.time()
+        while time.time() - t0 < 10 and s.snapshot()["alive"]:
+            time.sleep(0.1)
+        snap = s.snapshot()
+        assert snap["stop_reason"] == "debugger-died" and "디버거(gdb)가" in (snap["end_reason"] or ""), snap
+        assert "[샌드박스]" in s.merged_output(), s.merged_output()[-200:]
+    finally:
+        s.stop()
+    return f"end_reason={snap['end_reason'][:40]}…"
+
+
+@scenario("deep-stack-is-capped-and-fast")
+def _():
+    """무한 재귀 같은 아주 깊은 스택도 위쪽 STACK_FRAMES_MAX 개만 빠르게 돌려준다. 한도를 넘는 응답은 즉시 오류로 끝난다."""
+    from app import debug as dbgmod
+    s = DebugSession(probe_exe(), sandbox=sbx.SandboxPolicy())
+    try:
+        s.start()
+        s.run("deep 20000")
+        t0 = time.time()
+        while time.time() - t0 < 20 and s.snapshot()["status"] != "stopped":
+            time.sleep(0.05)
+        assert s.snapshot()["status"] == "stopped", s.snapshot()
+        t1 = time.time()
+        frames = s.stack()
+        dt = time.time() - t1
+        assert len(frames) == dbgmod.STACK_FRAMES_MAX and s._stack_truncated, (len(frames), s._stack_truncated)
+        assert dt < 3, f"{dt:.1f}s"
+        # 상한 없이 요청하면 응답이 MI 한 줄 한도(1MiB)를 넘는다: 시간 초과(10초)를 기다리지 않고 바로 오류가 나야 한다
+        t2 = time.time()
+        try:
+            s._send("-stack-list-frames", timeout=8)
+            raise AssertionError("한도를 넘는 응답이 성공으로 처리됨")
+        except DebugError as e:
+            assert "너무 커서" in str(e), str(e)
+        dt2 = time.time() - t2
+        assert dt2 < 3, f"한도 초과 응답이 {dt2:.1f}s 뒤에야 실패"
+        s.console_cmd("print 3")                                   # 이후에도 정상 동작
+    finally:
+        s.stop()
+    assert not wait_gone()
+    return f"깊이 20000 → {len(frames)}프레임 {dt:.2f}s 생략 표시, 한도 초과 응답은 {dt2:.2f}s 만에 즉시 오류"
 
 
 def main():

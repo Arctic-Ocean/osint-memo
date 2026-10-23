@@ -318,12 +318,17 @@ class SandboxConfig:
                 self.policy = SandboxPolicy()   # 깨진 설정은 안전한 기본값(격리 켬)으로
         self.policy.mode = "on"                 # 비격리는 저장된 기본값이 될 수 없다(시작할 때마다 직접 선택)
         self.policy.require_gdb_guard = True    # 디버거 보호를 건너뛰는 것도 마찬가지
+        self.policy.seccomp = True              # 보호 층을 끄는 값은 전부 저장되지 않는다(세션별 덮어쓰기로만)
+        self.policy.drop_privileges = True
 
     def save(self, patch: dict) -> SandboxPolicy:
         if isinstance(patch, dict) and patch.get("mode", "on") != "on":
             raise ValueError("비격리는 저장할 수 없습니다. 신뢰하는 파일을 디버깅할 때마다 직접 선택하세요.")
         if isinstance(patch, dict) and patch.get("require_gdb_guard", True) is not True:
             raise ValueError("디버거 보호 요구를 끄는 설정은 저장할 수 없습니다. 시작할 때마다 직접 선택하세요.")
+        if isinstance(patch, dict) and (patch.get("seccomp", True) is not True
+                                        or patch.get("drop_privileges", True) is not True):
+            raise ValueError("seccomp·권한 낮추기를 끄는 설정은 저장할 수 없습니다. 시작할 때마다 직접 선택하세요.")
         with self._lock:                                   # 동시 저장이 서로의 임시 파일을 가로채지 않게
             new = SandboxPolicy.from_dict(patch, base=self.policy)
             tmp = f"{self.path}.tmp-{os.urandom(4).hex()}"
@@ -634,6 +639,7 @@ class SandboxStatus:
     cgroup: bool = False
     disable_userns: bool = False
     as_pid1: bool = False          # gdb 를 pid 네임스페이스의 init 으로 둘 수 있는가(init 프로세스 노출 방지)
+    gdb_found: bool = False        # gdb 가 설치되어 있는가
     gdb_python: bool = False       # gdb 에 Python 이 있는가(PR_SET_DUMPABLE 로 gdb 를 보호하려면 필요)
     guard_ready: bool = False      # 디버거 보호(as_pid1 + gdb_python)를 쓸 수 있는가
 
@@ -713,6 +719,7 @@ def _probe_uncached() -> SandboxStatus:
                        running_as_root=(os.geteuid() == 0), seccomp=seccomp_supported(),
                        cgroup=CgroupLimit.available(), disable_userns=_bwrap_supports(bw, "--disable-userns"),
                        as_pid1=_bwrap_supports(bw, "--as-pid-1"))
+    st.gdb_found = bool(shutil.which("gdb"))
     st.gdb_python = _gdb_has_python()
     st.guard_ready = st.as_pid1 and st.gdb_python
     policy = SandboxPolicy()
@@ -899,9 +906,13 @@ def _make_preexec(policy: SandboxPolicy, uid: int):
         raise SandboxError(f"이 계정의 프로세스(스레드) 수 한도에 여유가 거의 없습니다(허용 {allowance}개). "
                            "열려 있는 프로그램을 줄이거나 `ulimit -u` 를 늘리세요.")
     mb = 1024 * 1024
+    # 프로세스당 CPU(cpu_seconds)는 감시 스레드가 '대상 쪽 프로세스'에만 적용한다 — rlimit 는 상속되어 디버거(gdb)도 같은 한도에
+    # 걸려 정상적인 조건부 중단점·fork 가 많은 대상 앞에서 gdb 가 먼저 죽는다. 여기 거는 값은 감시 스레드가 멎었을 때를 위한
+    # 넉넉한 받침(총 CPU 한도 이상)이다.
+    cpu_backstop = max(policy.cpu_total_seconds, policy.cpu_seconds)
     limits = (
         (resource.RLIMIT_AS, (policy.memory_mb + GDB_AS_MARGIN_MB) * mb),   # gdb 자신의 몫을 더한다
-        (resource.RLIMIT_CPU, policy.cpu_seconds),
+        (resource.RLIMIT_CPU, cpu_backstop),
         (resource.RLIMIT_FSIZE, policy.max_file_mb * mb),
         (resource.RLIMIT_NOFILE, policy.max_open_files),
         (resource.RLIMIT_CORE, 0),
@@ -916,6 +927,11 @@ def _make_preexec(policy: SandboxPolicy, uid: int):
                 pass
         try:
             os.setpriority(os.PRIO_PROCESS, 0, 10)    # 호스트가 느려지지 않게(되돌리려면 RLIMIT_NICE 가 필요하다)
+        except OSError:
+            pass
+        try:                                          # 세션마다 오토그룹이 갈리는 커널에서는 그룹 전체의 nice 도 올려야 효과가 있다
+            with open("/proc/self/autogroup", "w") as fh:
+                fh.write("10")
         except OSError:
             pass
     return apply, allowance
@@ -1064,22 +1080,29 @@ class ResourceWatch(threading.Thread):
 
     CPU 는 표본을 뽑아 더하지 않고 '살아 있는 모든 프로세스의 (utime+stime+cutime+cstime) 합'으로 구한다.
     죽은 프로세스의 시간은 그것을 wait 한 부모의 cutime/cstime 에, 부모가 죽었다면 pid 1(gdb)의 cutime 에 쌓이므로
-    아주 짧게 살다 죽는 자식이 표본 사이에 숨을 수 없다(좀비도 /proc 에 남아 있는 동안 센다)."""
+    아주 짧게 살다 죽는 자식이 표본 사이에 숨을 수 없다(좀비도 /proc 에 남아 있는 동안 센다).
 
-    def __init__(self, launch: "Launch", policy: SandboxPolicy, on_limit, interval: float = 0.5):
+    디버거 쪽(바깥 bwrap·gdb)의 '자기 자신' CPU 는 합계와 프로세스당 한도에서 뺀다 — gdb 는 조건부 중단점·fork 가 많은 대상 앞에서
+    이벤트마다 CPU 를 쓰므로 정상 사용으로도 큰 값이 나오고, 그것으로 세션을 끊으면 안 된다(대상이 만든 시간은 gdb 의 cutime 으로
+    들어오므로 그대로 센다). 프로세스당 한도(cpu_seconds)를 넘은 대상 프로세스는 이 스레드가 직접 SIGKILL 한다."""
+
+    def __init__(self, launch: "Launch", policy: SandboxPolicy, on_limit, interval: float = 0.5, on_kill=None):
         super().__init__(daemon=True, name="rework-sbx-watch")
         self.launch, self.policy, self.on_limit, self.interval = launch, policy, on_limit, interval
+        self.on_kill = on_kill
         self._stop_ev = threading.Event()
         self.cpu_seconds_used = 0.0
+        self.gdb_cpu_seconds = 0.0         # 디버거(gdb) 자신이 쓴 CPU — 한도에는 넣지 않고 보여 주기만 한다
         self.mem_mb_used = 0.0
         self.live_count = 0                # 샌드박스 안의 프로세스 수(gdb·대상·남은 것 모두)
+        self.killed: set = set()
         self.errors = 0
 
     def stop(self):
         self._stop_ev.set()
 
     def _exclude(self) -> set:
-        """메모리 합계에서 뺄 프로세스: 디버거 쪽(바깥 bwrap·gdb·init). comm 이 아니라 pid 로 식별한다(대상이 이름을 바꿀 수 있다)."""
+        """합계에서 '자기 몫'을 뺄 프로세스: 디버거 쪽(바깥 bwrap·gdb·init). comm 이 아니라 pid 로 식별한다(대상이 이름을 바꿀 수 있다)."""
         ex = {self.launch.root_pid, self.launch.init_host_pid}
         if self.launch.gdb_host_pid:
             ex.add(self.launch.gdb_host_pid)
@@ -1102,6 +1125,23 @@ class ResourceWatch(threading.Thread):
                 finally:
                     return
 
+    def _kill_one(self, pid: int, reason: str):
+        """대상 쪽 프로세스 하나를 죽인다. 번호가 다른 곳에 재사용되지 않았는지 pid 네임스페이스로 확인한다."""
+        if pid in self.killed:
+            return
+        if self.launch.ns_inode is not None and _pidns_inode(pid) != self.launch.ns_inode:
+            return
+        self.killed.add(pid)
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except OSError:
+            return
+        if self.on_kill:
+            try:
+                self.on_kill(pid, reason)
+            except Exception:                              # noqa: BLE001
+                pass
+
     def _tick(self, cpu_limit, mem_limit_kb, proc_limit):
         root = self.launch.root_pid
         pids = [root] + descendants(root)
@@ -1112,18 +1152,28 @@ class ResourceWatch(threading.Thread):
                     self.launch.gdb_host_pid = p
                     break
         ex = self._exclude()
-        ticks, mem_kb, live = 0, 0, 0
+        per_proc = self.policy.cpu_seconds
+        ticks, gdb_ticks, mem_kb, live = 0, 0, 0, 0
+        over = []
         for pid in pids:
             t = _proc_times(pid)
             if t is None:
                 continue
             live += 1
-            ticks += sum(t)
-            if pid not in ex:
+            if pid in ex:
+                ticks += t[2] + t[3]                       # 자기 시간(utime+stime)은 빼고, 대신 거둔 자식의 시간만 센다
+                gdb_ticks += t[0] + t[1]
+            else:
+                ticks += sum(t)
                 mem_kb += _proc_pss_kb(pid)
+                if (t[0] + t[1]) / _CLK_TCK > per_proc:
+                    over.append(pid)
         self.live_count = live
         self.cpu_seconds_used = ticks / _CLK_TCK
+        self.gdb_cpu_seconds = gdb_ticks / _CLK_TCK
         self.mem_mb_used = mem_kb / 1024
+        for pid in over:
+            self._kill_one(pid, f"프로세스당 CPU 시간 한도({per_proc}초)")
         if self.cpu_seconds_used > cpu_limit:
             return f"총 CPU 시간 한도({cpu_limit}초)"
         if mem_kb > mem_limit_kb:
@@ -1163,6 +1213,7 @@ class Launch:
     init_host_pid: int | None = None   # 샌드박스 pid 1 프로세스의 호스트 pid
     gdb_host_pid: int | None = None    # gdb 의 호스트 pid(--as-pid-1 이면 init 과 같다)
     as_pid1: bool = False
+    cpu_backstop: int = 0              # 모든 프로세스(gdb 포함)에 거는 CPU 시간 받침 한도(초)
     cg_ok: bool = False                # gdb·대상이 실제로 cgroup 에 담겼음을 확인했는가
     watch: "ResourceWatch | None" = None
     _policy: "SandboxPolicy | None" = None
@@ -1195,7 +1246,7 @@ class Launch:
                     return
             time.sleep(0.01)
 
-    def attach(self, proc, on_limit=None):
+    def attach(self, proc, on_limit=None, on_kill=None):
         """Popen 직후 호출. ① 샌드박스 init 이 생길 때까지 기다리며 네임스페이스를 붙들고 ② cgroup 이 있으면 그때 이미 있는
         모든 프로세스(바깥 bwrap·init)를 cgroup 에 넣어 실제로 담겼는지 확인한 뒤 ③ --block-fd 를 풀어 command 를 실행하게
         하고 ④ 감시를 시작한다. (bwrap 은 init 을 --block-fd 를 읽기 '전에' fork 하므로, 풀기 전에 담아야 gdb·대상이
@@ -1221,8 +1272,24 @@ class Launch:
         if self.ns_fd is None:                                 # 아직 init 이 안 보였다면(느린 시스템) 조금 더 기다린다
             self._find_ns(proc, outer, time.monotonic() + 2.0)
         if on_limit is not None:
-            self.watch = ResourceWatch(self, self._policy, on_limit=on_limit)
+            self.watch = ResourceWatch(self, self._policy, on_limit=on_limit, on_kill=on_kill)
             self.watch.start()
+
+    def leftover(self) -> int | None:
+        """디버거(바깥 bwrap·gdb)를 뺀, 지금 샌드박스 안에 살아 있는 프로세스 수. 세어 볼 수 없으면 None.
+        대상이 끝난 뒤에도 남은 데몬·자식을 알리는 데 쓴다(좀비는 아직 회수되지 않은 것이라 세지 않는다)."""
+        if self.root_pid is None or self._cleaned:
+            return None
+        n = 0
+        for p in [self.root_pid] + descendants(self.root_pid):
+            try:
+                with open(f"/proc/{p}/stat") as fh:
+                    st = fh.read()
+                if st[st.rindex(")") + 2:][:1] != "Z":
+                    n += 1
+            except (OSError, ValueError):
+                continue
+        return max(0, n - (2 if self.as_pid1 else 3))          # as-pid-1: 바깥 bwrap + gdb / 아니면 + init
 
     def reap(self):
         """샌드박스 안에 남은 모든 프로세스를 죽인다(gdb 가 사라졌을 때·정리할 때)."""
@@ -1269,10 +1336,13 @@ class Launch:
 
 
 # ---- gdb 보호 확인 ------------------------------------------------------------------
-# PR_SET_DUMPABLE=0 으로 같은 uid 의 대상이 gdb 를 건드리지 못하게 하고, SIGTERM·SIGHUP 을 무시해 대상이 gdb(pid 1)를
+# PR_SET_DUMPABLE=0 으로 같은 uid 의 대상이 gdb 를 건드리지 못하게 하고, 종료 신호를 무시해 대상이 gdb(pid 1)를
 # 종료시키지 못하게 한다(호스트는 SIGKILL·-gdb-exit·stdin EOF 로 끝낼 수 있다).
+# gdb 가 스스로 핸들러를 거는 치명 신호(ABRT·BUS·FPE·SEGV)도 무시한다: 대상이 kill(1, 신호) 로 gdb 를 죽이지 못하게 한다.
+# (진짜 동기 fault 는 커널이 기본 동작으로 되돌리므로 gdb 가 정말 죽는 경우는 그대로 감지된다.)
+GDB_IGNORED_SIGNALS = ("SIGTERM", "SIGHUP", "SIGABRT", "SIGBUS", "SIGFPE", "SIGSEGV")
 GDB_GUARD_ARGS = ["-iex", "python import ctypes, signal; ctypes.CDLL(None).prctl(4, 0, 0, 0, 0); "
-                          "signal.signal(signal.SIGTERM, signal.SIG_IGN); signal.signal(signal.SIGHUP, signal.SIG_IGN)",
+                          + "; ".join(f"signal.signal(signal.{n}, signal.SIG_IGN)" for n in GDB_IGNORED_SIGNALS),
                   "-iex", "maint set worker-threads 1"]      # gdb 의 작업 스레드가 프로세스 수 한도를 갉아먹지 않게
 
 
@@ -1305,12 +1375,16 @@ def verify_gdb_guard(launch: Launch, root_pid: int) -> tuple:
 def mark_guard(info: dict, ok: bool, why: str = ""):
     """시작 후 확인한 gdb 보호 결과를 격리 보고서에 반영한다."""
     _set_layer(info, "gdbguard", ok,
-               "gdb 를 덤프 불가로 만들고 SIGTERM·SIGHUP 을 무시해, 대상이 gdb 의 메모리·fd·ptrace 에 접근하거나 gdb 를 종료시킬 수 없음"
+               "gdb 를 덤프 불가로 만들고 종료 신호(TERM·HUP·ABRT·BUS·FPE·SEGV)를 무시해, 대상이 gdb 의 메모리·fd·ptrace 에 접근하거나 gdb 를 종료시킬 수 없음"
                if ok else f"미적용: {why}. 대상이 디버거의 보고를 위조할 수 있습니다")
 
 
 def guard_unavailable_reason(status: SandboxStatus) -> str | None:
     """디버거 보호를 쓸 수 없는 이유(쓸 수 있으면 None)."""
+    if not status.bwrap:
+        return None                                        # bubblewrap 자체가 없다 — 그 사유가 이미 따로 표시된다
+    if not status.gdb_found:
+        return "gdb 가 설치되어 있지 않습니다(디버깅을 하려면 gdb 가 필요합니다)"
     if not status.as_pid1:
         return "bubblewrap 이 --as-pid-1 을 지원하지 않습니다(0.8 이상 필요: 설치된 버전 %s)" % (status.version or "?")
     if not status.gdb_python:
@@ -1423,6 +1497,10 @@ def prepare(policy: SandboxPolicy, target_path: str, tty_src: str, gdb_args: lis
         target_fd = None
         if os.statvfs(workdir).f_flag & getattr(os, "ST_NOEXEC", 8):
             # 임시 폴더가 noexec 로 마운트돼 있으면 bind 한 복사본을 실행할 수 없다 → 샌드박스의 tmpfs 에 내용을 복사해 넣는다
+            size = os.path.getsize(copy)
+            if size > policy.max_file_mb * 1024 * 1024:       # bwrap 이 파일 크기 한도(RLIMIT_FSIZE) 안에서 쓰므로 크면 도중에 죽는다
+                raise SandboxError(f"임시 폴더가 noexec 라 대상({size >> 20}MB)을 샌드박스 메모리에 복사해야 하는데 파일 크기 한도"
+                                   f"({policy.max_file_mb}MB)를 넘습니다. 한도를 늘리거나 TMPDIR 을 noexec 가 아닌 폴더로 지정하세요.")
             with open(copy, "rb") as fh:
                 target_fd = fds.data(fh.read())
 
@@ -1452,6 +1530,7 @@ def prepare(policy: SandboxPolicy, target_path: str, tty_src: str, gdb_args: lis
                         target_path=f"{SB_TARGET_DIR}/{name}", workdir=workdir, uid=uid, info=info,
                         cgroup=cg, block_w=block_w, as_pid1=status.as_pid1, _fds=fds)
         launch._policy = policy
+        launch.cpu_backstop = max(policy.cpu_total_seconds, policy.cpu_seconds)
         return launch
     except BaseException:
         if block_w is not None:
@@ -1490,6 +1569,7 @@ def describe(policy: SandboxPolicy, status: SandboxStatus | None = None, *, secc
     else:
         uid_layer = {"id": "uid", "label": "일반 사용자 권한으로 실행", "active": True,
                      "detail": "별도 uid 로 낮추지는 않습니다 — 탈출했다면 이 사용자의 권한(홈 파일 등)을 가집니다"}
+    guard_why = guard_unavailable_reason(status) if status is not None else None
     layers = [
         {"id": "ns", "label": "네임스페이스(프로세스·네트워크·IPC·호스트명·사용자)", "active": True,
          "detail": "호스트 프로세스가 보이지 않고 중첩 user namespace 를 만들 수 없음"},
@@ -1507,14 +1587,14 @@ def describe(policy: SandboxPolicy, status: SandboxStatus | None = None, *, secc
         {"id": "seccomp", "label": "위험 시스템 콜 차단(seccomp)", "active": bool(sec_on),
          "detail": (f"{len(_X86_64_DENY) + 2}개 시스템 콜·네임스페이스 생성·비표준 소켓 차단 (나머지는 허용하는 차단 목록 방식)" if sec_on
                     else ("정책에서 끔" if not policy.seccomp else "이 아키텍처는 미지원"))},
-        {"id": "gdbguard", "label": "디버거 보호(대상이 gdb 를 조작하지 못함)", "active": True,
-         "detail": "시작 후 확인합니다"},
-        {"id": "rlimit", "label": "자원 한도(rlimit)", "active": True,
-         "detail": f"CPU {policy.cpu_seconds}초, 주소공간 {policy.memory_mb}MB(+디버거 {GDB_AS_MARGIN_MB}MB)/프로세스, "
-                   f"프로세스(스레드) +{allow}, 파일 {policy.max_file_mb}MB, 낮은 우선순위"
+        {"id": "gdbguard", "label": "디버거 보호(대상이 gdb 를 조작하지 못함)", "active": guard_why is None,
+         "detail": "시작 후 확인합니다" if guard_why is None else f"사용할 수 없음: {guard_why}"},
+        {"id": "rlimit", "label": "자원 한도(rlimit·프로세스별 감시)", "active": True,
+         "detail": f"프로세스당 CPU {policy.cpu_seconds}초(대상 프로세스만), 주소공간 {policy.memory_mb}MB(+디버거 {GDB_AS_MARGIN_MB}MB)/프로세스, "
+                   f"프로세스(스레드) +{allow}(이 계정의 다른 프로그램과 함께 센다), 파일 {policy.max_file_mb}MB, 낮은 우선순위"
                    + (f" (계정의 ulimit -u 때문에 요청값 {policy.max_processes}보다 줄었음)" if allow < policy.max_processes else "")},
         {"id": "total", "label": "총량 감시(전체 합계)", "active": True,
-         "detail": f"CPU 합계 {policy.cpu_total_seconds}초(죽은 자식의 시간까지 포함), 메모리 합계 {policy.memory_mb * 2}MB(0.5초 간격 근사),"
+         "detail": f"CPU 합계 {policy.cpu_total_seconds}초(죽은 자식의 시간까지 포함, 디버거 자신은 제외), 메모리 합계 {policy.memory_mb * 2}MB(0.5초 간격 근사),"
                    f" 프로세스 {policy.max_processes}개 초과 시 세션을 끝냅니다"},
         {"id": "cgroup", "label": "cgroup 총 메모리·프로세스 한도", "active": cg_on,
          "detail": (f"메모리 {policy.memory_mb * 2 + GDB_AS_MARGIN_MB}MB, 프로세스 {policy.max_processes + 8}" if cg_on

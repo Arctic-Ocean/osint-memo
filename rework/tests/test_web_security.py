@@ -8,7 +8,7 @@
 
 실행:  .venv/bin/python tests/test_web_security.py
 """
-import http.client, json, os, shutil, socket, subprocess, sys, tempfile, time
+import asyncio, http.client, json, os, shutil, socket, subprocess, sys, tempfile, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -90,6 +90,14 @@ def token_section():
         check("토큰이 있어도 Host 위조는 403", st == 403, f"{st}")
         st, _ = req(port, "POST", "/api/debug/stop", {"Cookie": ck, "Origin": "http://evil.example"}, b"")
         check("토큰(쿠키)이 실려도 교차 출처 POST 는 403", st == 403, f"{st}")
+        # 같은 호스트의 다른 포트에서 도는 서비스의 페이지: SameSite=Strict 쿠키도 같은 '사이트'라 실려 오지만 출처 검사에서 막힌다
+        r = [req(port, "GET", "/api/debug/output?clear=true", {"Cookie": ck, "Sec-Fetch-Site": "same-site"})[0],
+             req(port, "GET", "/api/sandbox/status", {"Cookie": ck, "Origin": f"http://127.0.0.1:{port + 1}"})[0]]
+        check("쿠키가 실려도 다른 포트 페이지의 GET 은 403(쿠키는 포트를 구분하지 않는다)", r == [403, 403], str(r))
+        r = [req(port, "GET", "/api/sandbox/status", [("X-Rework-Token", "T\xed\x95\x9c")])[0],       # 비 ASCII 값은 500 이 아니라 401
+             req(port, "GET", "/api/sandbox/status", {"Cookie": "rework_token=\"\\355\\225\\234\""})[0],
+             req(port, "GET", "/?token=%ED%95%9C")[0]]
+        check("비 ASCII 토큰 값은 500 이 아니라 401", r == [401, 401, 401], str(r))
         st, _ = req(port, "POST", "/api/open", {"X-Rework-Token": tok, "Content-Type": "application/json"},
                     json.dumps({"path": os.path.join(ROOT, "samples", "demo_elf")}).encode())
         st, body = req(port, "POST", "/api/debug/start", {"X-Rework-Token": tok, "Content-Type": "application/json"},
@@ -102,6 +110,170 @@ def token_section():
             proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
             proc.kill()
+        shutil.rmtree(data, ignore_errors=True)
+
+
+def _start_server(env_extra):
+    data = tempfile.mkdtemp(prefix="rework-web-x-")
+    port = free_port()
+    py = os.path.join(ROOT, ".venv", "bin", "python")
+    py = py if os.path.exists(py) else sys.executable
+    proc = subprocess.Popen([py, os.path.join(ROOT, "run.py"), "--port", str(port)],
+                            env={**os.environ, "REWORK_DATA": data, **env_extra},
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    t0 = time.time()
+    while time.time() - t0 < 20:
+        try:
+            if req(port, "GET", "/api/sandbox/status")[0] == 200:
+                return proc, port, data
+        except OSError:
+            time.sleep(0.2)
+    proc.kill()
+    raise RuntimeError("서버가 뜨지 않음")
+
+
+def _stop_server(proc, data):
+    proc.terminate()
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+    shutil.rmtree(data, ignore_errors=True)
+
+
+def _raw_upload(port, total, chunked):
+    """multipart 본문 total 바이트를 소켓으로 직접 보낸다. (상태 줄 또는 None, 보낸 바이트)"""
+    head_body = b'--XB\r\nContent-Disposition: form-data; name="file"; filename="big.bin"\r\n\r\n'
+    tail = b"\r\n--XB--\r\n"
+    pad = max(0, total - len(head_body) - len(tail))
+    s = socket.create_connection(("127.0.0.1", port), timeout=15)
+    hdr = (f"POST /api/upload HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Type: multipart/form-data; boundary=XB\r\n"
+           + ("Transfer-Encoding: chunked\r\n" if chunked else f"Content-Length: {len(head_body) + pad + len(tail)}\r\n") + "\r\n")
+    sent = 0
+    try:
+        s.sendall(hdr.encode())
+        if not chunked:
+            s.sendall(head_body[:200])                          # 머리글만 보내고 응답을 먼저 확인(큰 본문을 다 보내지 않는다)
+            s.settimeout(5)
+            try:
+                return s.recv(4096).split(b"\r\n", 1)[0].decode("latin-1") or None, 0
+            except (socket.timeout, OSError):
+                return None, 0
+        body = head_body + b"\0" * pad + tail
+        for i in range(0, len(body), 1 << 18):
+            piece = body[i:i + (1 << 18)]
+            s.sendall(f"{len(piece):x}\r\n".encode() + piece + b"\r\n")
+            sent += len(piece)
+        s.sendall(b"0\r\n\r\n")
+    except OSError:
+        pass                                                    # 서버가 중간에 끊었다
+    s.settimeout(5)
+    try:
+        return s.recv(4096).split(b"\r\n", 1)[0].decode("latin-1") or None, sent
+    except (socket.timeout, OSError):
+        return None, sent
+
+
+def upload_limit_section():
+    """업로드 크기 상한(REWORK_MAX_FILE_MB): 서버 메모리·디스크를 큰 본문 하나로 채우지 못하게 한다."""
+    proc, port, data = _start_server({"REWORK_MAX_FILE_MB": "1"})
+    try:
+        uploads = os.path.join(data, "uploads")
+        line, _ = _raw_upload(port, 4 << 20, chunked=False)
+        check("Content-Length 가 상한을 넘으면 본문을 받기 전에 413", bool(line) and " 413 " in line, str(line))
+        line, sent = _raw_upload(port, 8 << 20, chunked=True)
+        check("청크 전송도 상한을 넘으면 끊고 413(또는 연결 종료) — 끝까지 받지 않는다",
+              (line is None or " 413 " in line) and sent < (8 << 20), f"{line} sent={sent}")
+        left = [n for n in os.listdir(uploads)] if os.path.isdir(uploads) else []
+        check("상한을 넘긴 업로드는 파일을 남기지 않음", left == [], str(left))
+        st, body = req(port, "POST", "/api/upload", MP_HEADERS, MULTIPART)
+        check("상한 안의 업로드는 정상 처리(잘못된 형식이라 400)", st == 400, f"{st} {body[:80]!r}")
+        big = os.path.join(data, "big.bin")
+        with open(big, "wb") as fh:
+            fh.truncate(3 << 20)
+        st, body = req(port, "POST", "/api/open", {"Content-Type": "application/json"}, json.dumps({"path": big}).encode())
+        check("열기도 상한을 넘으면 400(분석하지 않음)", st == 400 and "너무 큽니다" in body.decode(), f"{st} {body[:100]!r}")
+    finally:
+        _stop_server(proc, data)
+
+
+def _asgi(app, method, path, headers=(), body=b""):
+    """서버 없이 ASGI 앱을 직접 한 번 호출한다. (상태, 헤더 dict, 본문)"""
+    out = {"status": None, "headers": {}, "body": b""}
+
+    async def run():
+        sent = False
+
+        async def receive():
+            nonlocal sent
+            if not sent:
+                sent = True
+                return {"type": "http.request", "body": body, "more_body": False}
+            return {"type": "http.disconnect"}
+
+        async def send(msg):
+            if msg["type"] == "http.response.start":
+                out["status"] = msg["status"]
+                out["headers"] = {k.decode().lower(): v.decode() for k, v in msg["headers"]}
+            elif msg["type"] == "http.response.body":
+                out["body"] += msg.get("body", b"")
+
+        scope = {"type": "http", "asgi": {"version": "3.0"}, "http_version": "1.1", "method": method, "scheme": "http",
+                 "path": path, "raw_path": path.encode(), "query_string": b"", "root_path": "",
+                 "headers": [(b"host", b"127.0.0.1:8000")] + [(k.lower().encode(), v.encode()) for k, v in headers],
+                 "client": ("127.0.0.1", 1), "server": ("127.0.0.1", 8000)}
+        try:
+            await app(scope, receive, send)
+        except Exception:                                       # noqa: BLE001  Starlette 은 응답을 보낸 뒤 예외를 다시 던진다
+            pass
+    asyncio.run(run())
+    return out["status"], out["headers"], out["body"]
+
+
+def unhandled_section():
+    """처리되지 않은 예외가 나도 500 응답에 보안 헤더가 붙고 경로·트레이스백이 새지 않는다."""
+    data = tempfile.mkdtemp(prefix="rework-web-unh-")
+    code = r"""
+import os, sys, json
+sys.path.insert(0, os.path.join(%r, "backend"))
+sys.path.insert(0, %r)
+from app.main import app
+from starlette.routing import Route
+from starlette.responses import PlainTextResponse
+def boom(request):
+    raise RuntimeError("비밀 경로 /home/someone/secret")
+app.router.routes.insert(0, Route("/api/__boom", boom))
+import test_web_security as T
+st, h, body = T._asgi(app, "GET", "/api/__boom")
+print(json.dumps({"st": st, "h": h, "body": body.decode()}))
+""" % (ROOT, HERE)
+    py = os.path.join(ROOT, ".venv", "bin", "python")
+    py = py if os.path.exists(py) else sys.executable
+    try:
+        r = subprocess.run([py, "-c", code], capture_output=True, text=True, timeout=60,
+                           env={**os.environ, "REWORK_DATA": data})
+        got = json.loads(r.stdout.strip().splitlines()[-1])
+        h = got["h"]
+        check("처리되지 않은 예외는 500 이고 보안 헤더가 붙는다",
+              got["st"] == 500 and h.get("x-frame-options") == "DENY" and h.get("x-content-type-options") == "nosniff"
+              and "frame-ancestors" in h.get("content-security-policy", ""), f"{got['st']} {h}")
+        check("500 응답 본문에 예외 내용·경로가 없다", "secret" not in got["body"] and "/home" not in got["body"] and "Traceback" not in got["body"], got["body"][:100])
+    except Exception as e:                                      # noqa: BLE001
+        check("처리되지 않은 예외 응답 검사", False, f"{type(e).__name__}: {e} {(locals().get('r') and r.stderr[-300:])}")
+    finally:
+        shutil.rmtree(data, ignore_errors=True)
+
+
+def bad_token_env_section():
+    """비 ASCII REWORK_TOKEN 은 시작할 때 분명한 오류로 거부한다(조용히 모든 요청을 500 으로 만들지 않는다)."""
+    data = tempfile.mkdtemp(prefix="rework-web-bt-")
+    py = os.path.join(ROOT, ".venv", "bin", "python")
+    py = py if os.path.exists(py) else sys.executable
+    try:
+        r = subprocess.run([py, "-c", "import sys; sys.path.insert(0, %r); import app.main" % os.path.join(ROOT, "backend")],
+                           capture_output=True, text=True, timeout=60, env={**os.environ, "REWORK_DATA": data, "REWORK_TOKEN": "한글토큰"})
+        check("비 ASCII REWORK_TOKEN 은 시작 때 거부", r.returncode != 0 and "ASCII" in r.stderr, r.stderr.strip().splitlines()[-1][:120] if r.stderr else "")
+    finally:
         shutil.rmtree(data, ignore_errors=True)
 
 
@@ -174,8 +346,18 @@ def main():
         check("같은 출처·헤더 없음·none 은 통과", ok == [200, 200, 200], str(ok))
         st, _ = req(port, "POST", "/api/upload", {**MP_HEADERS, **same}, MULTIPART)
         check("같은 출처 업로드는 처리됨(서버가 받아 분석 시도)", st != 403, f"{st}")
-        st, _ = req(port, "GET", "/api/sandbox/status", {"Origin": "http://evil.example", "Sec-Fetch-Site": "cross-site"})
-        check("GET 은 막지 않음(부작용 없음, 응답은 CORS 로 못 읽음)", st == 200, f"{st}")
+        # GET API 도 다른 출처가 부르지 못한다: 쿠키(SameSite)는 포트를 구분하지 않아, 같은 호스트의 다른 포트에서 도는 서비스의
+        # 페이지가 보낸 GET 에도 실려 가기 때문이다. 헤더가 없는 curl·스크립트와 정적 페이지(/)는 영향이 없다.
+        gets = {}
+        for name, hdr in [("cross-site", {"Origin": "http://evil.example", "Sec-Fetch-Site": "cross-site"}),
+                          ("same-site(다른 포트)", {"Sec-Fetch-Site": "same-site"}),
+                          ("다른 포트 Origin", {"Origin": f"http://127.0.0.1:{int(P) + 1}"})]:
+            gets[name] = (req(port, "GET", "/api/sandbox/status", hdr)[0], req(port, "GET", "/api/debug/output?clear=true", hdr)[0])
+        check("GET API 도 다른 출처·다른 포트에서는 403", all(v == (403, 403) for v in gets.values()), str(gets))
+        okg = [req(port, "GET", "/api/sandbox/status", h)[0] for h in ({}, same, {"Sec-Fetch-Site": "none"})]
+        check("GET API 는 같은 출처·헤더 없음·none 이면 통과", okg == [200, 200, 200], str(okg))
+        st, _ = req(port, "GET", "/", {"Origin": "http://evil.example", "Sec-Fetch-Site": "cross-site"})
+        check("정적 페이지(/)는 다른 출처에서도 열림(API 가 아님)", st == 200, f"{st}")
 
         # ---- 보안 헤더·문서·중복 헤더·스킴 ----
         st, _ = req(port, "GET", "/")
@@ -207,6 +389,9 @@ def main():
             proc.kill()
         shutil.rmtree(data, ignore_errors=True)
     token_section()
+    upload_limit_section()
+    unhandled_section()
+    bad_token_env_section()
     w = max(len(n) for n, _, _ in RESULTS)
     bad = 0
     for n, s, d in RESULTS:

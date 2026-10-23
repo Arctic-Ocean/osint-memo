@@ -5,11 +5,36 @@
 from __future__ import annotations
 
 import hashlib
+import itertools
 import os
 
 import lief
 
 from .model import BinaryModel, Section, Symbol, Function
+
+
+# ---- 이름 정규화 ---------------------------------------------------------
+
+def _s(v) -> str:
+    """lief 가 돌려주는 이름을 항상 JSON·SQLite 로 내보낼 수 있는 str 로 만든다. 올바른 UTF-8 이 아닌 이름(레거시 코드페이지 도구가
+    만든 한글 심볼 등)은 lief 가 bytes 로 주기도 한다: UTF-8 → CP949 → 대체 문자 순으로 해석한다."""
+    if v is None:
+        return ""
+    if isinstance(v, (bytes, bytearray)):
+        b = bytes(v)
+        for enc in ("utf-8", "cp949"):
+            try:
+                return b.decode(enc)
+            except UnicodeDecodeError:
+                continue
+        return b.decode("utf-8", "replace")
+    if not isinstance(v, str):
+        v = str(v)
+    try:
+        v.encode("utf-8")
+        return v
+    except UnicodeEncodeError:                         # 짝 없는 서로게이트(surrogateescape 로 읽힌 바이트)
+        return _s(v.encode("utf-8", "surrogateescape"))
 
 
 # ---- 아키텍처 판별 -------------------------------------------------------
@@ -104,7 +129,7 @@ def _pe_section_perms(s) -> tuple[bool, bool, bool]:
 
 
 def _macho_section_perms(s) -> tuple[bool, bool, bool]:
-    name = (s.name or "").lower()
+    name = _s(s.name).lower()
     return True, False, "text" in name or "stub" in name
 
 
@@ -167,7 +192,7 @@ def load(path: str) -> tuple[BinaryModel, bytes, object]:
             va = 0
         r, w, x = perms_fn(s)
         model.sections.append(Section(
-            name=s.name or "",
+            name=_s(s.name),
             vaddr=va,
             size=int(getattr(s, "size", 0) or getattr(s, "virtual_size", 0) or 0),
             offset=int(getattr(s, "offset", 0) or 0),
@@ -184,17 +209,17 @@ def load(path: str) -> tuple[BinaryModel, bytes, object]:
         seen.add(addr)
         model.functions.append(Function(
             vaddr=addr,
-            name=f.name or "",
+            name=_s(f.name),
             size=int(getattr(f, "size", 0) or 0),
         ))
 
-    # 심볼
-    for s in b.symbols:
+    # 심볼. lief 의 통합 `Binary.symbols` 는 심볼 수의 제곱에 비례해 느려지므로(심볼 32만 개에 1분) ELF 는 동적·정적 표를 따로 읽는다.
+    for s in _iter_symbols(b, fmt):
         try:
             val = int(getattr(s, "value", 0) or 0)
         except Exception:
             val = 0
-        name = s.name or ""
+        name = _s(s.name)
         if not name:
             continue
         is_imp = (val == 0)
@@ -229,27 +254,37 @@ def load(path: str) -> tuple[BinaryModel, bytes, object]:
     return model, raw, b
 
 
+def _iter_symbols(b, fmt: str):
+    if fmt == "ELF":
+        try:
+            dyn, st = b.dynamic_symbols, b.symtab_symbols
+            return itertools.chain(dyn, st)
+        except Exception:                                  # noqa: BLE001  구버전 lief
+            pass
+    return b.symbols
+
+
 def _collect_imports_exports(b, fmt: str, model: BinaryModel) -> None:
     if fmt == "ELF":
         try:
             for f in b.imported_functions:
-                model.imports.append(Symbol(name=f.name, vaddr=int(getattr(f, "value", 0) or 0),
+                model.imports.append(Symbol(name=_s(f.name), vaddr=int(getattr(f, "value", 0) or 0),
                                             kind="func", is_import=True))
         except Exception:
             pass
         try:
             for f in b.exported_functions:
-                model.exports.append(Symbol(name=f.name, vaddr=int(getattr(f, "address", 0) or 0),
+                model.exports.append(Symbol(name=_s(f.name), vaddr=int(getattr(f, "address", 0) or 0),
                                             kind="func"))
         except Exception:
             pass
     elif fmt == "PE":
         try:
             for imp in b.imports:
-                lib = imp.name or ""
+                lib = _s(imp.name)
                 for e in imp.entries:
                     model.imports.append(Symbol(
-                        name=e.name or f"ordinal_{getattr(e,'ordinal','?')}",
+                        name=_s(e.name) or f"ordinal_{getattr(e,'ordinal','?')}",
                         vaddr=int(getattr(e, "iat_address", 0) or 0),
                         kind="func", is_import=True, library=lib))
         except Exception:
@@ -259,7 +294,7 @@ def _collect_imports_exports(b, fmt: str, model: BinaryModel) -> None:
                 base = model.image_base
                 for e in b.get_export().entries:
                     model.exports.append(Symbol(
-                        name=e.name or f"ordinal_{e.ordinal}",
+                        name=_s(e.name) or f"ordinal_{e.ordinal}",
                         vaddr=base + int(getattr(e, "address", 0) or 0),
                         kind="func"))
         except Exception:
@@ -267,12 +302,12 @@ def _collect_imports_exports(b, fmt: str, model: BinaryModel) -> None:
     elif fmt == "MACHO":
         try:
             for f in b.imported_functions:
-                model.imports.append(Symbol(name=f.name, vaddr=0, kind="func", is_import=True))
+                model.imports.append(Symbol(name=_s(f.name), vaddr=0, kind="func", is_import=True))
         except Exception:
             pass
         try:
             for f in b.exported_functions:
-                model.exports.append(Symbol(name=f.name, vaddr=int(getattr(f, "address", 0) or 0),
+                model.exports.append(Symbol(name=_s(f.name), vaddr=int(getattr(f, "address", 0) or 0),
                                             kind="func"))
         except Exception:
             pass

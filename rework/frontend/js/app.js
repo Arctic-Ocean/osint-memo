@@ -780,6 +780,8 @@ const DBG_TAB = "__debugger__";
 let dbgPoll = null;
 
 // ---- 격리 실행(샌드박스) 설정 ------------------------------------------
+const SBX_DEFAULTS = { network: "none", memory_mb: 2048, cpu_seconds: 600, cpu_total_seconds: 1800,
+                       wall_seconds: 0, max_processes: 256, extra_ro: [] };
 async function loadSandbox(recheck = false) {
   try {
     S.sbx = recheck ? await api.sandboxRecheck() : await api.sandboxStatus();
@@ -787,6 +789,8 @@ async function loadSandbox(recheck = false) {
   } catch (e) { S.sbx = { error: e.message }; }
   if (S.sideView === "debug" && !S.dbg.active) renderDebugSidebar();
 }
+// 격리 상태를 아직 모르거나(불러오는 중·실패) 확인하지 못한 동안에는 저장된 설정 대신 기본값을 보내지 않도록 시작을 막는다
+function sbxKnown() { return !!(S.sbx && !S.sbx.error); }
 function sbxFormFrom(p) {
   return { network: p.network, memory_mb: p.memory_mb, cpu_seconds: p.cpu_seconds, cpu_total_seconds: p.cpu_total_seconds,
            wall_seconds: p.wall_seconds, max_processes: p.max_processes, extra_ro: (p.extra_ro || []).join("\n") };
@@ -826,7 +830,11 @@ function sandboxCard() {
   const box = el("div", { class: "sbx" });
   const sb = S.sbx;
   if (!sb) { box.append(el("div", { class: "sbx-note" }, "격리 상태 확인 중…")); return box; }
-  if (sb.error) { box.append(el("div", { class: "dbg-warn", style: "margin:0" }, "격리 상태를 확인하지 못했습니다: " + sb.error)); return box; }
+  if (sb.error) {
+    box.append(el("div", { class: "dbg-warn", style: "margin:0" }, "격리 상태를 확인하지 못했습니다: " + sb.error),
+      el("button", { class: "mini-btn wide", style: "margin-top:6px", onclick: () => { S.sbx = null; loadSandbox(true); renderDebugSidebar(); } }, "↻ 다시 확인"));
+    return box;
+  }
   const ok = sb.status.available;
   const f = S.sbxForm;
   box.append(el("div", { class: "sbx-head" }, el("b", {}, "격리 실행"),
@@ -900,13 +908,19 @@ function renderDebugSidebar() {
   const d = S.dbg;
   if (!d.active) {
     if (!S.sbx) loadSandbox();
+    if (!S.sbxForm) S.sbxForm = sbxFormFrom(SBX_DEFAULTS);
     const unavailable = S.sbx && !S.sbx.error && !S.sbx.status.available;
+    const unknown = !sbxKnown() && !S.sbxOff;                 // 상태를 불러오는 중이거나 실패했다
+    if (d.endedInfo) {                                         // 이전 세션이 우리가 멈춘 것이 아니라 스스로 끝났다 — 이유를 남겨 둔다
+      body.append(el("div", { class: "dbg-warn" }, el("b", {}, "이전 디버그 세션이 종료되었습니다. "), d.endedInfo.reason,
+        el("div", { class: "sbx-sub" }, "마지막 출력은 하단 ‘디버그 콘솔’에 남아 있습니다. 다시 시작하면 지워집니다.")));
+    }
     if (S.sbxOff || unavailable) {
       body.append(el("div", { class: "dbg-warn" },
         "⚠ 디버깅은 대상 바이너리를 이 컴퓨터에서 실제로 실행합니다. " +
         (unavailable && !S.sbxOff ? "지금은 격리를 쓸 수 없어 시작할 수 없습니다. 아래 안내를 따르거나 신뢰하는 파일에 한해 ‘비격리’를 선택하세요."
                                   : "신뢰할 수 없는 파일은 격리 실행으로 여세요.")));
-    } else {
+    } else if (!unknown) {
       body.append(el("div", { class: "dbg-safe" },
         "🔒 대상 프로그램은 격리된 환경(네트워크 차단·읽기 전용 파일시스템)에서 실행됩니다."));
     }
@@ -916,7 +930,7 @@ function renderDebugSidebar() {
     const args = el("input", { id: "dbg-args", type: "text", placeholder: "예: input.bin --verbose" });
     wrap.append(args);
     wrap.append(el("button", { class: "primary", style: "margin-top:8px;width:100%",
-      ...(unavailable && !S.sbxOff ? { disabled: "" } : {}),
+      ...((unavailable || unknown) && !S.sbxOff ? { disabled: "" } : {}),
       onclick: () => dbgStart() }, S.sbxOff ? "⚠ 격리 없이 시작" : "▶ 디버깅 시작"));
     wrap.append(el("div", { class: "dbg-hint" },
       "시작하면 main에 중단점이 설정됩니다. 입력이 필요한 프로그램은 하단 ‘디버그 콘솔’의 입력창으로 보내거나, 실행 인자에 `< 파일`을 쓰세요(격리에서는 그 파일의 폴더를 ‘추가 경로’에 넣어야 합니다)."));
@@ -933,10 +947,8 @@ function renderDebugSidebar() {
     st.status === "exited" && st.exit_code != null ? el("span", {}, ` · 종료코드 ${st.exit_code}`) : null,
     st.sandbox ? el("span", {}, " ") : null, sandboxBadge(st.sandbox));
   body.append(sline);
-  if (st.stop_reason === "debugger-died") body.append(el("div", { class: "dbg-warn" },
-    "⚠ 디버거(gdb)가 대상 종료 보고 없이 사라졌습니다. 대상이 디버거를 죽이려 했거나(분석 방해) 디버거가 비정상 종료한 것일 수 있습니다."));
-  if (st.status === "exited" && st.sandbox_live > 2) body.append(el("div", { class: "dbg-warn" },
-    `프로그램은 끝났지만 샌드박스 안에 프로세스가 ${st.sandbox_live - 2}개 남아 있습니다(데몬·자식). ⏹ 정지로 모두 종료됩니다.`));
+  if (st.status === "exited" && st.sandbox_leftover > 0) body.append(el("div", { class: "dbg-warn" },
+    `프로그램은 끝났지만 샌드박스 안에 프로세스가 ${st.sandbox_leftover}개 남아 있습니다(데몬·자식). ⏹ 정지로 모두 종료됩니다.`));
   if (st.sandbox && !st.sandbox.enabled) body.append(el("div", { class: "dbg-warn" },
     "⚠ 이 세션은 격리 없이 실행 중입니다. 대상이 이 컴퓨터의 파일·네트워크에 그대로 접근할 수 있습니다."));
   if (st.sandbox && st.sandbox.enabled) {
@@ -967,6 +979,8 @@ function renderDebugSidebar() {
       el("span", { class: "li-addr" }, f.level), el("span", { class: "li-name" }, f.func || f.addr),
       f.line ? el("span", { class: "li-sub" }, `:${f.line}`) : null));
   }
+  if (d.stackTruncated) body.append(el("div", { class: "empty-list", style: "padding:4px 12px" },
+    `… 위쪽 ${d.stack.length}개 프레임만 표시합니다(스택이 매우 깊습니다 — 무한 재귀일 수 있습니다).`));
   // 중단점
   const bhead = el("div", { class: "side-head" }, "중단점",
     el("button", { class: "mini-btn", title: "함수/위치로 추가", onclick: dbgAddBreakPrompt }, "+"));
@@ -993,6 +1007,11 @@ async function dbgStart() {
   try { sandbox = sbxPayload(); } catch (e) { toast(e.message, "err"); dbgStarting = false; return; }
   if (S.sbxOff && !confirm("격리 없이 시작합니다.\n\n이 파일이 악성코드라면 이 컴퓨터의 파일 삭제·정보 유출·네트워크 공격이 실제로 일어날 수 있습니다.\n신뢰하는 파일일 때만 계속하세요. 계속할까요?")) {
     dbgStarting = false; return;
+  }
+  if (S.dbg.endedInfo) {                     // 지난 세션의 종료 사유·콘솔을 치운다(비격리 선택은 이번 시작에 필요하니 유지)
+    const off = S.sbxOff, noGuard = S.sbxNoGuard;
+    dbgReset();
+    S.sbxOff = off; S.sbxNoGuard = noGuard;
   }
   setMsg("디버거 시작 중…");
   try {
@@ -1025,7 +1044,8 @@ function dbgReset() {
   stopDbgPoll();
   S.sbxOff = false;                                  // 비격리는 한 세션에만 유효하다
   S.sbxNoGuard = false;
-  S.dbg = { active: false, state: null, regs: [], prevRegs: {}, stack: [], locals: [], breaks: [], disasm: [] };
+  S.dbg = { active: false, state: null, regs: [], prevRegs: {}, stack: [], locals: [], breaks: [], disasm: [],
+            stackTruncated: false, endedInfo: null };
   const dc = $("#panel-debugcon");                  // 다음 세션에서 콘솔 패널을 처음부터 다시 그리게 한다
   if (dc) { dc.dataset.rendered = ""; dc.innerHTML = ""; }
   stdinHistPos = -1;
@@ -1038,8 +1058,27 @@ async function dbgStop() {
   setMsg("디버깅 종료");
 }
 // 서버 쪽 세션이 사라졌거나 gdb가 죽은 경우
-function dbgEnded() {
+async function dbgEnded(state) {
   const was = S.dbg.active;
+  if (!was) return;                                 // 이미 처리됨(겹친 폴링·갱신이 같은 종료를 또 알려도 남겨 둔 종료 사유를 지우지 않는다)
+  const reason = state && state.end_reason;
+  if (was && reason) {
+    // 서버가 한도·디버거 사망으로 세션을 끝냈다: 이유와 마지막 출력을 지우지 않고 남긴다(토스트만으로는 놓치기 쉽다)
+    stopDbgPoll();
+    S.dbg.active = false;                           // 이후 폴링·갱신이 겹쳐 같은 처리를 반복하지 않게 먼저 내린다
+    let log = "";
+    try { log = (await api.dbgOutput(false)).merged || ""; } catch {}
+    const sbxOff = S.sbxOff, noGuard = S.sbxNoGuard;
+    dbgReset();
+    S.sbxOff = sbxOff; S.sbxNoGuard = noGuard;
+    S.dbg.endedInfo = { reason, log };
+    showPanel("debugcon"); growBottomForConsole();
+    renderDebugConsolePanel();
+    if (S.sideView === "debug") renderDebugSidebar();
+    setMsg("");
+    toast("디버그 세션 종료: " + reason, "err");
+    return;
+  }
   dbgReset();
   if (was) toast("디버그 세션이 종료되었습니다.", "err");
 }
@@ -1066,7 +1105,7 @@ async function dbgDo(action) {
   try {
     const r = await api.dbgExec(action, S.dbg.argsCache || "");
     settled = true; clearTimeout(early);
-    if (r.state.alive === false) { dbgEnded(); return; }     // gdb 가 죽은 것이지 프로그램이 끝난 것이 아니다
+    if (r.state.alive === false) { dbgEnded(r.state); return; }     // gdb 가 죽은 것이지 프로그램이 끝난 것이 아니다
     S.dbg.state = r.state;
     await dbgRefresh();
     if (r.state.status === "running") startDbgPoll();
@@ -1089,7 +1128,7 @@ function startDbgPoll() {
     dbgPollBusy = true;
     try {
       const r = await api.dbgState();
-      if (r.state.status === "none" || r.state.alive === false) { dbgEnded(); return; }
+      if (r.state.status === "none" || r.state.alive === false) { dbgEnded(r.state); return; }
       if (r.state.status !== "running") { stopDbgPoll(); await dbgRefresh(); }
       else { await dbgRefreshOutput(); }
     } catch { stopDbgPoll(); }
@@ -1101,8 +1140,14 @@ function stopDbgPoll() { if (dbgPoll) { clearInterval(dbgPoll); dbgPoll = null; 
 async function dbgRefresh() {
   try {
     const s = await api.dbgState();
-    if (s.state.status === "none" || s.state.alive === false) { dbgEnded(); return; }
+    if (s.state.status === "none" || s.state.alive === false) { dbgEnded(s.state); return; }
     S.dbg.state = s.state;
+    if (s.state.status !== "exited") S.dbg.leftoverRecheck = false;
+    else if (s.state.sandbox_leftover > 0 && !S.dbg.leftoverRecheck) {
+      // 막 끝난 대상이 남긴 데몬은 아직 자식을 만드는 중일 수 있어 한 번 더 세어 표시를 바로잡는다
+      S.dbg.leftoverRecheck = true;
+      setTimeout(() => { if (S.dbg.active) dbgRefresh(); }, 1200);
+    }
     if (s.state.status === "stopped") {
       const [regs, stack, locals, breaks, dis] = await Promise.all([
         api.dbgRegs().catch(() => ({ registers: [] })),
@@ -1114,6 +1159,7 @@ async function dbgRefresh() {
       S.dbg.prevRegs = {}; for (const r of S.dbg.regs) S.dbg.prevRegs[r.name] = r.value;
       S.dbg.regs = regs.registers || [];
       S.dbg.stack = stack.stack || [];
+      S.dbg.stackTruncated = !!stack.truncated;
       S.dbg.locals = locals.variables || [];
       S.dbg.breaks = Array.isArray(breaks) ? breaks : [];
       S.dbg.disasm = dis.instructions || [];
@@ -1261,7 +1307,14 @@ function renderDebugConsolePanel() {
   stdinHistPos = -1;                 // 새로 그린 입력창은 비어 있으므로 기록 위치도 처음으로
   panel.innerHTML = "";
   panel.dataset.rendered = "1";
-  if (!S.dbg.active) { panel.append(el("div", { class: "empty-list" }, "디버그 세션이 없습니다.")); panel.dataset.rendered = ""; return; }
+  if (!S.dbg.active) {
+    if (S.dbg.endedInfo) {                          // 세션이 스스로 끝난 경우: 종료 사유와 마지막 출력을 보여 준다
+      panel.append(el("div", { class: "dbg-warn", style: "margin:6px" }, el("b", {}, "세션 종료: "), S.dbg.endedInfo.reason),
+        el("pre", { id: "dbgcon-ended", class: "dbgcon-out" }, S.dbg.endedInfo.log));
+      const pre = panel.querySelector("#dbgcon-ended"); if (pre) pre.scrollTop = pre.scrollHeight;
+    } else panel.append(el("div", { class: "empty-list" }, "디버그 세션이 없습니다."));
+    panel.dataset.rendered = ""; return;
+  }
   const pre = el("pre", { id: "dbgcon-out", class: "dbgcon-out" });
   panel.append(pre);
 

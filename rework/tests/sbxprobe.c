@@ -64,6 +64,13 @@ static int count_pids(void) {
     return n;
 }
 
+static int deep(int n) {
+    volatile char pad[64];
+    pad[0] = (char)n;
+    if (n <= 0) { raise(SIGTRAP); return pad[0]; }
+    return deep(n - 1) + pad[0];
+}
+
 int main(int argc, char **argv) {
     const char *mode = argc > 1 ? argv[1] : "";
     setvbuf(stdout, NULL, _IOLBF, 0);
@@ -333,6 +340,14 @@ int main(int argc, char **argv) {
         printf("kill1[%d]=%s\n", sig, r ? strerror(errno) : "SENT");
         sleep(30);
         return 0;
+    }
+    if (!strcmp(mode, "deep")) {                     /* N 단계 재귀한 뒤 SIGTRAP 으로 멈춘다(아주 깊은 스택) */
+        int n = argc > 2 ? atoi(argv[2]) : 20000;
+        printf("deep=%d\n", n); fflush(stdout);
+        return deep(n);
+    }
+    if (!strcmp(mode, "gdbburn")) {                  /* 가만히 살아 있기만 한다(gdb 쪽에서 CPU 를 태우는 시험용) */
+        printf("alive\n"); fflush(stdout); sleep(1000); return 0;
     }
     if (!strcmp(mode, "cpuburst")) {                 /* 아주 짧게 사는 자식을 계속 만들어 CPU 를 태운다(표본 사이에 숨으려는 시도) */
         int ms = argc > 2 ? atoi(argv[2]) : 40;

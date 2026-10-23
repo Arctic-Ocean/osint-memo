@@ -10,9 +10,12 @@
 """
 from __future__ import annotations
 
+import bisect
 import re
 
 # ---- 산술/논리 2항 연산 매핑 (Intel mnemonic -> C 연산자) ----------------
+MAX_DECOMPILE_INSNS = 20000       # 이보다 큰 함수는 의사코드를 만들지 않는다(시간이 함수 크기에 따라 급격히 늘어난다)
+
 _BINOP = {
     "add": "+", "sub": "-", "and": "&", "or": "|", "xor": "^",
     "shl": "<<", "sal": "<<", "shr": ">>", "sar": ">>",
@@ -95,6 +98,12 @@ class Decompiler:
             return {"addr": addr, "name": name, "signature": f"{name}()",
                     "lines": lines, "note": "x86/x64만 의사코드를 생성합니다."}
 
+        if len(insns) > MAX_DECOMPILE_INSNS:
+            # 기본블록 계획·방출은 함수 크기에 따라 급격히 느려진다: 병적으로 큰 함수는 의사코드를 만들지 않고 알린다
+            lines = [{"addr": addr, "indent": 0, "kind": "comment",
+                      "text": f"/* 함수가 너무 커서({len(insns)}개 명령어 > {MAX_DECOMPILE_INSNS}) 의사코드를 만들지 않습니다 — 디스어셈블리 보기를 쓰세요 */"}]
+            return {"addr": addr, "name": name, "signature": f"{name}()", "lines": lines, "variables": [],
+                    "note": "너무 큰 함수라 의사코드를 생략했습니다."}
         blocks = self._basic_blocks(insns)
         lines = self._emit(name, blocks, insns)
         variables = [{"slot": s, "name": self._varmap.get(s, s)}
@@ -135,7 +144,7 @@ class Decompiler:
         blocks = []
         for bi, start in enumerate(leaders):
             end = leaders[bi + 1] if bi + 1 < len(leaders) else hi
-            body = [i for i in insns if start <= i["addr"] < end]
+            body = insns[bisect.bisect_left(addrs, start):bisect.bisect_left(addrs, end)]
             if not body:
                 continue
             last = body[-1]

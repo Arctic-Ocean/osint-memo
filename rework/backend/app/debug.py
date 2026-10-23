@@ -331,6 +331,7 @@ def parse_mi_results(s: str) -> dict:
 
 LOG_LIMIT_CHARS = 2_000_000        # 로그 버퍼(대상 출력·gdb 콘솔·섞은 로그)마다 보관하는 최대 글자 수
 LOG_TAIL_CHARS = 262_144           # API 가 한 번에 돌려주는 최대 글자 수(JSON 이스케이프로 최대 6배까지 부풀 수 있다)
+STACK_FRAMES_MAX = 256               # 콜 스택 패널에 보여 줄 최대 프레임 수(그 아래는 생략)
 MI_LINE_MAX = 1 << 20              # gdb 가 보내는 한 줄의 최대 길이(넘으면 그 줄은 버린다)
 
 
@@ -400,6 +401,8 @@ class DebugSession:
         self._console_abs = 0           # 지금까지 콘솔에 쌓인 글자 수(앞부분이 잘려도 증가분을 구하려는 용도)
         self._gdb_in_fd = None          # gdb 의 stdin 파이프(논블로킹)
         self._diag: list = []           # gdb·bwrap 이 MI 가 아닌 형식으로 낸 줄(시작 실패 원인 진단용, 최대 20줄)
+        self.end_reason = None          # 세션이 '우리 의지와 무관하게' 끝난 이유(총량 한도·실행 시간·디버거 사망). 화면에 남겨 보여 준다
+        self._stack_truncated = False
         self._inferior_exited = False   # 대상이 끝났다는 *stopped,exited 를 gdb 로부터 받았는가
         self._logl = threading.Lock()
         self.events = []                # 최근 비동기 이벤트 로그
@@ -415,13 +418,6 @@ class DebugSession:
 
     # ---- 수명 ----------------------------------------------------------
     def start(self):
-        # 디버깅은 대상을 실행하므로 소유자 실행 비트를 보장한다
-        # (업로드 사본은 0644로 저장돼 실행 권한이 없을 수 있음).
-        try:
-            st = os.stat(self.path)
-            os.chmod(self.path, st.st_mode | 0o100)
-        except Exception:
-            pass
         master, slave = pty.openpty()
         # 대상이 입력을 읽지 않을 때 쓰기가 서버 스레드를 붙들지 않도록 논블로킹으로 둔다
         fcntl.fcntl(master, fcntl.F_SETFL, fcntl.fcntl(master, fcntl.F_GETFL) | os.O_NONBLOCK)
@@ -458,6 +454,13 @@ class DebugSession:
             else:
                 sbx = _sandbox_mod()
                 self.sandbox_info = sbx.describe(sbx.SandboxPolicy(mode="off"))
+                # 비격리는 원본을 그대로 실행하므로 소유자 실행 비트를 보장한다(업로드 사본은 0644 라 실행 권한이 없을 수 있음).
+                # 격리 실행은 실행 가능한 복사본을 따로 만들기 때문에 원본의 권한을 건드리지 않는다.
+                try:
+                    st = os.stat(self.path)
+                    os.chmod(self.path, st.st_mode | 0o100)
+                except Exception:
+                    pass
                 argv, extra = ["gdb"] + gdb_args + [self.path], {}
             try:
                 self.proc = _SPAWNER.call(lambda: subprocess.Popen(
@@ -477,7 +480,7 @@ class DebugSession:
                 self._gdb_in_fd = None
             if launch is not None:
                 # cgroup 에 넣고 샌드박스를 풀어 주고, 네임스페이스를 붙들고, 총량 감시를 시작한다
-                launch.attach(self.proc, on_limit=self._limit_exceeded)
+                launch.attach(self.proc, on_limit=self._limit_exceeded, on_kill=self._target_killed)
             self._alive = True
             _LIVE_SESSIONS.add(self)
             self._reader = threading.Thread(target=self._read_loop, daemon=True)
@@ -516,11 +519,17 @@ class DebugSession:
 
     def _limit_exceeded(self, reason: str):
         """감시 스레드가 총량 한도 초과를 알렸다."""
+        self.end_reason = f"{reason}을 넘어 세션이 종료되었습니다."
         self._log_merged(f"\n[샌드박스] {reason}을 넘어 세션을 종료합니다.\n")
         self.stop()
 
+    def _target_killed(self, pid: int, reason: str):
+        """감시 스레드가 한도를 넘은 대상 프로세스 하나를 죽였다(세션은 계속된다)."""
+        self._log_merged(f"\n[샌드박스] 대상 프로세스가 {reason}을 넘어 종료되었습니다.\n")
+
     def _wall_expired(self):
         """격리 정책의 실행 시간 제한을 넘으면 세션을 끝낸다."""
+        self.end_reason = f"실행 시간 제한({self.sandbox_policy.wall_seconds}초)을 넘어 세션이 종료되었습니다."
         self._log_merged(f"\n[샌드박스] 실행 시간 제한({self.sandbox_policy.wall_seconds}초)을 넘어 종료합니다.\n")
         self.stop()
 
@@ -638,6 +647,7 @@ class DebugSession:
                             rest = self.proc.stdout.readline(MI_LINE_MAX)
                             if rest == "" or rest.endswith("\n"):
                                 break
+                        self._fail_oversized(line)   # 기다리던 명령이 있으면 시간 초과를 기다리지 않고 바로 실패시킨다
                         continue
                 except Exception:
                     break
@@ -653,12 +663,22 @@ class DebugSession:
         finally:
             self._alive = False
             died = (not self._inferior_exited) and (not self._closing) and self.status in ("loaded", "running", "stopped")
-            if died and self._launch is not None:
-                # 대상이 끝났다는 보고 없이 gdb 가 사라졌다 — 대상이 gdb 에 신호를 보내 죽였거나 gdb 가 비정상 종료한 것이다.
-                # 정상 종료와 구분해서 알린다(분석을 방해하려는 시도일 수 있다).
+            if died:
                 self.last_stop = {"reason": "debugger-died"}
-                self._log_merged("\n[샌드박스] 디버거(gdb)가 대상 종료 보고 없이 사라졌습니다 — 대상이 디버거를 죽이려 했거나 "
-                                 "디버거가 비정상 종료한 것일 수 있습니다.\n")
+                if self._launch is not None:
+                    # 대상이 끝났다는 보고 없이 gdb 가 사라졌다 — 대상이 gdb 에 신호를 보내 죽였거나 gdb 가 비정상 종료한 것이다.
+                    # 정상 종료와 구분해서 알린다(분석을 방해하려는 시도일 수 있다).
+                    w = self._launch.watch
+                    gdb_cpu = w.gdb_cpu_seconds if w is not None else 0.0
+                    if self._launch.cpu_backstop and gdb_cpu >= self._launch.cpu_backstop * 0.95:
+                        self.end_reason = (f"디버거(gdb) 자신의 CPU 시간이 받침 한도({self._launch.cpu_backstop}초)에 이르러 "
+                                           "커널이 종료했습니다. 다시 시작하세요.")
+                    else:
+                        self.end_reason = ("디버거(gdb)가 대상 종료 보고 없이 사라졌습니다. 대상이 디버거를 죽이려 했거나(분석 방해) "
+                                           "디버거가 비정상 종료한 것일 수 있습니다.")
+                else:
+                    self.end_reason = "디버거(gdb)가 대상 종료 보고 없이 비정상 종료했습니다."
+                self._log_merged(f"\n[{'샌드박스' if self._launch is not None else '디버거'}] {self.end_reason}\n")
             # gdb가 끝났으면 디버깅도 끝난 것이다(status가 running에 고착되지 않게)
             if self.status in ("loaded", "running", "stopped"):
                 self.status = "exited"
@@ -672,10 +692,24 @@ class DebugSession:
             with self._plock:
                 pending = list(self._pending.values())
                 self._pending.clear()
+            why = "; ".join(l for l in self._diag[-3:] if l)          # bwrap·gdb 가 남긴 마지막 오류(시작 실패의 진짜 이유)
             for slot in pending:
-                slot["result"] = {"class": "error", "results": {"msg": "gdb 종료됨"}}
+                slot["result"] = {"class": "error", "results": {"msg": "gdb 종료됨" + (f" ({why})" if why else "")}}
                 slot["event"].set()
             self._stopped_ev.set()
+
+    def _fail_oversized(self, head: str):
+        """한도(MI_LINE_MAX)를 넘는 응답 줄을 버렸다. 줄 머리의 토큰으로 기다리던 명령을 찾아 즉시 실패시킨다."""
+        i = 0
+        while i < len(head) and head[i].isdigit():
+            i += 1
+        if not i:
+            return
+        with self._plock:
+            slot = self._pending.pop(head[:i], None)
+        if slot is not None:
+            slot["result"] = {"class": "error", "results": {"msg": "응답이 너무 커서 버렸습니다(1MiB 초과)"}}
+            slot["event"].set()
 
     def _pty_loop(self, master):
         # read() 청크 경계에서 멀티바이트 문자(한글)가 잘려도 깨지지 않도록 증분 디코더를 쓴다
@@ -741,6 +775,8 @@ class DebugSession:
             if kind == "@":
                 self._push("target", self.target_out, val)
                 self._log_merged(val)
+            elif self._launch is not None and "opening /proc/self/mem file failed" in val:
+                return        # 격리에서 gdb 를 덤프 불가로 만든 결과로 매번 나오는 무해한 경고(ptrace 로 메모리를 읽는다) — 콘솔에 싣지 않는다
             else:
                 self._push("console", self.console, val)
                 self._console_abs += len(val)
@@ -967,7 +1003,10 @@ class DebugSession:
         return out
 
     def stack(self) -> list:
-        frames = self._send("-stack-list-frames").get("results", {}).get("stack", [])
+        # 아주 깊은 스택(무한 재귀)은 한 줄이 MI_LINE_MAX 를 넘을 수 있으므로 위쪽 STACK_FRAMES_MAX 개만 요청한다
+        frames = self._send(f"-stack-list-frames 0 {STACK_FRAMES_MAX}").get("results", {}).get("stack", [])
+        self._stack_truncated = len(frames) > STACK_FRAMES_MAX
+        frames = frames[:STACK_FRAMES_MAX]
         out = []
         for f in frames:
             if isinstance(f, dict):
@@ -1163,6 +1202,9 @@ class DebugSession:
             "pid": proc.pid if proc else None,
             "sandbox": self.sandbox_info,
             "sandbox_live": self._sandbox_live(),
+            "sandbox_leftover": self._sandbox_leftover(ls),
+            "end_reason": self.end_reason,
+            "stack_truncated": self._stack_truncated,
         }
 
     def _sandbox_live(self):
@@ -1170,6 +1212,17 @@ class DebugSession:
         launch = self._launch
         w = launch.watch if launch is not None else None
         return w.live_count if w is not None else None
+
+    def _sandbox_leftover(self, ls):
+        """대상이 끝난 뒤에도 샌드박스 안에 남은(데몬·자식) 프로세스 수 — 끝난 시점에 새로 센다. 해당 없으면 None.
+        감시 스레드의 마지막 표본은 대상이 막 끝나기 직전의 값일 수 있어 쓰지 않는다."""
+        launch = self._launch
+        if launch is None or self.status != "exited" or not self._alive:
+            return None
+        try:
+            return launch.leftover()
+        except Exception:                                  # noqa: BLE001
+            return None
 
     def _push(self, name: str, buf: list, text: str):
         """로그 버퍼에 덧붙이되 글자 수를 한도 안으로 유지한다(출력 폭주가 서버 메모리를 먹지 못하게)."""
