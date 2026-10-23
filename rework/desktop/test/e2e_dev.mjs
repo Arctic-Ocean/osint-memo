@@ -53,6 +53,7 @@ const demo = path.join(repo, 'samples', 'demo_elf');
 const app = await electron.launch({ executablePath: electronBin, args: ['--no-sandbox', desktop, '--dev'], env, timeout: 60000 });
 const page = await app.firstWindow();
 const errs = [];
+page.on('dialog', () => {});          // 저장 안 한 변경 확인(beforeunload)은 Electron 셸이 직접 처리한다 — Playwright 가 대신 닫지 않게 리스너만 둔다
 page.on('pageerror', (e) => errs.push('PAGEERROR ' + e.message));
 page.on('console', (m) => { if (/Content Security Policy|Refused to/i.test(m.text()) && !/JavaScript URL/.test(m.text())) errs.push('CSP ' + m.text().slice(0, 160)); });
 let port = null;
@@ -81,7 +82,38 @@ try {
   const iso = await page.evaluate(() => ({ req: typeof window.require, proc: typeof window.process, mod: typeof window.module,
     desk: window.reworkDesktop ? Object.keys(window.reworkDesktop).sort().join(',') : null, shell: typeof window.reworkShell }));
   check('3. 렌더러에 Node 가 없고 최소 API 만 노출', iso.req === 'undefined' && iso.proc === 'undefined' && iso.mod === 'undefined'
-    && iso.desk === 'backendPath,isDesktop,onOpenPath,pathForFile,platform' && iso.shell === 'undefined', JSON.stringify(iso));
+    && iso.desk === 'backendPath,isDesktop,onOpenFolder,onOpenPath,pathForFile,platform' && iso.shell === 'undefined', JSON.stringify(iso));
+
+  // ---- 3b. 작업 폴더 열기(메뉴·IPC) → 탐색기·Monaco 편집·저장, 저장 안 한 변경이 있으면 종료 전에 묻는다 ----
+  const work = path.join(tmp, 'work');
+  fs.mkdirSync(path.join(work, 'src'), { recursive: true });
+  fs.writeFileSync(path.join(work, 'src', 'hello.c'), 'int main(void) {\n    return 0;\n}\n');
+  await app.evaluate(({ BrowserWindow }, p) => { BrowserWindow.getAllWindows()[0].webContents.send('rework:open-folder', p); }, work);
+  const treeUp = await waitFor(async () => { const t = await page.$eval('#side-body', (e) => e.textContent).catch(() => ''); return /work/.test(t) && /src/.test(t) ? t : null; }, 20000);
+  check('3b. 폴더 열기 신호가 오면 탐색기에 작업 폴더가 열림', !!treeUp, (treeUp || '').slice(0, 60));
+  // (막힌 탐색 시험인 4번보다 앞에 둔다: 막힌 탐색이 Playwright 에는 ‘진행 중’으로 남아 이후 클릭이 무한 대기한다)
+  await page.locator('.ws-row', { hasText: 'src' }).first().click({ noWaitAfter: true });
+  await page.locator('.ws-row', { hasText: 'hello.c' }).first().click({ noWaitAfter: true });
+  const monacoUp = await waitFor(async () => ((await page.$('.monaco-editor')) ? true : null), 30000);
+  check('3b. 파일을 누르면 Monaco 편집기가 열림(엄격한 CSP·작업자 포함)', !!monacoUp, '');
+  if (monacoUp) {
+    await page.click('.monaco-editor .view-lines');
+    await page.keyboard.press('Control+End');
+    await page.keyboard.type('// 데스크톱에서 수정');
+    await page.keyboard.press('Control+s');
+    const saved = await waitFor(async () => (fs.readFileSync(path.join(work, 'src', 'hello.c'), 'utf8').includes('데스크톱에서 수정') ? true : null), 10000);
+    check('3b. Ctrl+S 로 작업 폴더의 파일에 저장됨', !!saved, '');
+    await page.keyboard.type(' 저장 안 함');
+    await app.evaluate(({ dialog }) => { globalThis.__dlg = 0; globalThis.__origMsg = dialog.showMessageBoxSync; dialog.showMessageBoxSync = () => { globalThis.__dlg += 1; return 0; }; });   // 사용자가 ‘취소’를 고른 것처럼
+    await app.evaluate(({ app: a }) => { a.quit(); });
+    await sleep(1500);
+    const dlgCount = await app.evaluate(() => globalThis.__dlg);
+    const alive = await page.evaluate(() => !!document.querySelector('.monaco-editor')).catch(() => false);
+    check('3b. 저장 안 한 변경이 있으면 종료 전에 묻고, 취소하면 앱이 그대로 남는다', dlgCount >= 1 && alive, `확인 창 ${dlgCount}회, 편집기 ${alive}`);
+    await page.keyboard.press('Control+s');
+    await waitFor(async () => (fs.readFileSync(path.join(work, 'src', 'hello.c'), 'utf8').includes('저장 안 함') ? true : null), 10000);
+    await app.evaluate(({ dialog }) => { dialog.showMessageBoxSync = globalThis.__origMsg; });
+  }
 
   // ---- 4. 탐색·새 창 차단 ----
   await app.evaluate(({ shell }) => { globalThis.__opened = []; shell.openExternal = async (u) => { globalThis.__opened.push(u); }; });

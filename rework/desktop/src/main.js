@@ -124,6 +124,7 @@ function createWindow() {
     getWindow: () => win,
     getMode: backendMode,
     openFile: chooseAndOpenFile,
+    openFolder: chooseAndOpenFolder,
     setMode: switchMode,
     about: showAbout,
     openLogs: () => shell.openPath(path.join(app.getPath('userData'), 'logs')),
@@ -141,6 +142,13 @@ app.on('web-contents-created', (_e, contents) => {
   contents.on('will-navigate', guard);
   contents.on('will-redirect', guard);
   contents.on('will-attach-webview', (e) => e.preventDefault());
+  // 편집기에 저장하지 않은 변경이 있으면 페이지가 beforeunload 로 닫기를 막는다 — 조용히 막히지 않게 사용자에게 묻는다
+  contents.on('will-prevent-unload', (e) => {
+    const choice = dialog.showMessageBoxSync(BrowserWindow.fromWebContents(contents) || undefined, {
+      type: 'warning', buttons: ['취소', '저장하지 않고 닫기'], defaultId: 0, cancelId: 0, title: 'rework',
+      message: '저장하지 않은 변경이 있습니다.', detail: '지금 닫으면 편집 중인 내용이 사라집니다.' });
+    if (choice === 1) e.preventDefault();                  // 닫기를 계속 진행
+  });
   contents.setWindowOpenHandler(({ url }) => {
     try {
       const u = new URL(url);
@@ -235,6 +243,12 @@ async function chooseAndOpenFile() {
   if (!r.canceled && r.filePaths[0]) sendOpenPath(r.filePaths[0]);
 }
 
+async function chooseAndOpenFolder() {
+  if (!win || !backend || !backend.ready) return;
+  const r = await dialog.showOpenDialog(win, { title: '작업 폴더 열기(소스 편집)', properties: ['openDirectory'] });
+  if (!r.canceled && r.filePaths[0]) win.webContents.send('rework:open-folder', toBackendPath(r.filePaths[0]));
+}
+
 function showAbout() {
   const lines = [`rework ${app.getVersion()}`, `Electron ${process.versions.electron} · Chromium ${process.versions.chrome}`,
                  `실행 환경: ${process.platform}${backendMode() === 'wsl' ? ' (WSL2 백엔드)' : ''}`,
@@ -259,8 +273,15 @@ ipcMain.on('rework:open-logs', (e) => { if (fromErrorPage(e)) shell.openPath(pat
 ipcMain.handle('rework:backend-path', (e, p) => (fromUi(e) && typeof p === 'string' ? toBackendPath(p) : ''));
 
 // ---- 수명주기 ---------------------------------------------------------------------------
+let forceQuit = false;                     // 시스템 신호(SIGTERM·SIGINT)에 의한 종료: 저장 확인 없이 끝낸다
 app.on('before-quit', (e) => {
   if (quitting) return;
+  if (!forceQuit && win && !win.isDestroyed()) {
+    // 창을 먼저 닫아 본다: 편집기에 저장하지 않은 변경이 있으면 will-prevent-unload 가 사용자에게 묻고, 취소하면 앱은 계속 실행된다.
+    e.preventDefault();
+    win.close();
+    return;
+  }
   quitting = true;
   e.preventDefault();
   const done = () => app.exit(0);
@@ -268,7 +289,7 @@ app.on('before-quit', (e) => {
   backend.stop().then(done, done);
 });
 app.on('window-all-closed', () => app.quit());
-for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => app.quit());
+for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => { forceQuit = true; app.quit(); });
 
 app.whenReady().then(async () => {
   if (!app.hasSingleInstanceLock()) return;

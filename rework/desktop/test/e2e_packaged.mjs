@@ -90,6 +90,25 @@ try {
     return { start: s.s, run: r.s, status: r.j.state && r.j.state.status, layers: r.j.state && r.j.state.sandbox && r.j.state.sandbox.summary };
   });
   check('4. 설치본에서 격리 디버깅이 main 에서 멈춘다', ran.start === 200 && ran.status === 'stopped' && /격리/.test(ran.layers || ''), JSON.stringify(ran));
+  // 소스 편집: 작업 폴더 열기(경로 입력) → Monaco(동결 백엔드가 서빙, 엄격한 CSP·작업자) → 저장
+  const work = path.join(tmp, 'work');
+  fs.mkdirSync(work, { recursive: true });
+  fs.writeFileSync(path.join(work, 'hello.c'), 'int main(void) {\n    return 0;\n}\n');
+  await page.click('.act[data-view="explorer"]');
+  await page.fill('.ws-path-input', work);
+  await page.press('.ws-path-input', 'Enter');
+  await page.locator('.ws-row', { hasText: 'hello.c' }).first().click({ timeout: 20000 });
+  const mon = await waitFor(async () => ((await page.$('.monaco-editor')) ? true : null), 40000);
+  check('4. 설치본에서 작업 폴더를 열고 Monaco 편집기가 뜬다(동결 백엔드·엄격한 CSP·작업자)', !!mon, '');
+  if (mon) {
+    const ko = await page.evaluate(() => window.monaco.editor.getEditors()[0].getAction('actions.find').label);
+    await page.click('.monaco-editor .view-lines');
+    await page.keyboard.press('Control+End');
+    await page.keyboard.type('// 설치본에서 저장');
+    await page.keyboard.press('Control+s');
+    const saved = await waitFor(async () => (fs.readFileSync(path.join(work, 'hello.c'), 'utf8').includes('설치본에서 저장') ? true : null), 10000);
+    check('4. 설치본에서 편집기가 한국어이고 Ctrl+S 가 디스크에 저장된다', ko === '찾기' && !!saved, ko);
+  }
   check('5. JS·CSP 오류 없음', errs.length === 0, errs.slice(0, 2).join(' / '));
 
   // ---- 종료: 앱을 닫으면 백엔드도 ----

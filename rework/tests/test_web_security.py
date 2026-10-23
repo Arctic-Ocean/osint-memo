@@ -181,9 +181,10 @@ def upload_limit_section():
         uploads = os.path.join(data, "uploads")
         line, _ = _raw_upload(port, 4 << 20, chunked=False)
         check("Content-Length 가 상한을 넘으면 본문을 받기 전에 413", bool(line) and " 413 " in line, str(line))
-        line, sent = _raw_upload(port, 8 << 20, chunked=True)
+        # 보내는 쪽 소켓·커널 버퍼가 수 MB 를 삼킬 수 있으므로, 그보다 훨씬 큰 본문으로 ‘끝까지 받지 않았다’를 가린다
+        line, sent = _raw_upload(port, 64 << 20, chunked=True)
         check("청크 전송도 상한을 넘으면 끊고 413(또는 연결 종료) — 끝까지 받지 않는다",
-              (line is None or " 413 " in line) and sent < (8 << 20), f"{line} sent={sent}")
+              (line is None or " 413 " in line) and sent < (64 << 20), f"{line} sent={sent}")
         left = [n for n in os.listdir(uploads)] if os.path.isdir(uploads) else []
         check("상한을 넘긴 업로드는 파일을 남기지 않음", left == [], str(left))
         st, body = req(port, "POST", "/api/upload", MP_HEADERS, MULTIPART)

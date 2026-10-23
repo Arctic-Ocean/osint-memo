@@ -2,9 +2,10 @@
 /** 한국어 애플리케이션 메뉴. 동작은 main.js 가 콜백으로 넘긴다. */
 const { Menu } = require('electron');
 
-function buildMenu({ isDev, platform, getWindow, getMode, openFile, setMode, about, openLogs, reload, quit }) {
+function buildMenu({ isDev, platform, getWindow, getMode, openFile, openFolder, setMode, about, openLogs, reload, quit }) {
   const file = [
-    { label: '열기…', accelerator: 'CmdOrCtrl+O', click: () => openFile() },
+    { label: '바이너리 열기…', accelerator: 'CmdOrCtrl+O', click: () => openFile() },
+    { label: '폴더 열기(소스 편집)…', accelerator: 'CmdOrCtrl+Shift+O', click: () => openFolder() },
     { type: 'separator' },
     { label: '종료', accelerator: platform === 'win32' ? 'Alt+F4' : 'CmdOrCtrl+Q', click: () => quit() },
   ];

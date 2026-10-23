@@ -9,6 +9,7 @@ PyInstaller 는 크로스 컴파일을 하지 못하므로 각 운영체제에�
 """
 import argparse
 import http.client
+import json
 import os
 import shutil
 import subprocess
@@ -74,12 +75,35 @@ def smoke(exe: str) -> None:
         st, body = get("/js/app.js")
         if st != 200 or len(body) < 1000:
             raise SystemExit("스모크 실패: 프런트엔드 파일이 번들에 없음")
+        for asset, minimum in (("/vendor/monaco/vs/loader.js", 1000), ("/vendor/monaco/vs/editor/editor.main.js", 100000),
+                               ("/vendor/monaco/vs/nls.messages.ko.js", 1000), ("/vendor/monaco/worker.js", 50)):
+            st, body = get(asset)
+            if st != 200 or len(body) < minimum:
+                raise SystemExit(f"스모크 실패: 편집기(Monaco) 파일이 번들에 없음: {asset} {st}")
+        folder = tempfile.mkdtemp(prefix="rework-smoke-ws-")
+        try:
+            with open(os.path.join(folder, "a.c"), "w", encoding="utf-8") as fh:
+                fh.write("int main(void){return 0;}\n")
+            hdr = {"X-Rework-Token": token, "Content-Type": "application/json"}
+            c = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+            c.request("POST", "/api/ws/open", json.dumps({"path": folder}), hdr)
+            r = c.getresponse(); r.read()
+            if r.status != 200:
+                raise SystemExit(f"스모크 실패: 작업 폴더 열기 {r.status}")
+            st, body = get("/api/ws/file?path=a.c", {"X-Rework-Token": token})
+            if st != 200 or "int main" not in json.loads(body)["text"]:
+                raise SystemExit(f"스모크 실패: 작업 폴더 파일 읽기 {st}")
+            c = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+            c.request("POST", "/api/ws/close", "", hdr)
+            c.getresponse().read()
+        finally:
+            shutil.rmtree(folder, ignore_errors=True)
         p.stdin.close()
         try:
             p.wait(timeout=20)
         except subprocess.TimeoutExpired:
             raise SystemExit("스모크 실패: 표준 입력을 닫아도 종료하지 않음")
-        print(f"스모크 통과: 포트 {port}, 토큰 401/200, UI·JS 서빙, stdin EOF 로 종료(코드 {p.returncode})")
+        print(f"스모크 통과: 포트 {port}, 토큰 401/200, UI·JS·Monaco 서빙, 작업 폴더 API, stdin EOF 로 종료(코드 {p.returncode})")
     finally:
         if p.poll() is None:
             p.kill()

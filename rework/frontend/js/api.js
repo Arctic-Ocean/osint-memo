@@ -12,7 +12,10 @@ async function j(method, url, body) {
   if (!r.ok) {
     const msg = (data && data.detail) ? (typeof data.detail === "string" ? data.detail
                  : JSON.stringify(data.detail)) : `HTTP ${r.status}`;
-    throw new Error(msg);
+    const err = new Error(msg);
+    err.status = r.status;
+    if (data && typeof data === "object") for (const k of ["conflict", "binary", "encoding_error", "not_empty", "mtime_ns"]) if (k in data) err[k] = data[k];
+    throw err;
   }
   return data;
 }
@@ -50,6 +53,17 @@ export const api = {
   aiConfigGet:() => j("GET", "/api/ai/config"),
   aiConfigSet:(cfg) => j("POST", "/api/ai/config", cfg),
   aiChat:     (messages, system = "") => j("POST", "/api/ai/chat", { messages, system }),
+
+  // 작업 폴더(소스 편집)
+  wsState:    () => j("GET", "/api/ws"),
+  wsOpen:     (path) => j("POST", "/api/ws/open", { path }),
+  wsClose:    () => j("POST", "/api/ws/close"),
+  wsTree:     (path = "") => j("GET", `/api/ws/tree?path=${encodeURIComponent(path)}`),
+  wsFile:     (path) => j("GET", `/api/ws/file?path=${encodeURIComponent(path)}`),
+  wsStat:     (path) => j("GET", `/api/ws/stat?path=${encodeURIComponent(path)}`),
+  wsSave:     (body) => j("PUT", "/api/ws/file", body),
+  wsOp:       (body) => j("POST", "/api/ws/op", body),
+  wsSearch:   (q, caseSensitive = false) => j("GET", `/api/ws/search?q=${encodeURIComponent(q)}&case=${caseSensitive}`),
 
   // 디버거 (GDB/MI)
   dbgStart:   (breakpoints = [], sandbox) =>

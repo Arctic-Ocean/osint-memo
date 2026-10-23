@@ -1,0 +1,2 @@
+# 외부에서 가져온 편집기(Monaco) 파일은 diff·언어 통계에서 뺀다
+rework/frontend/vendor/** -diff linguist-vendored

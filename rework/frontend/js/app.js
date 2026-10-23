@@ -1,5 +1,6 @@
 // rework — 프론트엔드 메인 로직
 import { api } from "/js/api.js";
+import * as WS from "/js/workspace.js";
 
 // ---- 상태 ---------------------------------------------------------------
 const S = {
@@ -94,6 +95,7 @@ async function prompt1(title, label, value = "") {
 
 // ---- 아이콘(SVG) --------------------------------------------------------
 const ICON = {
+  explorer: '<path d="M4 3h9l3 3v4"/><path d="M4 3v18h7"/><path d="M13 14l2 2 4-4"/><rect x="12" y="11" width="8" height="10" rx="1" opacity=".55"/>',
   open: '<path d="M2 4a1 1 0 0 1 1-1h5l2 2h8a1 1 0 0 1 1 1v2H2V4Z"/><path d="M2 8h20l-2 10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1L2 8Z" opacity=".6"/>',
   functions: '<path d="M4 20c2 0 2.5-1.2 3-4l1.2-7C8.8 5 9.6 3.5 12 3.5c1 0 1.6.3 2 .7"/><path d="M6 10h7"/>',
   strings: '<path d="M4 7V5h12v2M10 5v14M8 19h4"/>',
@@ -118,7 +120,7 @@ function paintIcons() {
 function setSideView(v) {
   S.sideView = v;
   $$("#activitybar .act").forEach((b) => b.classList.toggle("active", b.dataset.view === v));
-  const titles = { open: "열기", functions: "함수", strings: "문자열", symbols: "심볼",
+  const titles = { open: "열기", explorer: "탐색기", functions: "함수", strings: "문자열", symbols: "심볼",
                    imports: "임포트 / 익스포트", bookmarks: "북마크", script: "스크립트 콘솔",
                    debug: "디버그", settings: "설정" };
   $("#side-title").textContent = titles[v] || v;
@@ -136,6 +138,7 @@ function toggleTheme() {
   const next = cur === "light" ? "dark" : "light";
   document.body.dataset.theme = next; r.dataset.theme = next;
   try { localStorage.setItem("rework-theme", next); } catch {}
+  WS.onThemeChange();
 }
 
 // ---- 파일 열기 ----------------------------------------------------------
@@ -208,10 +211,20 @@ function initFileDrop() {
     if (!hasFiles(e)) return;
     e.preventDefault();
     const f = e.dataTransfer.files[0];
-    if (f) await openLocalFile(f);
+    if (!f) return;
+    const item = e.dataTransfer.items && e.dataTransfer.items[0];
+    const entry = item && item.webkitGetAsEntry ? item.webkitGetAsEntry() : null;
+    if (entry && entry.isDirectory && window.reworkDesktop) {          // 폴더를 놓으면 작업 폴더로 연다(데스크톱: 실제 경로를 알 수 있다)
+      const real = window.reworkDesktop.pathForFile(f);
+      const bp = real ? await window.reworkDesktop.backendPath(real) : "";
+      if (bp) { await WS.openFolder(bp); return; }
+    }
+    if (entry && entry.isDirectory) { toast("폴더는 끌어다 놓을 수 없습니다. 탐색기의 ‘폴더 열기’를 쓰세요.", "err"); return; }
+    await openLocalFile(f);
   });
-  // 데스크톱 셸의 ‘파일 > 열기…’·명령줄로 받은 경로
+  // 데스크톱 셸의 ‘파일 > 열기…’·‘폴더 열기…’·명령줄로 받은 경로
   if (window.reworkDesktop && window.reworkDesktop.onOpenPath) window.reworkDesktop.onOpenPath((p) => openPath(p));
+  if (window.reworkDesktop && window.reworkDesktop.onOpenFolder) window.reworkDesktop.onOpenFolder((p) => WS.openFolder(p));
 }
 async function openPath(path) {
   setMsg("여는 중…");
@@ -220,7 +233,8 @@ async function openPath(path) {
 }
 async function onOpened(info) {
   S.info = info;
-  S.tabs = []; S.active = -1;
+  S.tabs = S.tabs.filter((t) => t.kind === "file");     // 분석 탭은 새 바이너리에 맞게 비우되, 편집 중인 파일 탭(저장 안 한 변경 포함)은 둔다
+  S.active = S.tabs.length ? 0 : -1;
   dbgReset();   // 서버는 바이너리를 열 때 디버그 세션을 종료하므로 프론트 상태도 맞춘다
   $("#file-name").textContent = info.name;
   $("#file-meta").textContent =
@@ -239,11 +253,11 @@ async function onOpened(info) {
 
 // ---- 사이드바 뷰 라우팅 -------------------------------------------------
 function renderSide(v) {
-  if (!S.info && v !== "open" && v !== "settings") {
+  if (!S.info && v !== "open" && v !== "settings" && v !== "explorer") {
     $("#side-body").innerHTML = '<div class="empty-list">먼저 바이너리를 여세요.</div>';
     return;
   }
-  ({ open: renderOpen, functions: renderFunctions, strings: renderStrings,
+  ({ open: renderOpen, explorer: WS.renderExplorer, functions: renderFunctions, strings: renderStrings,
      symbols: renderSymbols, imports: renderImports, bookmarks: renderBookmarks,
      script: renderScript, debug: renderDebugSidebar, settings: renderSettings }[v] || (() => {}))();
 }
@@ -406,6 +420,7 @@ function openFunc(addr, mode) {
 }
 function closeTab(addr) {
   const i = tabIndex(addr); if (i < 0) return;
+  if (S.tabs[i].kind === "file") { WS.closeFileTab(S.tabs[i].path); return; }     // 저장 안 한 변경이 있으면 확인
   S.tabs.splice(i, 1);
   if (S.active >= S.tabs.length) S.active = S.tabs.length - 1;
   renderTabs(); renderEditor();
@@ -414,9 +429,10 @@ function renderTabs() {
   const bar = $("#tabs"); bar.innerHTML = "";
   S.tabs.forEach((t, i) => {
     const f = S.funcByAddr.get(t.addr);
-    const name = t.kind === "debug" ? "⬤ 디버거" : (f && f.name) || hx(t.addr);
-    const tab = el("div", { class: "tab" + (i === S.active ? " active" : "") },
-      el("span", { class: "tab-name" }, name),
+    const dirty = WS.isFileTabDirty(t);
+    const name = t.kind === "debug" ? "⬤ 디버거" : t.kind === "file" ? t.path.split("/").pop() : (f && f.name) || hx(t.addr);
+    const tab = el("div", { class: "tab" + (i === S.active ? " active" : "") + (dirty ? " dirty" : ""), title: t.kind === "file" ? t.path : "" },
+      el("span", { class: "tab-name" }, (dirty ? "● " : "") + name),
       el("button", { class: "tab-x", title: "닫기", onclick: (e) => { e.stopPropagation(); closeTab(t.addr); } }, "×"));
     tab.onclick = () => { S.active = i; renderTabs(); renderEditor(); };
     bar.append(tab);
@@ -427,12 +443,16 @@ function curTab() { return S.active >= 0 ? S.tabs[S.active] : null; }
 async function renderEditor() {
   const ed = $("#editor");
   const tab = curTab();
+  WS.clearStatus();
+  ed.style.overflow = "";
   if (!tab) {
     ed.innerHTML = '<div class="empty-state"><div class="es-big">rework</div>' +
       '<div class="es-sub">리버스 엔지니어링 워크벤치</div></div>';
     return;
   }
   ed.innerHTML = "";
+  ed.style.overflow = "";
+  if (tab.kind === "file") { await WS.renderFileTab(ed, tab); return; }
   if (tab.kind === "debug") {
     const tb = el("div", { class: "view-toolbar" });
     const st = S.dbg.state || {};
@@ -473,6 +493,7 @@ async function renderEditor() {
     el("span", { class: "vt-title" }, (f && f.name) || hx(tab.addr)),
     el("span", { class: "vt-spacer" }),
     el("button", { class: "vt-btn", onclick: () => renameFunc(tab.addr), title: "함수 이름 변경 (F2)" }, "이름변경"),
+    tab.mode === "decompile" ? el("button", { class: "vt-btn", title: "의사코드를 작업 폴더의 .c 파일로 저장해 편집", onclick: () => exportPseudo(tab.addr) }, "소스로 저장") : null,
     el("button", { class: "vt-btn", onclick: () => askAIaboutFunc(tab.addr) }, "AI 설명"),
     el("button", { class: "vt-btn", onclick: () => toggleBookmark(tab.addr) }, "북마크"));
   ed.append(toolbar);
@@ -486,6 +507,15 @@ async function renderEditor() {
   } catch (err) { view.append(el("div", { class: "dec-note" }, "오류: " + err.message)); }
   await loadXrefs(tab.addr);
   if (S.focusAddr) { scrollToAddr(S.focusAddr); S.focusAddr = null; }
+}
+
+async function exportPseudo(addr) {
+  try {
+    const d = await api.decompile(addr);
+    const code = d.lines.map((l) => "  ".repeat(l.indent) + l.text).join("\n");
+    const header = `/* rework 의사코드 — ${d.name} @ ${hx(addr)} (${S.info ? S.info.name : ""})\n * 휴리스틱 결과이므로 정확한 의미는 디스어셈블리로 확인하세요. */\n`;
+    await WS.savePseudo(d.name, header, code + "\n");
+  } catch (err) { toast("의사코드를 저장하지 못했습니다: " + err.message, "err"); }
 }
 
 function scrollToAddr(addr) {
@@ -678,6 +708,9 @@ async function toggleBookmark(addr) {
 // ---- 명령 팔레트 --------------------------------------------------------
 const COMMANDS = [
   { id: "open", icon: "📂", title: "파일 열기", run: () => setSideView("open") },
+  { id: "explorer", icon: "🗂", title: "탐색기(작업 폴더) 열기", run: () => setSideView("explorer") },
+  { id: "folder", icon: "📁", title: "작업 폴더 열기…", run: () => WS.pickFolder() },
+  { id: "save", icon: "💾", title: "편집 중인 파일 저장 (Ctrl+S)", run: () => WS.saveCurrent() },
   { id: "theme", icon: "🌓", title: "테마 전환", run: toggleTheme },
   { id: "ai", icon: "🤖", title: "AI 채팅 열기/닫기", run: toggleAI },
   { id: "ai-settings", icon: "⚙", title: "AI 설정", run: openAISettings },
@@ -752,17 +785,20 @@ async function sendAI(extraContext = "") {
   inp.value = "";
   let userContent = text;
   let system = "당신은 리버스 엔지니어링을 돕는 보안 분석 도우미입니다. 한국어로 간결하고 정확하게 답하세요. 의사코드는 휴리스틱 분석 결과이므로 추측에는 근거를 밝히세요.";
-  if ($("#ai-attach-fn").checked && curTab()) {
+  const fileCtx = $("#ai-attach-fn").checked ? WS.currentFileContext() : null;
+  if (fileCtx) {
+    extraContext = `다음은 파일 ${fileCtx.name}의 내용입니다${fileCtx.truncated ? "(앞부분 12000자)" : ""}:\n\n\`\`\`\n${fileCtx.text}\n\`\`\`\n`;
+  } else if ($("#ai-attach-fn").checked && curTab() && curTab().kind !== "file") {
     try {
       const d = await api.decompile(curTab().addr);
       const code = d.lines.map((l) => "  ".repeat(l.indent) + l.text).join("\n");
       extraContext = `다음은 함수 ${d.name}의 휴리스틱 의사코드입니다:\n\n\`\`\`c\n${code}\n\`\`\`\n`;
     } catch {}
   }
-  const display = text || "(현재 함수 분석)";
-  aiPush("user", display + (extraContext ? "\n\n[함수 의사코드 첨부됨]" : ""));
+  const display = text || (fileCtx ? "(현재 파일 분석)" : "(현재 함수 분석)");
+  aiPush("user", display + (extraContext ? (fileCtx ? "\n\n[편집 중인 파일 첨부됨]" : "\n\n[함수 의사코드 첨부됨]") : ""));
   const msgs = [...S.aiMessages.filter((m) => m.role !== "sys").map((m) => ({ role: m.role, content: m.content }))];
-  if (extraContext) msgs[msgs.length - 1] = { role: "user", content: extraContext + "\n질문: " + (text || "이 함수가 무엇을 하는지 설명해 주세요.") };
+  if (extraContext) msgs[msgs.length - 1] = { role: "user", content: extraContext + "\n질문: " + (text || (fileCtx ? "이 파일의 내용을 설명하고 문제점이 있으면 알려 주세요." : "이 함수가 무엇을 하는지 설명해 주세요.")) };
   $("#ai-status").textContent = "생각 중…";
   $("#ai-send").disabled = true;
   try {
@@ -1441,6 +1477,15 @@ function dragSplit(handle, onMove) {
 // ---- 키바인딩 -----------------------------------------------------------
 function keybind(e) {
   const mod = e.ctrlKey || e.metaKey;
+  // 편집기(Monaco)에 포커스가 있으면 편집기의 키(Ctrl+K 코드 접기 연쇄·Ctrl+B 등)를 가로채지 않는다. 저장·AI 창·디버거 키만 처리한다.
+  if (e.target && e.target.closest && e.target.closest(".monaco-editor")) {
+    if (mod && !e.shiftKey && (e.key === "s" || e.key === "S")) { e.preventDefault(); WS.saveCurrent(); return; }
+    if (mod && e.shiftKey && (e.key === "A" || e.key === "a")) { e.preventDefault(); toggleAI(); return; }
+    if (mod && e.shiftKey && (e.key === "E" || e.key === "e")) { e.preventDefault(); setSideView("explorer"); return; }
+    if (S.dbg.active && (e.key === "F5" || e.key === "F10" || e.key === "F11")) { /* 아래 디버거 처리로 */ } else return;
+  }
+  if (mod && !e.shiftKey && (e.key === "s" || e.key === "S") && curTab() && curTab().kind === "file") { e.preventDefault(); WS.saveCurrent(); return; }
+  if (mod && e.shiftKey && (e.key === "E" || e.key === "e")) { e.preventDefault(); setSideView("explorer"); return; }
   // 디버거 단축키(세션 활성 시)
   if (S.dbg.active) {
     if (e.key === "F5" && e.shiftKey) { e.preventDefault(); dbgStop(); return; }
@@ -1457,7 +1502,7 @@ function keybind(e) {
   if (mod && e.key === "b") { e.preventDefault(); $("#sidebar").classList.toggle("hidden"); $("#split-side").classList.toggle("hidden"); return; }
   if (mod && e.key === "j") { e.preventDefault(); $("#bottom").classList.toggle("collapsed"); return; }
   if (mod && e.key === "`") { e.preventDefault(); setSideView("script"); return; }
-  if (e.key === "F2" && curTab()) { e.preventDefault(); renameFunc(curTab().addr); return; }
+  if (e.key === "F2" && curTab() && !curTab().kind) { e.preventDefault(); renameFunc(curTab().addr); return; }
   if (e.altKey && /^[1-5]$/.test(e.key)) {
     e.preventDefault();
     setSideView(["functions", "strings", "symbols", "imports", "bookmarks"][Number(e.key) - 1]);
@@ -1506,6 +1551,7 @@ function boot() {
   });
   // 키
   document.addEventListener("keydown", keybind);
+  WS.initWorkspace({ S, $, $$, el, toast, setMsg, prompt1, renderTabs, renderEditor, setSideView, openFunc, openPath, showPanel });
   initFileDrop();
   // 초기 화면
   setSideView("open");

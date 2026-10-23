@@ -447,3 +447,41 @@ button.primary:disabled { opacity: .5; cursor: default; }
   background-clip: content-box; }
 ::-webkit-scrollbar-thumb:hover { background: #355576; background-clip: content-box; }
 ::-webkit-scrollbar-track { background: transparent; }
+
+/* ---- 탐색기(작업 폴더)·소스 편집기 ------------------------------------------ */
+.ws-bar { display: flex; align-items: center; gap: 2px; padding: 6px 8px; border-bottom: 1px solid var(--border);
+  position: sticky; top: 0; background: var(--bg-3); z-index: 2; }
+.ws-root { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; font-size: 12px; }
+.ws-btn { background: transparent; border: 1px solid transparent; color: var(--fg-dim); border-radius: 5px;
+  padding: 1px 6px; font-size: 13px; line-height: 20px; }
+.ws-btn:hover { background: var(--bg-hover); color: var(--fg); border-color: var(--border); }
+.ws-btn.wide { border-color: var(--border); }
+.ws-tree { padding: 4px 0 24px; min-height: 60px; }
+.ws-row { display: flex; align-items: center; gap: 6px; padding: 2px 8px; font-size: 12.5px; cursor: pointer;
+  white-space: nowrap; border-left: 2px solid transparent; }
+.ws-row:hover { background: var(--bg-hover); }
+.ws-row.sel { background: var(--bg-active); border-left-color: var(--accent); }
+.ws-row.dim { color: var(--fg-faint); cursor: default; }
+.ws-ic { width: 14px; text-align: center; color: var(--fg-dim); flex: 0 0 auto; font-size: 11px; }
+.ws-name { overflow: hidden; text-overflow: ellipsis; }
+.ws-dirty { color: var(--accent-2); margin-left: auto; font-size: 10px; }
+.ws-search { padding: 6px 8px; border-bottom: 1px solid var(--border); }
+.ws-search input[type=text] { width: 100%; background: var(--bg); border: 1px solid var(--border); color: var(--fg);
+  border-radius: 6px; padding: 5px 8px; font-size: 12px; outline: none; }
+.ws-search input[type=text]:focus { border-color: var(--accent); }
+.ws-case { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; color: var(--fg-dim); margin-top: 4px; }
+.ws-results { max-height: 40vh; overflow: auto; margin-top: 4px; }
+.ws-hit { flex-direction: column; align-items: flex-start; gap: 0; padding: 3px 8px; }
+.ws-hit .li-sub { color: var(--fg-dim); font-family: var(--mono); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+.ctx-menu { position: fixed; z-index: 60; min-width: 160px; background: var(--bg-2); border: 1px solid var(--border);
+  border-radius: 8px; box-shadow: 0 8px 24px rgba(0,0,0,.45); padding: 4px; }
+.ctx-item { padding: 5px 12px; font-size: 12.5px; border-radius: 5px; cursor: pointer; }
+.ctx-item:hover { background: var(--accent); color: #fff; }
+.tab.dirty .tab-name { font-style: italic; }
+.ws-host { flex: 1 1 auto; min-height: 0; width: 100%; position: relative; }
+.vt-btn.primary-ish { background: var(--accent); border-color: var(--accent); color: #fff; }
+.vt-btn.primary-ish:hover { background: var(--accent-2); }
+#sb-ed { font-family: var(--mono); }
+.ws-path-input { width: 100%; background: var(--bg); border: 1px solid var(--border); color: var(--fg); border-radius: 6px;
+  padding: 5px 8px; font-size: 12px; outline: none; font-family: var(--mono); }
+.ws-path-input:focus { border-color: var(--accent); }

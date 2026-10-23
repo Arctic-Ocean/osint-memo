@@ -26,5 +26,9 @@ if (location.protocol === 'file:') {
     onOpenPath: (cb) => {
       ipcRenderer.on('rework:open-path', (_e, p) => { if (typeof p === 'string' && p) cb(p); });
     },
+    /** 메뉴의 ‘폴더 열기…’ 로 고른 작업 폴더(이미 백엔드 경로)를 받는다. */
+    onOpenFolder: (cb) => {
+      ipcRenderer.on('rework:open-folder', (_e, p) => { if (typeof p === 'string' && p) cb(p); });
+    },
   });
 }

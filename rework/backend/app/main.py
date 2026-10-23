@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hmac
 import io
+import json
 import os
 import re
 import shutil
@@ -28,6 +29,7 @@ from .project import Project
 from .decompile import Decompiler
 from .ai import AIConfig, chat as ai_chat
 from .debug import DebugSession, DebugError, LOG_TAIL_CHARS, HAVE_POSIX_DEBUGGER
+from .workspace import Workspace, WorkspaceError
 from . import sandbox as sbx
 from . import __version__
 
@@ -202,22 +204,30 @@ async def _unhandled(request, exc):
     return r
 
 
-class _UploadLimit:
-    """/api/upload 의 요청 본문이 MAX_FILE_BYTES 를 넘으면 읽던 중에도 끊고 413 을 돌려준다(순수 ASGI 라 본문을 버퍼링하지 않는다).
-    FastAPI 는 본문을 읽다 난 예외를 400 으로 바꿔 버리므로, 한도를 넘는 순간 여기서 직접 413 을 보내고 앱에는 연결이
-    끊긴 것으로 보이게 한 뒤 앱이 뒤늦게 내는 응답은 버린다."""
+API_BODY_MAX = 16 * 1024 * 1024         # 업로드를 뺀 모든 API 요청 본문의 상한(JSON 을 통째로 파싱하는 서버가 큰 본문 하나로 메모리를 잃지 않게)
+
+
+class _BodyLimit:
+    """API 요청 본문이 상한을 넘으면 읽던 중에도 끊고 413 을 돌려준다(순수 ASGI 라 본문을 버퍼링하지 않는다). 업로드는 MAX_FILE_BYTES,
+    나머지 /api/ 쓰기 요청은 API_BODY_MAX. FastAPI 는 본문을 읽다 난 예외를 400 으로 바꿔 버리므로, 한도를 넘는 순간 여기서 직접 413 을
+    보내고 앱에는 연결이 끊긴 것으로 보이게 한 뒤 앱이 뒤늦게 내는 응답은 버린다."""
 
     def __init__(self, app):
         self.app = app
 
     async def __call__(self, scope, receive, send):
-        if scope["type"] != "http" or scope["method"] != "POST" or scope["path"] != "/api/upload":
+        if scope["type"] != "http" or scope["method"] not in ("POST", "PUT", "PATCH") or not scope["path"].startswith("/api/"):
             return await self.app(scope, receive, send)
-        limit = MAX_FILE_BYTES + (1 << 20)                  # multipart 머리글 몫
+        upload = scope["path"] == "/api/upload"
+        limit = (MAX_FILE_BYTES + (1 << 20)) if upload else API_BODY_MAX     # 업로드는 multipart 머리글 몫을 더한다
         rejected = False
 
         async def reject():
-            body = ('{"detail":"파일이 너무 큽니다(최대 %d MB). REWORK_MAX_FILE_MB 로 늘릴 수 있습니다."}' % MAX_FILE_MB).encode()
+            if upload:
+                msg = '파일이 너무 큽니다(최대 %d MB). REWORK_MAX_FILE_MB 로 늘릴 수 있습니다.' % MAX_FILE_MB
+            else:
+                msg = '요청이 너무 큽니다(최대 %d MB).' % (API_BODY_MAX >> 20)
+            body = ('{"detail":"%s"}' % msg).encode()
             hdrs = [(b"content-type", b"application/json"), (b"content-length", str(len(body)).encode()),
                     (b"connection", b"close")] + [(k.lower().encode(), v.encode()) for k, v in _SEC_HEADERS.items()]
             await send({"type": "http.response.start", "status": 413, "headers": hdrs})
@@ -248,7 +258,7 @@ class _UploadLimit:
         await self.app(scope, limited_receive, guarded_send)
 
 
-app.add_middleware(_UploadLimit)
+app.add_middleware(_BodyLimit)
 
 
 _ADDR_MAX = (1 << 64) - 1
@@ -669,6 +679,98 @@ def api_sandbox_config(payload: dict = Body(...)):
     except ValueError as e:
         raise HTTPException(400, str(e))
     return _sandbox_report()
+
+
+# ---- 작업 폴더(소스 편집) ------------------------------------------------
+WS = Workspace(protected=lambda: [DATA_DIR] + list(sbx._PROTECTED_DIRS))
+WS_RECENT_FILE = os.path.join(DATA_DIR, "workspace.json")
+WS_RECENT_MAX = 8
+
+
+@app.exception_handler(WorkspaceError)
+async def _ws_error(_request, exc: WorkspaceError):
+    return JSONResponse({"detail": exc.message, **exc.extra}, status_code=exc.status)
+
+
+def _ws_recent() -> list:
+    try:
+        with open(WS_RECENT_FILE, "r", encoding="utf-8") as fh:
+            items = json.load(fh).get("recent", [])
+        return [p for p in items if isinstance(p, str) and os.path.isdir(p)][:WS_RECENT_MAX]
+    except Exception:                                      # noqa: BLE001  없거나 깨진 파일은 빈 목록
+        return []
+
+
+def _ws_remember(path: str):
+    items = [path] + [p for p in _ws_recent() if p != path]
+    try:
+        fd = os.open(WS_RECENT_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump({"recent": items[:WS_RECENT_MAX]}, fh, ensure_ascii=False)
+    except OSError:
+        pass
+
+
+def _ws_state() -> dict:
+    root = WS.root
+    return {"root": {"path": root, "name": os.path.basename(root) or root} if root else None, "recent": _ws_recent()}
+
+
+@app.get("/api/ws")
+def api_ws():
+    return _ws_state()
+
+
+@app.post("/api/ws/open")
+def api_ws_open(payload: dict = Body(...)):
+    root = WS.open(os.path.expanduser(_str_field(payload, "path")))
+    _ws_remember(root)
+    return _ws_state()
+
+
+@app.post("/api/ws/close")
+def api_ws_close():
+    WS.close()
+    return _ws_state()
+
+
+@app.get("/api/ws/tree")
+def api_ws_tree(path: str = ""):
+    return WS.listdir(path)
+
+
+@app.get("/api/ws/file")
+def api_ws_file(path: str):
+    return WS.read(path)
+
+
+@app.get("/api/ws/stat")
+def api_ws_stat(path: str):
+    return WS.stat(path)
+
+
+@app.put("/api/ws/file")
+def api_ws_file_put(payload: dict = Body(...)):
+    return WS.write(_str_field(payload, "path"), payload.get("text"), payload.get("encoding", "utf-8"),
+                    payload.get("expected_mtime_ns"), payload.get("force") is True)
+
+
+@app.post("/api/ws/op")
+def api_ws_op(payload: dict = Body(...)):
+    op = payload.get("op")
+    path = _str_field(payload, "path")
+    if op == "create":
+        return WS.create(path, payload.get("kind", "file"))
+    if op == "rename":
+        return WS.rename(path, _str_field(payload, "to"))
+    if op == "delete":
+        return WS.delete(path, payload.get("recursive") is True)
+    raise HTTPException(400, "op 는 create·rename·delete 중 하나여야 합니다.")
+
+
+@app.get("/api/ws/search")
+def api_ws_search(q: str, case: bool = False, glob: str = ""):
+    return WS.search(q, case, glob)
 
 
 # ---- 디버거 (GDB/MI) ---------------------------------------------------
