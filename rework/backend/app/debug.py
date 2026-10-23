@@ -19,19 +19,25 @@ from __future__ import annotations
 import atexit
 import bisect
 import codecs
-import fcntl
 import os
-import pty
 import queue
 import re
 import select
 import signal
 import subprocess
 import sys
-import termios
 import threading
 import time
 import weakref
+
+try:                                   # 디버거는 POSIX(pty·termios)에서만 동작한다 — Windows 에서도 서버·정적 분석은 뜨도록 임포트만 보호한다
+    import fcntl
+    import pty
+    import termios
+    HAVE_POSIX_DEBUGGER = True
+except ImportError:                    # Windows
+    fcntl = pty = termios = None
+    HAVE_POSIX_DEBUGGER = False
 
 
 class DebugError(Exception):
@@ -418,6 +424,9 @@ class DebugSession:
 
     # ---- 수명 ----------------------------------------------------------
     def start(self):
+        if not HAVE_POSIX_DEBUGGER:
+            raise DebugError("이 운영체제(Windows)에서는 디버거를 쓸 수 없습니다. 디버깅은 리눅스(또는 WSL2) 에서 지원합니다. "
+                             "정적 분석(디스어셈블·디컴파일)은 그대로 쓸 수 있습니다.")
         master, slave = pty.openpty()
         # 대상이 입력을 읽지 않을 때 쓰기가 서버 스레드를 붙들지 않도록 논블로킹으로 둔다
         fcntl.fcntl(master, fcntl.F_SETFL, fcntl.fcntl(master, fcntl.F_GETFL) | os.O_NONBLOCK)

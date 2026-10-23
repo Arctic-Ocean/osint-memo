@@ -30,7 +30,6 @@ import os
 import stat
 import platform
 import re
-import resource
 import shutil
 import signal
 import struct
@@ -39,6 +38,11 @@ import tempfile
 import threading
 import time
 from dataclasses import dataclass, field, asdict
+
+try:                                   # Windows 에는 resource 모듈이 없다(격리 실행은 Linux 전용이라 거기서는 쓰이지 않는다)
+    import resource
+except ImportError:
+    resource = None
 
 
 class SandboxError(Exception):

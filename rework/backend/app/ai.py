@@ -44,8 +44,14 @@ class AIConfig:
         for k in _DEFAULTS:
             if k in patch:
                 self.data[k] = patch[k]
-        with open(self.path, "w", encoding="utf-8") as fh:
+        # API 키가 들어 있으므로 소유자만 읽게 만든다(다른 로컬 사용자가 읽지 못하게). 이미 있던 파일의 권한도 좁힌다.
+        fd = os.open(self.path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
             json.dump(self.data, fh, ensure_ascii=False, indent=1)
+        try:
+            os.chmod(self.path, 0o600)
+        except OSError:                                    # Windows 등
+            pass
 
     def public(self) -> dict:
         """API 키는 보유 여부만 노출."""

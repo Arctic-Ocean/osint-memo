@@ -1,0 +1,74 @@
+# rework 데스크톱 설치본 빌드(Linux: AppImage·deb, Windows: NSIS 설치 프로그램).
+# 수동 실행(Actions 탭 > desktop > Run workflow) 또는 `desktop-v*` 태그 푸시에서만 돈다(일반 푸시에서는 돌지 않는다).
+# PyInstaller 는 크로스 컴파일을 못 하므로 각 운영체제에서 백엔드를 따로 묶는다. Windows 설치본에는 WSL2 용 리눅스 백엔드도 넣는다.
+name: desktop
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["desktop-v*"]
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: rework/desktop
+
+jobs:
+  linux:
+    runs-on: ubuntu-22.04          # 가장 오래된 glibc 로 만들어 Kali·Ubuntu·Debian 에서 모두 돈다(WSL2 용 백엔드도 이 빌드를 쓴다)
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.13" }
+      - uses: actions/setup-node@v4
+        with: { node-version: "22", cache: npm, cache-dependency-path: rework/desktop/package-lock.json }
+      - name: 시스템 도구(시험용 gdb·bubblewrap·Xvfb)
+        run: sudo apt-get update && sudo apt-get install -y gdb bubblewrap xvfb gcc
+      - run: npm ci
+      - run: npm test
+      - name: 백엔드 번들(스모크 포함) — 이 운영체제용
+        run: python3 scripts/build_backend.py
+      - name: 백엔드 번들 — Windows 설치본의 WSL2 용
+        run: |
+          mkdir -p build
+          cp -r build/backend-linux build/backend-wsl
+      - name: AppImage·deb
+        run: npx electron-builder --linux AppImage deb --publish never
+      - name: 설치본 E2E(Xvfb: 퓨즈·토큰·격리 디버깅·종료 정리)
+        run: xvfb-run -a node test/e2e_packaged.mjs
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rework-linux
+          path: |
+            rework/desktop/dist/*.AppImage
+            rework/desktop/dist/*.deb
+      - uses: actions/upload-artifact@v4
+        with:
+          name: backend-wsl
+          path: rework/desktop/build/backend-wsl
+
+  windows:
+    needs: linux
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.13" }
+      - uses: actions/setup-node@v4
+        with: { node-version: "22", cache: npm, cache-dependency-path: rework/desktop/package-lock.json }
+      - uses: actions/download-artifact@v4
+        with:
+          name: backend-wsl
+          path: rework/desktop/build/backend-wsl
+      - run: npm ci
+      - run: npm test
+      - name: 백엔드 번들(스모크 포함) — Windows 용
+        run: python scripts/build_backend.py
+      - name: NSIS 설치 프로그램
+        run: npx electron-builder --win nsis --publish never
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rework-windows
+          path: rework/desktop/dist/*.exe

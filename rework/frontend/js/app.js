@@ -149,18 +149,11 @@ async function renderOpen() {
   body.append(up);
   up.querySelector("#up-input").addEventListener("change", async (e) => {
     const f = e.target.files[0]; if (!f) return;
-    setMsg("업로드 중…");
-    try { const info = await api.upload(f); await onOpened(info); }
-    catch (err) { toast("열기 실패: " + err.message, "err"); }
+    await openLocalFile(f);
   });
   up.addEventListener("dragover", (e) => { e.preventDefault(); up.style.borderColor = "var(--accent)"; });
   up.addEventListener("dragleave", () => { up.style.borderColor = ""; });
-  up.addEventListener("drop", async (e) => {
-    e.preventDefault(); up.style.borderColor = "";
-    const f = e.dataTransfer.files[0]; if (!f) return;
-    try { const info = await api.upload(f); await onOpened(info); }
-    catch (err) { toast("열기 실패: " + err.message, "err"); }
-  });
+  up.addEventListener("drop", () => { up.style.borderColor = ""; });      // 열기는 창 전체의 drop 처리기가 한다
   const pathRow = el("div", { class: "fs-path" }, "로컬 경로 탐색");
   body.append(pathRow);
   await listDir(fsCwd);
@@ -177,6 +170,9 @@ async function listDir(path) {
       list.append(el("div", { class: "list-item", onclick: () => listDir(r.parent) },
         el("span", { class: "li-name fs-up" }, ".. (상위 폴더)")));
     }
+    for (const d of r.drives || []) {            // Windows 드라이브
+      list.append(el("div", { class: "list-item", onclick: () => listDir(d) }, el("span", { class: "li-name" }, "💽 " + d)));
+    }
     for (const ent of r.entries) {
       const item = el("div", { class: "list-item" },
         el("span", { class: "li-name" }, (ent.dir ? "📁 " : "📄 ") + ent.name),
@@ -189,6 +185,34 @@ async function listDir(path) {
 }
 const fmtSize = (n) => n > 1 << 20 ? (n / (1 << 20)).toFixed(1) + "M"
   : n > 1024 ? (n / 1024).toFixed(1) + "K" : n + "B";
+// 사용자가 고른·끌어다 놓은 파일 열기. 데스크톱 앱에서는 실제 경로를 얻어 복사 없이 그 자리에서 열고(큰 파일도 즉시),
+// 브라우저에서는 서버로 올린다.
+async function openLocalFile(f) {
+  const desk = window.reworkDesktop;
+  if (desk) {
+    const real = desk.pathForFile(f);
+    if (real) {
+      const bp = await desk.backendPath(real);
+      if (bp) { await openPath(bp); return; }
+    }
+  }
+  setMsg("업로드 중…");
+  try { const info = await api.upload(f); await onOpened(info); }
+  catch (err) { toast("열기 실패: " + err.message, "err"); setMsg(""); }
+}
+function hasFiles(e) { return !!(e.dataTransfer && Array.from(e.dataTransfer.types || []).includes("Files")); }
+function initFileDrop() {
+  // 창 어디에 놓아도 연다(그러지 않으면 브라우저가 그 파일 주소로 이동하려 한다)
+  document.addEventListener("dragover", (e) => { if (hasFiles(e)) e.preventDefault(); });
+  document.addEventListener("drop", async (e) => {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    const f = e.dataTransfer.files[0];
+    if (f) await openLocalFile(f);
+  });
+  // 데스크톱 셸의 ‘파일 > 열기…’·명령줄로 받은 경로
+  if (window.reworkDesktop && window.reworkDesktop.onOpenPath) window.reworkDesktop.onOpenPath((p) => openPath(p));
+}
 async function openPath(path) {
   setMsg("여는 중…");
   try { const info = await api.open(path); await onOpened(info); }
@@ -908,6 +932,12 @@ function renderDebugSidebar() {
   const d = S.dbg;
   if (!d.active) {
     if (!S.sbx) loadSandbox();
+    if (S.sbx && !S.sbx.error && S.sbx.debugger && !S.sbx.debugger.supported) {
+      // 이 운영체제에서는 디버거 자체가 없다(Windows): 시작 버튼 대신 이유와 대안을 보여 준다
+      body.append(el("div", { class: "dbg-warn" }, el("b", {}, "이 환경에서는 디버거를 쓸 수 없습니다. "), S.sbx.debugger.reason,
+        el("div", { class: "sbx-sub" }, "정적 분석(디스어셈블·디컴파일·문자열·심볼)은 그대로 쓸 수 있습니다.")));
+      return;
+    }
     if (!S.sbxForm) S.sbxForm = sbxFormFrom(SBX_DEFAULTS);
     const unavailable = S.sbx && !S.sbx.error && !S.sbx.status.available;
     const unknown = !sbxKnown() && !S.sbxOff;                 // 상태를 불러오는 중이거나 실패했다
@@ -1476,6 +1506,7 @@ function boot() {
   });
   // 키
   document.addEventListener("keydown", keybind);
+  initFileDrop();
   // 초기 화면
   setSideView("open");
   aiPush("sys", "AI 도우미입니다. 설정(⚙)에서 Ollama 또는 API 키를 지정한 뒤 질문하세요.");

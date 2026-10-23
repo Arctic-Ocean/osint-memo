@@ -1,7 +1,6 @@
+# rework 백엔드 의존성(개발·실행·데스크톱 패키징 공통). 분석에 쓰이는 것만 둔다 — 설치본(PyInstaller)은 이 목록 그대로 묶인다.
 lief>=1.0.0
 capstone>=5.0.0
-pefile>=2024.8.26
-pyelftools>=0.31
 fastapi>=0.110
-uvicorn[standard]>=0.29
+uvicorn>=0.29
 python-multipart>=0.0.9

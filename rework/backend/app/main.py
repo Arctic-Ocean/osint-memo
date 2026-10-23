@@ -10,6 +10,7 @@ import io
 import os
 import re
 import shutil
+import sys
 import threading
 import contextlib
 import traceback
@@ -26,16 +27,27 @@ from .analysis import Program
 from .project import Project
 from .decompile import Decompiler
 from .ai import AIConfig, chat as ai_chat
-from .debug import DebugSession, DebugError, LOG_TAIL_CHARS
+from .debug import DebugSession, DebugError, LOG_TAIL_CHARS, HAVE_POSIX_DEBUGGER
 from . import sandbox as sbx
+from . import __version__
 
 # ---- 경로 ---------------------------------------------------------------
 HERE = os.path.dirname(os.path.abspath(__file__))
-ROOT = os.path.abspath(os.path.join(HERE, "..", ".."))        # rework/
-FRONTEND = os.path.join(ROOT, "frontend")
-DATA_DIR = os.environ.get("REWORK_DATA", os.path.join(ROOT, "data"))
+FROZEN = bool(getattr(sys, "frozen", False))                   # PyInstaller 등으로 묶인 설치본인가
+ROOT = getattr(sys, "_MEIPASS", None) if FROZEN else os.path.abspath(os.path.join(HERE, "..", ".."))   # rework/
+ROOT = ROOT or os.path.abspath(os.path.join(HERE, "..", ".."))
+FRONTEND = os.environ.get("REWORK_FRONTEND") or os.path.join(ROOT, "frontend")
+# 데이터(프로젝트 주석 DB·업로드·AI 설정). 설치본은 쓸 수 없는 번들 안이 아니라 사용자 폴더를 기본으로 쓴다.
+DATA_DIR = os.environ.get("REWORK_DATA") or (os.path.join(os.path.expanduser("~"), ".rework", "data") if FROZEN
+                                             else os.path.join(ROOT, "data"))
 PROJECTS_DIR = os.path.join(DATA_DIR, "projects")
 UPLOADS_DIR = os.path.join(DATA_DIR, "uploads")
+os.makedirs(DATA_DIR, mode=0o700, exist_ok=True)
+if os.name == "posix" and (FROZEN or os.environ.get("REWORK_DESKTOP") == "1"):
+    try:                                                       # 설치본의 사용자 데이터(AI 키·프로젝트)는 본인만 열 수 있게
+        os.chmod(DATA_DIR, 0o700)
+    except OSError:
+        pass
 os.makedirs(PROJECTS_DIR, exist_ok=True)
 os.makedirs(UPLOADS_DIR, exist_ok=True)
 
@@ -119,7 +131,11 @@ def _token_ok(given) -> bool:
 
 _SEC_HEADERS = {
     "X-Frame-Options": "DENY",
-    "Content-Security-Policy": "frame-ancestors 'none'; object-src 'none'; base-uri 'none'",
+    # UI 는 같은 출처의 스크립트·스타일만 쓰고 인라인 스크립트·eval 이 없다: 분석 대상 파일에서 온 문자열이 어떻게든 HTML 로 해석되더라도
+    # 스크립트가 실행되지 않게 하는 마지막 방어선(그리고 다른 출처로 데이터를 보내지 못하게 connect-src 도 같은 출처로 제한).
+    "Content-Security-Policy": "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
+                               "font-src 'self'; connect-src 'self'; frame-ancestors 'none'; object-src 'none'; base-uri 'none'; "
+                               "form-action 'none'",
     "X-Content-Type-Options": "nosniff",
     "Referrer-Policy": "no-referrer",
 }
@@ -378,6 +394,16 @@ async def api_upload(file: UploadFile = File(...)):
 
 
 # ---- 조회 API -----------------------------------------------------------
+@app.get("/api/about")
+def api_about():
+    """앱 정보(데스크톱 셸·정보 화면용)."""
+    import platform as _pf
+    return {"name": "rework", "version": __version__, "desktop": os.environ.get("REWORK_DESKTOP") == "1",
+            "frozen": FROZEN, "platform": sys.platform, "python": _pf.python_version(),
+            "debugger_supported": HAVE_POSIX_DEBUGGER, "max_file_mb": MAX_FILE_MB,
+            "wsl": bool(os.environ.get("WSL_DISTRO_NAME")), "data_dir": DATA_DIR}
+
+
 @app.get("/api/info")
 def api_info():
     return STATE.prog().model.summary()
@@ -619,6 +645,9 @@ def _sandbox_report() -> dict:
     return {"status": status.to_dict(), "policy": SANDBOX_CFG.policy.to_dict(),
             "report": sbx.describe(SANDBOX_CFG.policy, status, potential=True),
             "guard": {"ready": status.guard_ready, "reason": sbx.guard_unavailable_reason(status)},
+            "debugger": {"supported": HAVE_POSIX_DEBUGGER,
+                         "reason": None if HAVE_POSIX_DEBUGGER else
+                         "이 운영체제(Windows)에서는 디버거를 쓸 수 없습니다. 디버깅은 리눅스(또는 데스크톱 앱의 WSL2 모드)에서 지원합니다."},
             "server": {"token_auth": bool(AUTH_TOKEN)}}
 
 
@@ -653,6 +682,9 @@ def _dbg_guard(fn):
 @app.post("/api/debug/start")
 def api_debug_start(payload: dict = Body(...)):
     prog = STATE.prog()
+    if not HAVE_POSIX_DEBUGGER:
+        raise HTTPException(400, "이 운영체제(Windows)에서는 디버거를 쓸 수 없습니다. 디버깅은 리눅스(또는 데스크톱 앱의 WSL2 모드)에서 "
+                                 "지원합니다. 정적 분석(디스어셈블·디컴파일)은 그대로 쓸 수 있습니다.")
     if prog.model.fmt != "ELF":
         raise HTTPException(400, f"{prog.model.fmt} 형식은 이 컴퓨터의 gdb 로 실행·디버깅할 수 없습니다(리눅스 ELF 만 지원). "
                                  "정적 분석(디스어셈블·디컴파일)은 그대로 쓸 수 있습니다.")
@@ -852,7 +884,11 @@ def api_fs(path: str = ""):
                 continue
             entries.append({"name": name, "path": full, "dir": is_dir, "size": size})
         entries.sort(key=lambda e: (not e["dir"], e["name"].lower()))
-        return {"path": path, "parent": os.path.dirname(path), "entries": entries}
+        drives = []
+        if os.name == "nt":                       # Windows: 다른 드라이브로 옮겨 갈 수 있게 드라이브 목록을 함께 준다
+            import string
+            drives = [f"{c}:\\" for c in string.ascii_uppercase if os.path.exists(f"{c}:\\")]
+        return {"path": path, "parent": os.path.dirname(path), "entries": entries, "drives": drives}
     except PermissionError:
         raise HTTPException(403, "권한이 없는 디렉터리입니다.")
 

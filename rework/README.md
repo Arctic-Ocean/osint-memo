@@ -7,6 +7,21 @@
 > 상태: 1차 버전(작동하는 코어). Ghidra·IDA를 대체하는 완성품은 아니며, 분석가가 큰 흐름을
 > 빠르게 잡도록 돕는 데 집중했습니다. 아래 **로드맵** 참고.
 
+## 설치(데스크톱 앱)
+
+**Kali·Ubuntu·Debian**: `rework-<버전>-linux-amd64.deb`(권장) 또는 `rework-<버전>-linux-x86_64.AppImage`.
+`.deb` 는 `gdb`·`bubblewrap` 을 의존성으로 받아 디버거와 격리 실행이 바로 동작합니다.
+
+```bash
+sudo apt install ./rework-0.1.0-linux-amd64.deb && rework        # 또는 메뉴의 rework
+chmod +x rework-0.1.0-linux-x86_64.AppImage && ./rework-0.1.0-linux-x86_64.AppImage   # AppImage 는 gdb·bubblewrap 을 직접 설치
+```
+
+**Windows**: `rework Setup <버전>.exe`. 정적 분석(디스어셈블·디컴파일·문자열·심볼)은 바로 되고, 디버거·격리 실행은 리눅스 전용이라
+메뉴 **실행 환경 > WSL2** 로 전환해 쓰세요([아래](#데스크톱-앱-windowskali)).
+
+개발 중에는 설치 없이 아래 [빠르게 실행](#빠르게-실행)(브라우저) 또는 `cd desktop && npm install && npm start`(앱 창).
+
 ## 빠르게 실행
 
 필요: Python 3.11+ (리눅스·Windows·macOS). 동적 분석(디버거)에는 **GDB**가 추가로 필요합니다
@@ -171,6 +186,40 @@ python3 -m venv .venv
   413 을 돌려줍니다. 토큰(`REWORK_TOKEN`)은 ASCII 여야 합니다. 토큰 인증이 꺼져 있고 이 컴퓨터에 다른 로그인 계정이 있으면 시작할 때 경고를 출력합니다.
   다른 호스트명이 필요하면 `REWORK_ALLOWED_HOSTS=이름1,이름2`.
 
+## 데스크톱 앱 (Windows·Kali)
+
+`desktop/` 은 Electron 셸입니다. **분석 백엔드(Python)를 앱 안에 묶어(PyInstaller) 띄우고**, 그 UI 를 창에 보여 주며, 종료할 때 정리합니다.
+사용자가 Python·pip 을 설치할 필요가 없습니다(디버거는 시스템의 `gdb`, 격리 실행은 `bubblewrap` 이 필요).
+
+| 항목 | 내용 |
+| --- | --- |
+| 백엔드 수명주기 | 백엔드가 `--port 0` 으로 **미리 바인딩한 소켓**의 포트를 `REWORK_PORT=` 로 알립니다(포트를 알아냈다 닫는 경쟁 없음). 응답을 확인한 뒤 창을 띄우고, 앱이 어떻게 끝나든(`SIGKILL` 포함) 표준 입력 파이프가 닫혀 **백엔드가 스스로 종료**합니다(고아 프로세스·열린 샌드박스 없음). 백엔드가 죽으면 오류 화면(사유·로그)과 **다시 시작** 버튼 |
+| 인증 | 앱이 시작마다 **무작위 토큰**을 만들어 백엔드에 환경 변수로만 넘기고, 창이 백엔드로 보내는 요청에만 헤더로 붙입니다(쿠키·주소·자바스크립트에 노출되지 않음). 같은 컴퓨터의 다른 사용자·프로세스는 포트를 알아도 API(스크립트 실행·격리 끄기 포함)를 부를 수 없습니다 |
+| 창 보안 | `contextIsolation`·`sandbox`·`nodeIntegration` 끔, 렌더러에는 최소 API(끌어다 놓은 파일의 경로·열기 결과 수신)만 노출. 백엔드 주소 밖으로의 이동·`file:`·`javascript:`·새 창 차단(`http(s)` 링크는 기본 브라우저로), 모든 권한 요청 거부, 시스템 프록시 미사용, 엄격한 CSP(같은 출처 스크립트만 — 분석 대상 파일에서 온 문자열이 어떻게든 HTML 이 돼도 실행되지 않음) |
+| 실행 파일 강화 | Electron 퓨즈: `RunAsNode`·`NODE_OPTIONS`·Node 인스펙터 끔, asar 무결성 검증·asar 전용 로드 켬(`ELECTRON_RUN_AS_NODE` 로 앱을 범용 Node 로 쓰는 것 차단). 개발자 도구는 개발 모드에서만 |
+| 데이터 | 사용자 폴더(`~/.config/rework`, Windows `%APPDATA%\rework`)의 `data/`(프로젝트·AI 설정 — 소유자 전용 0700/0600), `logs/backend.log`(토큰은 기록하지 않음), `config.json`(창 위치) |
+| 편의 | 메뉴 **파일 > 열기…**(네이티브 대화상자)·창에 파일 **끌어다 놓기** — 업로드 복사 없이 **그 자리에서** 엽니다(큰 파일도 즉시). `rework <파일>` 명령줄, 단일 인스턴스, 창 위치 기억 |
+
+**Windows**: 앱 안에 두 백엔드가 들어 있습니다. 기본은 **Windows 네이티브**(정적 분석 전부 — 디버거는 리눅스 전용이라 사이드바가 안내만 보여 줌).
+메뉴 **실행 환경 > WSL2** 를 고르면 같은 앱이 **WSL2 안의 리눅스 백엔드**를 띄워 디버거·격리 실행까지 씁니다(WSL2 와 배포판 필요, `C:\` 는
+`/mnt/c/` 로 자동 변환, 데이터는 WSL 홈의 `~/.rework/data`). 앱 종료·백엔드 사망 처리는 동일합니다.
+
+> ⚠ **검증 범위**: Linux(Kali·Ubuntu) 설치본(`.deb`·AppImage)은 이 저장소 환경에서 빌드해 실제로 띄워 시험했습니다(`desktop/test/e2e_packaged.mjs`).
+> **Windows 설치본은 이 환경에서 빌드·실행하지 못했습니다**(PyInstaller·electron-builder 는 크로스 빌드가 안 됨). Windows 용 코드(경로 변환·WSL2 실행·
+> 드라이브 목록·POSIX 모듈 없이 임포트)는 단위·시뮬레이션 테스트만 거쳤고, 빌드는 `.github/workflows/desktop.yml`(수동 실행)이 Windows 러너에서 합니다. 첫 Windows
+> 빌드·실행에서 문제가 나올 수 있으니 결과를 알려 주세요. 코드 서명이 없어 SmartScreen 경고가 뜹니다. 자동 업데이트는 없습니다(새 설치본으로 교체).
+> AppImage 는 사용자 네임스페이스를 쓸 수 없는 시스템(예: Ubuntu 24.04 기본 설정)에서 Chromium 샌드박스 없이(`--no-sandbox`) 시작합니다 — 그런 곳에서는 `.deb` 를 쓰세요.
+
+직접 빌드:
+
+```bash
+cd desktop && npm install
+npm run dist:linux        # 백엔드 번들(+스모크 테스트) → AppImage·deb  (dist/)
+npm test                  # 단위 테스트
+npm run test:e2e          # 개발 모드 셸 E2E(Xvfb 필요)
+npm run test:e2e:packaged # 설치본 E2E(Xvfb·퓨즈·토큰·격리 디버깅·종료 정리)
+```
+
 ## AI 설정
 
 설정(⚙) 또는 AI 패널의 톱니에서 제공자를 고릅니다.
@@ -198,6 +247,7 @@ REWORK_TEST_SANDBOX=1 .venv/bin/python tests/test_debugger.py   # 같은 시나�
 .venv/bin/python tests/test_sandbox.py       # 격리 탈출 시도(bwrap·gdb·gcc 필요, 없으면 건너뜀)
 .venv/bin/python tests/test_web_security.py  # Host 위조·교차 출처 요청(CSRF)·교차 포트 GET·업로드 상한·토큰 방어(서버를 직접 띄워 시험)
 .venv/bin/python tests/test_static_robustness.py  # 낯선 파일·이상한 입력(비 UTF-8 이름·수십만 심볼·거대 함수·동시 요청·입력 검증)
+.venv/bin/python tests/test_desktop_backend.py    # 데스크톱 모드(포트 0·토큰·부모 사망 종료·CSP)·Windows 처럼 POSIX 모듈이 없을 때·동결 경로
 ```
 
 실제 GDB로 `samples/demo_elf`를 디버깅하며 런타임 조작, MI 명령 주입 차단, 시작 실패·동시 종료 시
@@ -232,7 +282,9 @@ rework/
     strings.py           문자열 추출
   frontend/
     index.html, css/theme.css, js/{api,app}.js
+  desktop/               Electron 셸(src/: main·backend·menu·preload), 빌드 스크립트·E2E
   samples/               데모 바이너리
+  ../.github/workflows/desktop.yml   설치본 빌드(수동 실행·desktop-v* 태그)
 ```
 
 ## 로드맵 (다음 단계)
@@ -241,7 +293,7 @@ rework/
 
 1. ~~**디버거**(GDB/MI 래퍼): 중단점·한 줄 실행·변수 보기·**런타임 변수 조작**~~ — ✅ 완료(`debug.py`)
 2. ~~**대상 실행 샌드박스**: 신뢰할 수 없는 바이너리를 격리 실행(네임스페이스/seccomp/컨테이너)~~ — ✅ 완료(`sandbox.py`, Linux·bubblewrap. Windows 는 WSL2/VM)
-3. **데스크톱 패키징**: Windows·Kali용 Electron(또는 Tauri) 설치본
+3. ~~**데스크톱 패키징**: Windows·Kali용 Electron(또는 Tauri) 설치본~~ — ✅ Linux(Kali·Ubuntu) `.deb`·AppImage 완료·검증. Windows 설치본은 코드·CI 워크플로까지 작성(Windows 러너 첫 빌드·실행은 미검증 — [데스크톱 앱](#데스크톱-앱-windowskali) 참고)
 4. **폴더 열기 + 소스 편집**: Monaco 에디터(자동완성·구문강조·코드접기)
 5. **디컴파일 고도화**: 완전한 if/else·switch·루프 구조화, 타입/인자 추론, ARM 의사코드
 6. **디버거 심화**: 조건부 중단점·워치포인트, 메모리/스택 뷰어, 역방향 디버깅, 원격 gdbserver

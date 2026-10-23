@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="ko"><head><meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'">
+<title>rework — 시작할 수 없습니다</title>
+<style>
+  html,body{height:100%;margin:0;background:#0b1522;color:#c9d6e8;font-family:system-ui,"Noto Sans KR","Malgun Gothic",sans-serif}
+  .wrap{max-width:820px;margin:0 auto;padding:40px 28px}
+  h1{font-size:22px;margin:0 0 8px}.logo{color:#60a5fa;font-weight:700}
+  #msg{color:#f0b429;margin:10px 0 18px;line-height:1.5}
+  pre{background:#0f1c2e;border:1px solid #1e3350;border-radius:6px;padding:12px;max-height:340px;overflow:auto;font-size:12px;white-space:pre-wrap;word-break:break-all;color:#9fb3cf}
+  .row{display:flex;gap:10px;margin-top:18px;flex-wrap:wrap}
+  button{background:#13243a;color:#c9d6e8;border:1px solid #2a4468;border-radius:6px;padding:8px 16px;font-size:14px;cursor:pointer}
+  button.primary{background:#3b82f6;border-color:#3b82f6;color:#fff}
+  button:hover{filter:brightness(1.15)}
+  .hint{margin-top:16px;font-size:13px;color:#8aa0bd;line-height:1.6}
+</style></head>
+<body><div class="wrap">
+<h1><span class="logo">rework</span> — 분석 엔진을 사용할 수 없습니다</h1>
+<div id="msg"></div>
+<pre id="log">(로그 없음)</pre>
+<div class="row">
+  <button class="primary" id="restart">다시 시작</button>
+  <button id="logs">로그 폴더 열기</button>
+  <button id="quit">종료</button>
+</div>
+<div class="hint" id="hint"></div>
+</div>
+<script>
+  const $ = (id) => document.getElementById(id);
+  window.reworkShell.info().then((i) => {
+    $('msg').textContent = i.message || '알 수 없는 오류';
+    $('log').textContent = i.log || '(로그 없음)';
+    $('hint').textContent = i.hint || '';
+  });
+  $('restart').onclick = () => window.reworkShell.restart();
+  $('logs').onclick = () => window.reworkShell.openLogs();
+  $('quit').onclick = () => window.reworkShell.quit();
+</script></body></html>

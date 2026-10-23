@@ -1,0 +1,121 @@
+{
+  "name": "rework-desktop",
+  "productName": "rework",
+  "version": "0.1.0",
+  "description": "rework — 리버스 엔지니어링 워크벤치 (데스크톱 앱)",
+  "main": "src/main.js",
+  "private": true,
+  "author": "rework",
+  "homepage": "https://github.com/Arctic-Ocean/osint-memo",
+  "scripts": {
+    "start": "electron . --dev",
+    "backend": "python3 scripts/build_backend.py",
+    "dist:linux": "python3 scripts/build_backend.py && electron-builder --linux AppImage deb --publish never",
+    "dist:win": "python scripts/build_backend.py && electron-builder --win nsis --publish never",
+    "pack": "electron-builder --dir --publish never",
+    "test": "node --test test/unit.test.js",
+    "test:e2e": "xvfb-run -a node test/e2e_dev.mjs",
+    "test:e2e:packaged": "xvfb-run -a node test/e2e_packaged.mjs"
+  },
+  "devDependencies": {
+    "electron": "^45.0.0",
+    "electron-builder": "^26.15.3",
+    "playwright-core": "^1.64.1"
+  },
+  "build": {
+    "appId": "io.rework.desktop",
+    "productName": "rework",
+    "copyright": "rework",
+    "directories": {
+      "output": "dist",
+      "buildResources": "assets"
+    },
+    "files": [
+      "src/**/*",
+      "package.json"
+    ],
+    "asar": true,
+    "electronFuses": {
+      "runAsNode": false,
+      "enableCookieEncryption": true,
+      "enableNodeOptionsEnvironmentVariable": false,
+      "enableNodeCliInspectArguments": false,
+      "enableEmbeddedAsarIntegrityValidation": true,
+      "onlyLoadAppFromAsar": true,
+      "grantFileProtocolExtraPrivileges": false
+    },
+    "linux": {
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "category": "Development",
+      "icon": "icon.png",
+      "synopsis": "리버스 엔지니어링 워크벤치",
+      "description": "정적 분석·디컴파일·GDB 디버거·격리 실행을 갖춘 한국어 리버스 엔지니어링 워크벤치",
+      "extraResources": [
+        {
+          "from": "build/backend-linux",
+          "to": "backend"
+        }
+      ],
+      "maintainer": "rework <noreply@users.noreply.github.com>",
+      "executableName": "rework",
+      "syncDesktopName": true,
+      "artifactName": "rework-${version}-linux-${arch}.${ext}"
+    },
+    "deb": {
+      "depends": [
+        "gdb",
+        "bubblewrap",
+        "libgtk-3-0",
+        "libnotify4",
+        "libnss3",
+        "libxss1",
+        "libxtst6",
+        "xdg-utils",
+        "libatspi2.0-0",
+        "libuuid1",
+        "libsecret-1-0"
+      ],
+      "recommends": [
+        "gcc"
+      ],
+      "packageName": "rework"
+    },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "icon.ico",
+      "extraResources": [
+        {
+          "from": "build/backend-win",
+          "to": "backend"
+        },
+        {
+          "from": "build/backend-wsl",
+          "to": "backend-wsl"
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "shortcutName": "rework",
+      "deleteAppDataOnUninstall": false
+    }
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Arctic-Ocean/osint-memo.git",
+    "directory": "rework/desktop"
+  },
+  "desktopName": "rework.desktop"
+}
