@@ -30,6 +30,17 @@ HELPERS = """#include <stdint.h>
 #if !defined(__clang__)
 #define __builtin_bit_cast(T, x) ({ __typeof__(x) _bcs = (x); T _bcd; __builtin_memcpy(&_bcd, &_bcs, sizeof _bcd); _bcd; })
 #endif
+#define fma __builtin_fma
+#define fmaf __builtin_fmaf
+#define fmax __builtin_fmax
+#define fmin __builtin_fmin
+#define fmaxf __builtin_fmaxf
+#define fminf __builtin_fminf
+#define trunc __builtin_trunc
+#define floor __builtin_floor
+#define ceil __builtin_ceil
+#define round __builtin_round
+#define rint __builtin_rint
 #define sqrt __builtin_sqrt
 #define sqrtf __builtin_sqrtf
 #define fabs __builtin_fabs
@@ -159,15 +170,24 @@ class Machine:
         elif a["abi"] == "aapcs64":
             regs = [A64.UC_ARM64_REG_X0 + i for i in range(8)]
             rng = random.Random(addr)
-            for i, (v, n) in enumerate(args[:8]):
-                junk = rng.getrandbits(64) & ~((1 << (8 * n)) - 1) if n < 8 else 0
-                uc.reg_write(regs[i], (v & ((1 << (8 * n)) - 1)) | junk)
+            ii = fi = 0
+            for arg in args:
+                if arg[0] == "fp":
+                    raw = arg[2] & ((1 << (8 * arg[1])) - 1)
+                    junk = (rng.getrandbits(128) >> (8 * arg[1])) << (8 * arg[1])            # v 레지스터의 윗부분은 쓰레기
+                    uc.reg_write(A64.UC_ARM64_REG_Q0 + fi, (raw | junk) & ((1 << 128) - 1))
+                    fi += 1
+                else:
+                    v, n = arg
+                    junk = rng.getrandbits(64) & ~((1 << (8 * n)) - 1) if n < 8 else 0
+                    uc.reg_write(regs[ii], (v & ((1 << (8 * n)) - 1)) | junk)
+                    ii += 1
             for i in range(8, 18):
                 uc.reg_write(A64.UC_ARM64_REG_X0 + i, rng.getrandbits(64))
             uc.reg_write(A64.UC_ARM64_REG_SP, sp & ~0xF)
             uc.reg_write(A64.UC_ARM64_REG_LR, SENTINEL)
             uc.emu_start(addr, SENTINEL, count=3_000_000)
-            r = uc.reg_read(A64.UC_ARM64_REG_X0)
+            r = uc.reg_read(A64.UC_ARM64_REG_Q0 if ret_fp else A64.UC_ARM64_REG_X0)
         elif a["abi"] == "aapcs":
             regs = [A32.UC_ARM_REG_R0, A32.UC_ARM_REG_R1, A32.UC_ARM_REG_R2, A32.UC_ARM_REG_R3]
             stack_args = args[4:]

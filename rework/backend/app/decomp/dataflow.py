@@ -17,7 +17,7 @@ FLAGS = "F"
 
 class Abi:
     def __init__(self, arg_regs, ret, clobbers, full, name, sp, fps, callee_saved, stack_arg_base, ret_reads,
-                 call_mn=("call",), ret_mn=("ret",), branch_prefix=("j",)):
+                 call_mn=("call",), ret_mn=("ret",), branch_prefix=("j",), fpr="xmm", fp_nargs=8):
         self.arg_regs = arg_regs
         self.ret = ret
         self.clobbers = set(clobbers)
@@ -31,22 +31,31 @@ class Abi:
         self.call_mn = call_mn
         self.ret_mn = ret_mn
         self.branch_prefix = branch_prefix
+        self.fpr = fpr                       # 부동소수점 레지스터 위치 접두사(xmm·v)
+        self.fp_nargs = fp_nargs             # 부동소수점 인자 레지스터 수
+        self.fp_ret = f"{fpr}0"
 
 
-def xmm_lanes(lo: int, hi: int):
-    """xmm 레지스터 번호 lo..hi-1 의 (하위·상위 64비트) 위치 이름들."""
+def xmm_lanes(lo: int, hi: int, prefix: str = "xmm", skip=()):
+    """부동소수점·벡터 레지스터 번호 lo..hi-1 의 (하위·상위 64비트) 위치 이름들(x86 은 xmm, ARM64 는 v)."""
     out = set()
     for i in range(lo, hi):
-        out.add(f"xmm{i}")
-        out.add(f"xmm{i}h")
+        if i in skip:
+            continue
+        out.add(f"{prefix}{i}")
+        out.add(f"{prefix}{i}h")
     return out
+
+
+def is_fp_loc(name: str) -> bool:
+    return (name.startswith("xmm") and name[3:].rstrip("h").isdigit()) or (name.startswith("v") and name[1:].rstrip("h").isdigit())
 
 
 def loc_size(name: str, abi: "Abi") -> int:
     """위치 이름의 기본 폭(플래그 1바이트, xmm 한 조각 8바이트, 그 밖에는 레지스터 폭)."""
     if name == FLAGS:
         return 1
-    if name.startswith("xmm"):
+    if is_fp_loc(name):
         return 8
     return abi.full
 
@@ -57,13 +66,13 @@ def abi_for(arch: str, bits: int, fmt: str) -> Abi:
                       ret_reads=("rax", "eax", "ax", "al", "ah"))
         if fmt == "PE":
             return Abi(["rcx", "rdx", "r8", "r9"], "rax", {"rax", "rcx", "rdx", "r8", "r9", "r10", "r11", FLAGS} | xmm_lanes(0, 6), 8, "win64",
-                       stack_arg_base=40, **common)
+                       stack_arg_base=40, fp_nargs=4, **common)
         return Abi(["rdi", "rsi", "rdx", "rcx", "r8", "r9"], "rax",
                    {"rax", "rcx", "rdx", "rsi", "rdi", "r8", "r9", "r10", "r11", FLAGS} | xmm_lanes(0, 16), 8, "sysv", stack_arg_base=8, **common)
     if arch == "arm64":
-        return Abi([f"x{i}" for i in range(8)], "x0", {f"x{i}" for i in range(19)} | {"x30", FLAGS}, 8, "aapcs64",
-                   sp="sp", fps=("x29",), callee_saved={f"x{i}" for i in range(19, 30)} | {"sp"}, stack_arg_base=0,
-                   ret_reads=("x0", "w0"), call_mn=("bl", "blr"), ret_mn=("ret",), branch_prefix=("b", "cb", "tb"))
+        return Abi([f"x{i}" for i in range(8)], "x0", {f"x{i}" for i in range(19)} | {"x30", FLAGS} | xmm_lanes(0, 32, "v", skip=range(8, 16)), 8,
+                   "aapcs64", sp="sp", fps=("x29",), callee_saved={f"x{i}" for i in range(19, 30)} | {"sp"}, stack_arg_base=0,
+                   ret_reads=("x0", "w0"), call_mn=("bl", "blr"), ret_mn=("ret",), branch_prefix=("b", "cb", "tb"), fpr="v", fp_nargs=8)
     if arch == "arm":
         return Abi(["r0", "r1", "r2", "r3"], "r0", {"r0", "r1", "r2", "r3", "r12", "r14", FLAGS}, 4, "aapcs",
                    sp="sp", fps=("r11",), callee_saved={f"r{i}" for i in range(4, 12)} | {"sp"}, stack_arg_base=0,

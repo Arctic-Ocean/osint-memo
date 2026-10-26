@@ -434,7 +434,8 @@ class Renderer(FpRender):
             return self.fp_cmp_text(e)
         if op == "f2i":
             t, p = self.PF(e.args[0], e.args[0].sz)
-            return f"({itype(sz, 's')}){self._paren(t, p, PREC['unary'])}", "s", PREC["unary"]
+            sg = "u" if e.aux == "u" else "s"
+            return f"({itype(sz, sg)}){self._paren(t, p, PREC['unary'])}", sg, PREC["unary"]
         if op in ir.FOPS:
             return self.bits_of_fp(e)
         if op == "stk":

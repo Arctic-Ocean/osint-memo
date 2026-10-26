@@ -17,7 +17,7 @@ PREC = {"prim": 16, "unary": 14, "mul": 13, "add": 12, "shift": 11, "rel": 10, "
 FTYPE = {4: "float", 8: "double"}
 _BIN = {"fadd": ("+", "add"), "fsub": ("-", "add"), "fmul": ("*", "mul"), "fdiv": ("/", "mul")}
 _CMP = {"feq": ("==", "eq"), "fne": ("!=", "eq"), "flt": ("<", "rel"), "fle": ("<=", "rel"), "fgt": (">", "rel"), "fge": (">=", "rel")}
-FP_VALUE_OPS = ir.FOPS2 | ir.FOPS1 | {"i2f", "f2f"}          # 부동소수점 값을 만드는 연산
+FP_VALUE_OPS = ir.FOPS2 | ir.FOPS1 | ir.FOPS3 | {"i2f", "f2f"}          # 부동소수점 값을 만드는 연산
 
 
 def fp_literal(bits: int, kind: int) -> str:
@@ -82,6 +82,9 @@ class FpRender:
                 if op in ir.FOPS2:
                     mark(n.args[0], n.sz)
                     mark(n.args[1], n.sz)
+                elif op in ir.FOPS3:
+                    for a_ in n.args:
+                        mark(a_, n.sz)
                 elif op in ir.FOPS1:
                     mark(n.args[0], n.sz)
                 elif op in ("f2i", "f2f"):
@@ -167,6 +170,17 @@ class FpRender:
             ta, pa = self.PF(e.args[0], kind)
             tb, pb = self.PF(e.args[1], kind)
             return f"{self._paren(ta, pa, PREC[pr])} {sym} {self._paren(tb, pb, PREC[pr] + 1)}", PREC[pr]
+        if op in ("fcmin", "fcmax") and e.sz == kind:
+            ta, pa = self.PF(e.args[0], kind)
+            tb, pb = self.PF(e.args[1], kind)
+            nm = ("fmin" if op == "fcmin" else "fmax") + ("" if kind == 8 else "f")
+            return f"{nm}({ta}, {tb})", PREC["prim"]
+        if op == "ffma" and e.sz == kind:
+            ts = [self.PF(a_, kind)[0] for a_ in e.args]
+            return f"{'fma' if kind == 8 else 'fmaf'}({', '.join(ts)})", PREC["prim"]
+        if op == "fround" and e.sz == kind:
+            t, p = self.PF(e.args[0], kind)
+            return f"{e.aux}{'' if kind == 8 else 'f'}({t})", PREC["prim"]
         if op in ("fmin", "fmax") and e.sz == kind:
             ta, pa = self.PF(e.args[0], kind)
             tb, pb = self.PF(e.args[1], kind)

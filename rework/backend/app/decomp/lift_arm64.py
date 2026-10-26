@@ -13,6 +13,7 @@ from capstone.arm64 import (ARM64_OP_REG as OP_REG, ARM64_OP_IMM as OP_IMM, ARM6
 
 from . import ir
 from .ir import C, X, S, loc, mem, add, sub, binop, unop, zext, sext, trunc, cmp, ite, flags, cc, mask
+from .lift_arm64_fp import A64Fp
 
 FLAGS = "F"
 ARM_CC = {1: "eq", 2: "ne", 3: "hs", 4: "lo", 5: "mi", 6: "pl", 7: "vs", 8: "vc", 9: "hi", 10: "ls", 11: "ge", 12: "lt",
@@ -25,14 +26,15 @@ class Unsupported(Exception):
     pass
 
 
-class A64Lifter:
+class A64Lifter(A64Fp):
     full = 8
     SP = "sp"
 
-    def __init__(self, cs, bits, read=None):
+    def __init__(self, cs, bits, read=None, is_const=None):
         self.cs = cs
         self.bits = bits
         self.read = read                 # 코드 안의 리터럴 풀을 읽는 함수(va, 크기) → bytes
+        self.is_const = is_const         # va → 읽기 전용 데이터 구역인가(상수 주소의 읽기를 값으로 접는다)
         self.div_state = None
         self._tmp = 0
 
@@ -76,6 +78,17 @@ class A64Lifter:
 
     def reg_sz(self, rid) -> int:
         return self.reg_info(rid)[1]
+
+    def _arm_cc(self, insn) -> str:
+        return ARM_CC[insn.cc]
+
+    def load_mem(self, a: X, sz: int) -> X:
+        """메모리 읽기. 읽기 전용 구역의 상수 주소는 그 값으로 접는다."""
+        if a.op == "c" and self.is_const is not None and self.read is not None and sz in (1, 2, 4, 8) and self.is_const(a.aux):
+            data = self.read(a.aux, sz)
+            if data and len(data) == sz:
+                return C(int.from_bytes(data, "little"), sz)
+        return mem(a, sz)
 
     # ---- 피연산자 -----------------------------------------------------------------
     def _shift(self, v: X, kind: int, amt: int) -> X:
@@ -165,6 +178,16 @@ class A64Lifter:
                 defs.add(c)
         for op in insn.operands:
             if op.type == OP_REG:
+                fi = self.fp_info(op.reg)
+                if fi is not None:
+                    lanes = [f"v{fi[1]}", f"v{fi[1]}h"]
+                    if op.access & 1:
+                        uses.update(lanes)
+                    if op.access & 2:
+                        defs.update(lanes)
+                        if not (op.access & 1):
+                            uses.update(lanes)
+                    continue
                 c = canon(op.reg)
                 if c:
                     if op.access & 1:
@@ -198,6 +221,9 @@ class A64Lifter:
         if m in ("nop", "hint", "dmb", "dsb", "isb", "yield", "wfe", "wfi", "sev", "sevl", "prfm", "csdb", "bti", "paciasp", "autiasp",
                  "pacibsp", "autibsp", "xpaclri"):
             return []
+        fp = self._fp(insn, m, ops, a)
+        if fp is not None:
+            return fp
         if m in ("brk", "udf", "hlt"):
             return [S("noret", a)]
         if m == "ret":
@@ -454,7 +480,7 @@ class A64Lifter:
         for k, rid in enumerate(regs):
             ea = addr if k == 0 else binop("add", addr, C(k * msz, 8), 8)
             if load:
-                v = mem(ea, msz)
+                v = self.load_mem(ea, msz)
                 dsz = self.reg_sz(rid)
                 if msz < dsz:
                     v = sext(v, dsz) if sx else zext(v, dsz)

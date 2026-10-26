@@ -107,7 +107,7 @@ class FuncDecomp:
             lifter = X86Lifter(prog.dis.cs, self.bits, prog.dis.read, self._const_data)
         elif self.arch == "arm64":
             from .lift_arm64 import A64Lifter
-            lifter = A64Lifter(prog.dis.cs, self.bits, prog.dis.read)
+            lifter = A64Lifter(prog.dis.cs, self.bits, prog.dis.read, self._const_data)
         else:
             raise Unsupported(self.arch)
         self.lifter = lifter
@@ -344,7 +344,7 @@ class FuncDecomp:
 
     def _fp_plan(self, flow, s, blk, name, pr, ci):
         """호출의 부동소수점 인자: [(xmm 번호, 폭)]. Windows x64 는 위치가 곧 번호다. 반환형은 (인자 목록, 반환 폭 또는 None)."""
-        if self.arch != "x64":
+        if self.arch not in ("x64", "arm64"):
             return [], None
         win = self.abi.name == "win64"
         rk = None
@@ -373,8 +373,8 @@ class FuncDecomp:
         # 알 수 없는 호출 대상: 같은 기본 블록에서 실제로 쓴 xmm 인자 레지스터만 인자로 본다(앞 코드의 남은 값을 인자로 오해하지 않도록)
         n = 0
         stmts = blk.stmts
-        while n < (4 if win else 8):
-            ds = flow.reaching_at(s, f"xmm{n}")
+        while n < self.abi.fp_nargs:
+            ds = flow.reaching_at(s, f"{self.abi.fpr}{n}")
             if not any(d.kind in ("asg", "unk") and d.stmt is not None and d.stmt in stmts for d in ds):
                 break
             n += 1
@@ -414,13 +414,13 @@ class FuncDecomp:
                     pos += 1
                 fargs, fkinds = [], []
                 for k, kind in fp:
-                    x = loc(f"xmm{k}", 8)
+                    x = loc(f"{abi.fpr}{k}", 8)
                     fargs.append(x if kind == 8 else ir.trunc(x, 4))
                     fkinds.append(kind)
                 info = dict(s.src.aux or {})
                 info.update(name=name, proto=pr, nargs=len(args), callee=ci, fp_kinds=fkinds, ret_fp=rk)
                 if rk:
-                    s.dst = loc("xmm0", 8)
+                    s.dst = loc(abi.fp_ret, 8)
                     fp_ret = True
                 s.src = X("call", (tgt,) + tuple(args) + tuple(fargs), full, info)
         return fp_ret
@@ -464,10 +464,10 @@ class FuncDecomp:
                 rv = False
         self.returns_value = rv
         self.ret_fp = None
-        if self.arch == "x64":
+        if self.arch in ("x64", "arm64"):
             fpk = self._fp_return_kind(flow)
             if fpk:
-                pf = self._ret_pure(flow, "xmm0")
+                pf = self._ret_pure(flow, self.abi.fp_ret)
                 pi = self._ret_pure(flow, self.abi.ret)
                 used = self.callers_use_fp_result()
                 if used is None and rv and pi is not None:
@@ -486,7 +486,7 @@ class FuncDecomp:
                     choose = False
                 else:
                     fa = max((d.stmt.addr for t in self._ret_terms() for d in flow.reaching_at(t, self.abi.ret) if d.kind in ("asg", "unk")), default=-1)
-                    ff = max((d.stmt.addr for t in self._ret_terms() for d in flow.reaching_at(t, "xmm0")
+                    ff = max((d.stmt.addr for t in self._ret_terms() for d in flow.reaching_at(t, self.abi.fp_ret)
                               if d.kind in ("asg", "unk", "call") and d.stmt is not None), default=-1)
                     choose = ff > fa
                 if choose:
@@ -495,7 +495,7 @@ class FuncDecomp:
         for b in self.blocks.values():
             if b.term.k == "ret":
                 if self.ret_fp:
-                    x0 = loc("xmm0", 8)
+                    x0 = loc(self.abi.fp_ret, 8)
                     b.term.src = x0 if self.ret_fp == 8 else ir.trunc(x0, 4)
                 else:
                     b.term.src = loc(self.abi.ret, self.full) if rv else None
@@ -555,7 +555,7 @@ class FuncDecomp:
         found = False
         kind = None
         for t in self._ret_terms():
-            for d in flow.reaching_at(t, "xmm0"):
+            for d in flow.reaching_at(t, self.abi.fp_ret):
                 if d.kind == "call":
                     info = d.stmt.src.aux or {}
                     rk = info.get("ret_fp")
@@ -580,13 +580,13 @@ class FuncDecomp:
             return 4
         if src.op == "zext" and src.args[0].sz == 4:
             src = src.args[0]
-        if src.op in ir.FOPS2 | ir.FOPS1 | {"i2f", "f2f"}:
+        if src.op in ir.FOPS2 | ir.FOPS1 | ir.FOPS3 | {"i2f", "f2f"}:
             return src.sz
         if src.op == "mem" and src.sz in (4, 8):
             return src.sz
         if src.op == "c" and src.sz in (4, 8) and src.aux != 0:                      # 0 은 pxor 로도 만들어지므로 폭의 증거가 못 된다
             return src.sz
-        if src.op in ("loc", "xor", "and", "trunc", "zext", "ins", "or"):
+        if src.op in ("loc", "xor", "and", "trunc", "zext", "ins", "or", "ite"):
             names = [n.aux for n in ir.walk(src) if n.op == "loc"]
             for nm in names:
                 for dd in flow.reaching(d.stmt, nm):
@@ -594,6 +594,9 @@ class FuncDecomp:
                     if k:
                         return k
         return None
+
+    def _fp_ret_names(self) -> set:
+        return {"xmm0"} if self.arch == "x64" else {"v0", "d0", "s0", "q0"}
 
     def callers_use_fp_result(self):
         """호출하는 쪽이 xmm0 을 읽는지: True/False, 호출자를 모르면 None."""
@@ -616,9 +619,9 @@ class FuncDecomp:
                             reads.add(n)
                         if op.access & 2:
                             writes.add(n)
-                if "xmm0" in reads:
+                if reads & self._fp_ret_names():
                     return True
-                if "xmm0" in writes:
+                if writes & self._fp_ret_names():
                     break
                 if ins.mnemonic.startswith(("j", "ret", "call")):
                     break
@@ -898,6 +901,9 @@ class FuncDecomp:
                             mark(n.args[1], sz)
                         elif n.op in ir.FOPS1:
                             mark(n.args[0], n.sz)
+                        elif n.op in ir.FOPS3:
+                            for a_ in n.args:
+                                mark(a_, n.sz)
                         elif n.op in ("f2i", "f2f"):
                             mark(n.args[0], n.args[0].sz)
         return kinds
@@ -909,14 +915,16 @@ class FuncDecomp:
         self.fp_param_kinds = {}
         self.fp_placeholders = {}
         self.fp_entries = []                     # 시그니처용 (웹 또는 None, 번호)
-        if self.arch != "x64" or getattr(self, "variadic", False):
+        if self.arch not in ("x64", "arm64") or getattr(self, "variadic", False):
             return
         flow = self.flow
         kinds = self.fp_operand_kinds()
-        cnt = 8 if self.abi.name == "sysv" else 4
+        cnt = self.abi.fp_nargs
+        sequential = self.abi.name != "win64"                 # SysV·AAPCS64 는 정수·실수 인자 레지스터를 따로 센다
+        fpr = self.abi.fpr
         xw = {}
         for k in range(cnt):
-            d = flow.entry_def.get(f"xmm{k}")
+            d = flow.entry_def.get(f"{fpr}{k}")
             if d is not None:
                 w = flow.web_of_def[d.id]
                 if w in used and self.webs[w].entry and not self.webs[w].param:
@@ -924,7 +932,7 @@ class FuncDecomp:
         if not xw:
             return
         n_int = len(self.params)
-        if self.abi.name == "sysv":
+        if sequential:
             top = max(xw)
             for k in range(top + 1):
                 w = xw.get(k)
@@ -941,7 +949,7 @@ class FuncDecomp:
                     self.fp_params.append((w, k, kinds.get(w, 8)))
             n_int = 0
         for pos, (w, k, kind) in enumerate(self.fp_params):
-            idx = (n_int + pos) if self.abi.name == "sysv" else k
+            idx = (n_int + pos) if sequential else k
             if w is not None:
                 self.webs[w].param = idx
                 self.fp_param_kinds[w] = kind

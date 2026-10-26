@@ -64,10 +64,11 @@ CMP_INV = {"eq": "ne", "ne": "eq", "slt": "sge", "sge": "slt", "sle": "sgt", "sg
 CMP_SWAP = {"eq": "eq", "ne": "ne", "slt": "sgt", "sgt": "slt", "sle": "sge", "sge": "sle",
             "ult": "ugt", "ugt": "ult", "ule": "uge", "uge": "ule"}
 # 부동소수점: 값은 IEEE 비트 패턴(폭 4 = float, 8 = double)으로 정수와 같은 방식으로 들고 다닌다.
-FOPS2 = {"fadd", "fsub", "fmul", "fdiv", "fmin", "fmax"}
-FOPS1 = {"fsqrt", "fneg", "fabs"}
-FCONV = {"i2f", "f2i", "f2f"}                # i2f: 정수→float(aux 's'|'u' 는 원본 부호) · f2i: float→정수(0 쪽으로 자름) · f2f: float↔double
-FOPS = FOPS2 | FOPS1 | FCONV
+FOPS2 = {"fadd", "fsub", "fmul", "fdiv", "fmin", "fmax", "fcmin", "fcmax"}            # fmin·fmax: SSE(비교 뒤 선택), fcmin·fcmax: C 라이브러리 fmin·fmax
+FOPS1 = {"fsqrt", "fneg", "fabs", "fround"}                                            # fround 의 aux: trunc·floor·ceil·round·rint
+FOPS3 = {"ffma"}                                                                       # ffma(a, b, c) = a*b + c (한 번만 반올림)
+FCONV = {"i2f", "f2i", "f2f"}                # i2f: 정수→float(aux 's'|'u' 는 원본 부호) · f2i: float→정수(0 쪽으로 자름, aux 'u' 는 부호 없는 정수) · f2f: float↔double
+FOPS = FOPS2 | FOPS1 | FOPS3 | FCONV
 FCMP_OPS = {"feq", "fne", "flt", "fle", "fgt", "fge", "funord"}                      # 불리언(NaN 이면 funord·fne 만 참)
 BOOL_OPS = CMP_OPS | {"land", "lor", "lnot"} | FCMP_OPS
 
@@ -565,6 +566,14 @@ _ARM_TO_X86_SUB = {"eq": "e", "ne": "ne", "hs": "ae", "lo": "b", "hi": "a", "ls"
                    "ge": "ge", "lt": "l", "gt": "g", "le": "le"}
 
 
+def _reduce_farm(code: str, fl: X):
+    A, B = fl.args
+    lt, le, gt, ge, eq = (X(o, (A, B), 1) for o in ("flt", "fle", "fgt", "fge", "feq"))
+    un = X("funord", (A, B), 1)
+    return {"eq": eq, "ne": X("fne", (A, B), 1), "mi": lt, "lo": lt, "pl": invert(lt), "hs": invert(lt), "vs": un, "vc": invert(un),
+            "hi": invert(le), "ls": le, "ge": ge, "lt": invert(ge), "gt": gt, "le": invert(gt), "al": C(1, 1), "nv": C(0, 1)}.get(code)
+
+
 def _reduce_arm(code: str, fl: X):
     """ARM 조건 이름을 플래그 원천 종류에 맞춰 푼다(ARM 의 C 는 뺄셈에서는 '빌림 없음', 덧셈에서는 '자리올림')."""
     if code == "al":
@@ -627,6 +636,8 @@ def reduce_cc(code: str, fl: X):
         if ra is None or rb is None:
             return None
         return _bool_ite(fl.args[0], ra, rb)
+    if fl.aux == "fcmpa":                              # ARM64 fcmp: 같음 → Z·C, 작음 → N, 큼 → C, 정렬 불가 → C·V
+        return _reduce_farm(code, fl)
     if code in ARM_CODES or fl.aux == "nzcv":
         return _reduce_arm(code, fl)
     kind, a = fl.aux, fl.args
