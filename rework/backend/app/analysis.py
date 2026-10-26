@@ -68,6 +68,21 @@ class Program:
             return
         if not got_to_name:
             return
+        # .plt / .plt.sec / .plt.got 구역을 직접 훑어, 각 스텁이 GOT 의 어느 심볼로 점프하는지로 이름을 붙인다
+        for sec in self.model.sections:
+            if sec.name in (".plt", ".plt.sec", ".plt.got", "__stubs") and sec.vaddr and sec.size:
+                start = None
+                for ins in self.dis.disasm(sec.vaddr, min(sec.size, 0x20000)):
+                    if ins["mnemonic"].startswith("nop"):
+                        continue
+                    if start is None:
+                        start = ins["addr"]
+                    if ins["flow"] in ("jmp", "cjmp", "ret"):
+                        for ref in ins["refs"]:
+                            nm = got_to_name.get(ref["target"])
+                            if nm and start not in self.plt_names:
+                                self.plt_names[start] = nm
+                        start = None
         for f in self.model.functions:
             if f.name:                       # 이미 이름이 있으면 건드리지 않음
                 continue

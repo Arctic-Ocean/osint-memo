@@ -71,7 +71,7 @@ def _split_ops(op_str: str):
     return out
 
 
-class Decompiler:
+class _LegacyDecompiler:
     def __init__(self, program):
         self.prog = program
         self.bits = program.model.bits
@@ -491,3 +491,43 @@ class Decompiler:
     def _signature(self, name, blocks) -> str:
         # 인자 개수는 추정하지 않고 이름만. 반환형은 미상 표기.
         return f"undefined {name}()"
+
+
+class Decompiler:
+    """공개 진입점. x86/x64 는 IR 기반 파이프라인(decomp/)으로, 그 밖의 구조는 예전 방식(또는 안내 문구)으로 처리한다."""
+
+    def __init__(self, program):
+        self.prog = program
+
+    def decompile(self, addr: int) -> dict:
+        prog = self.prog
+        if prog.model.arch in ("x86", "x64", "arm64"):
+            from .decomp.func import FuncDecomp, TooLarge, TooComplex, Thunk
+            try:
+                varmap = prog.project.get_varnames(addr) if prog.project else {}
+                fd = FuncDecomp(prog, addr)
+                fd.run_to_vars()
+                renderer, lines = fd.finish(varmap)
+                return fd.result(renderer, lines)
+            except Thunk as t:
+                name = prog.name_for(addr) or f"sub_{addr:x}"
+                target = prog.name_for(t.args[0]) or hex(t.args[0])
+                lines = [{"addr": addr, "indent": 0, "kind": "comment",
+                          "text": f"/* 임포트 스텁: 외부 함수 {name} 를 호출하는 중계 코드입니다 */"}]
+                return {"addr": addr, "name": name, "signature": f"{name}()", "lines": lines, "variables": [],
+                        "note": "PLT/IAT 스텁입니다. 실제 코드는 외부 라이브러리에 있습니다."}
+            except (TooLarge, TooComplex) as e:
+                why = (f"함수가 너무 커서({e.args[0]}개 명령어 > {MAX_DECOMPILE_INSNS})" if isinstance(e, TooLarge)
+                       else "분석 시간이 너무 오래 걸려")
+                name = prog.name_for(addr) or f"sub_{addr:x}"
+                lines = [{"addr": addr, "indent": 0, "kind": "comment",
+                          "text": f"/* {why} 의사코드를 만들지 않습니다 — 디스어셈블리 보기를 쓰세요 */"}]
+                return {"addr": addr, "name": name, "signature": f"{name}()", "lines": lines, "variables": [],
+                        "note": "너무 크거나 복잡한 함수라 의사코드를 생략했습니다."}
+            except Exception as e:                      # noqa: BLE001 — 새 파이프라인이 실패해도 분석 화면은 계속 쓸 수 있어야 한다
+                import logging
+                logging.getLogger("rework.decompile").warning("새 디컴파일러 실패, 예전 방식으로 대체: %r", e, exc_info=True)
+                out = _LegacyDecompiler(prog).decompile(addr)
+                out["note"] = f"(새 디컴파일러가 이 함수를 처리하지 못해 단순 방식으로 대체했습니다: {type(e).__name__}) " + out.get("note", "")
+                return out
+        return _LegacyDecompiler(prog).decompile(addr)

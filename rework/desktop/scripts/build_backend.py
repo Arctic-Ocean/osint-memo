@@ -80,6 +80,28 @@ def smoke(exe: str) -> None:
             st, body = get(asset)
             if st != 200 or len(body) < minimum:
                 raise SystemExit(f"스모크 실패: 편집기(Monaco) 파일이 번들에 없음: {asset} {st}")
+        # 분석 경로: 실제 실행 파일 하나를 열어 함수 목록과 의사코드(새 디컴파일러 패키지가 번들에 들어갔는지)를 확인한다
+        hdr0 = {"X-Rework-Token": token, "Content-Type": "application/json"}
+        c = http.client.HTTPConnection("127.0.0.1", port, timeout=120)
+        c.request("POST", "/api/open", json.dumps({"path": sys.executable}), hdr0)
+        r = c.getresponse(); body = r.read()
+        if r.status != 200:
+            raise SystemExit(f"스모크 실패: 분석할 파일 열기 {r.status} {body[:120]!r}")
+        st, body = get("/api/functions?limit=200", {"X-Rework-Token": token})
+        funcs = [f for f in (json.loads(body).get("items") or json.loads(body) if st == 200 else []) if isinstance(f, dict) and f.get("size", 0) > 8]
+        if not funcs:
+            raise SystemExit(f"스모크 실패: 함수 목록 {st}")
+        done = False
+        for f in funcs[:20]:
+            st, body = get(f"/api/decompile/{f['vaddr']}", {"X-Rework-Token": token})
+            if st != 200:
+                raise SystemExit(f"스모크 실패: 의사코드 {st} {body[:200]!r}")
+            d = json.loads(body)
+            if d.get("lines") and "대체했습니다" not in d.get("note", ""):
+                done = True
+                break
+        if not done:
+            raise SystemExit("스모크 실패: 새 디컴파일러가 의사코드를 만들지 못함(예전 방식으로만 대체됨)")
         folder = tempfile.mkdtemp(prefix="rework-smoke-ws-")
         try:
             with open(os.path.join(folder, "a.c"), "w", encoding="utf-8") as fh:
@@ -103,7 +125,7 @@ def smoke(exe: str) -> None:
             p.wait(timeout=20)
         except subprocess.TimeoutExpired:
             raise SystemExit("스모크 실패: 표준 입력을 닫아도 종료하지 않음")
-        print(f"스모크 통과: 포트 {port}, 토큰 401/200, UI·JS·Monaco 서빙, 작업 폴더 API, stdin EOF 로 종료(코드 {p.returncode})")
+        print(f"스모크 통과: 포트 {port}, 토큰 401/200, UI·JS·Monaco 서빙, 파일 열기·의사코드, 작업 폴더 API, stdin EOF 로 종료(코드 {p.returncode})")
     finally:
         if p.poll() is None:
             p.kill()

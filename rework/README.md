@@ -54,7 +54,7 @@ python3 -m venv .venv
 |---|---|
 | 로딩 | lief로 ELF·PE·Mach-O 파싱. 아키텍처·엔트리·섹션·심볼·임포트/익스포트 인식 |
 | 디스어셈블 | Capstone 기반 x86/x64·ARM·ARM64·MIPS·PPC. 호출/분기/데이터 참조를 이름·문자열로 해석 |
-| **디컴파일(의사코드)** | x86/x64 명령어를 의사 C로 리프팅. 변수(`var_N`/`arg_N`) 명명, 호출·문자열 해석, System V 인자 추정, PLT→임포트 이름, 단순 `if`/루프 구조화(복잡한 흐름은 `goto` 보존) |
+| **디컴파일(의사코드)** | x86·x64(System V·Windows)·x86‑32(cdecl)·ARM64 를 중간 표현(IR)으로 올려 **스택 슬롯 승격·데이터플로·구조화**를 거쳐 의사 C 로 되돌립니다. `if`/`else if`/`&&`·`||`·`while`/`do‑while`/`for`/`break`/`continue`/`switch`(점프 테이블·룩업 테이블·fallthrough), 상수 나누기·나머지 복원(`x / 7`, `x % 5`), 포인터·배열·구조체 지역 변수(`p[i]`, `locals.x`), 호출 인자 수·반환값 추정(같은 파일의 함수는 실제로 분석, libc 는 원형 표), 문자열 인자, PLT→임포트 이름. 구조화로 풀리지 않는 흐름만 `goto` 로 남깁니다. 해석하지 못한 명령(SIMD·부동소수점·x87)이 있으면 결과 아래에 알립니다 |
 | **리네임(리팩터링)** | 함수 이름 변경(F2), 의사코드의 변수 더블클릭 리네임. 명령줄 주석. 바이너리 SHA‑256별 SQLite에 보존되어 다시 열면 복원 |
 | **디버거(동적 분석)** | GDB/MI 기반. 중단점(함수명·라이브 디스어셈 클릭), 실행 제어(계속·한 줄·스텝·명령 단위·함수 끝·멈춤), 레지스터·콜스택·지역변수, 라이브 디스어셈블리(현재 `$pc` 강조), **런타임 변수·레지스터·메모리 조작**, 대상 프로그램 입출력 캡처, 원시 gdb 콘솔. PIE 로드 바이어스 자동 보정 |
 | 네비게이션 | 호출·참조·문자열·심볼 클릭으로 이동, 상호참조 패널, 북마크 |
@@ -276,11 +276,24 @@ REWORK_TEST_SANDBOX=1 .venv/bin/python tests/test_debugger.py   # 같은 시나�
 .venv/bin/python tests/test_static_robustness.py  # 낯선 파일·이상한 입력(비 UTF-8 이름·수십만 심볼·거대 함수·동시 요청·입력 검증)
 .venv/bin/python tests/test_desktop_backend.py    # 데스크톱 모드(포트 0·토큰·부모 사망 종료·CSP)·Windows 처럼 POSIX 모듈이 없을 때·동결 경로
 .venv/bin/python tests/test_workspace.py        # 작업 폴더(탐색기·소스 편집) API: 경로 격리·인코딩·원자적 저장·충돌·금지 구역·검색
+.venv/bin/python tests/test_decomp.py -O0 -O1 -O2          # 디컴파일러 차분 시험(gcc 로 컴파일한 코퍼스를 의사코드로 되돌려 다시 컴파일·실행해 비교)
+.venv/bin/python tests/test_decomp_emu.py arm64 x64 i386 win64 -O0 -O1 -O2   # 같은 시험을 다른 아키텍처·호출 규약으로(clang + lld + Unicorn 에뮬레이터)
 ```
 
 `tests/test_workspace.py`(65개)는 작업 폴더 API 를 **실제 서버로** 시험합니다: 경로 탈출·심볼릭 링크·`.git`/데이터 폴더 쓰기 금지, 인코딩 왕복(CP949·UTF-16·BOM), 이진·크기 한도, 원자적 저장과 충돌(409),
 이름 바꾸기·삭제, 검색 한도, 교차 출처·틀린 토큰 거부, 16MB 본문 상한, `mtime_ns` 문자열 전송(JS 정밀도). 브라우저(실제 Chromium) 시험은 탐색기·Monaco·저장·충돌·한국어 메뉴·엄격한 CSP 를 확인합니다.
 
+
+### 디컴파일러 차분 시험
+
+디컴파일러가 “그럴듯해 보이는” 결과가 아니라 **원본과 같은 동작**을 내는지를 기계로 확인합니다. `tests/decomp_corpus.c`(조건·루프·`switch`·포인터·구조체·재귀·상수 나누기 등 61개 함수)를
+컴파일해 각 함수를 디컴파일하고, 의사코드를 **다시 C 로 컴파일**해 같은 입력(경계값과 무작위 값)에서 반환값과 메모리 쓰기가 같은지 비교합니다.
+
+- `tests/test_decomp.py`: 호스트 gcc 로 `-O0/-O1/-O2` 빌드, 호스트에서 직접 실행. 함수마다 별도 프로세스로 돌려 한 함수가 죽어도 나머지를 계속 시험합니다.
+- `tests/test_decomp_emu.py`: clang `--target=…` + lld 로 x86‑64·x86‑32·ARM64·Windows x64(`ms_abi`)용 정적 바이너리를 만들어 **Unicorn 에뮬레이터**에서 원본을 실행하고, 의사코드는 호스트에서 컴파일해 비교합니다. 좁은 인자의 상위 비트에 쓰레기 값을 넣어 호출 규약 가정을 확인합니다.
+  Unicorn 은 시험에만 쓰므로 런타임 의존성(`backend/requirements.txt`)에 넣지 않았습니다: `.venv/bin/pip install unicorn`. clang·lld·gcc 가 없으면 해당 시험을 건너뜁니다.
+
+해석하지 못한 명령(SIMD·부동소수점)이 있거나 데이터 주소를 직접 읽는 함수는 “건너뜀”으로 세고 통과로 치지 않습니다. 현재 모든 아키텍처·최적화 수준에서 실행 가능한 함수는 전부 통과합니다.
 
 실제 GDB로 `samples/demo_elf`를 디버깅하며 런타임 조작, MI 명령 주입 차단, 시작 실패·동시 종료 시
 자원 정리, gdb 외부 종료, 재실행, 대상 stdin(한 줄·EOF·이스케이프·한글·한 줄 4095바이트 경계·리다이렉트),
@@ -306,7 +319,9 @@ rework/
     model.py             BinaryModel/Function/Section/Symbol
     disasm.py            Capstone 디스어셈블러 + 참조 추출
     analysis.py          Program: xref·함수경계·PLT·이름해석
-    decompile.py         휴리스틱 의사코드 생성
+    decompile.py         의사코드 진입점(x86·x64·ARM64 는 IR 디컴파일러, 실패하면 예전 단순 방식으로 대체, 그 밖의 아키텍처는 안내)
+    decomp/              IR 기반 디컴파일러: lift_{x86,arm64}(명령→IR) · cfg · stack(스택 슬롯) · dataflow · propagate ·
+                         switch · divconst · ptrtype · tables · structure(구조화) · render(C 출력) · func(파이프라인)
     debug.py             GDB/MI 디버거 엔진(동적 분석·런타임 조작)
     sandbox.py           격리 실행(bubblewrap·seccomp·자원 한도) 정책·준비·정리
     workspace.py         작업 폴더 API(경로 격리·텍스트/인코딩·원자적 저장·충돌·검색)
@@ -330,6 +345,6 @@ rework/
 2. ~~**대상 실행 샌드박스**: 신뢰할 수 없는 바이너리를 격리 실행(네임스페이스/seccomp/컨테이너)~~ — ✅ 완료(`sandbox.py`, Linux·bubblewrap. Windows 는 WSL2/VM)
 3. ~~**데스크톱 패키징**: Windows·Kali용 Electron(또는 Tauri) 설치본~~ — ✅ Linux(Kali·Ubuntu) `.deb`·AppImage 완료·검증. Windows 설치본은 코드·CI 워크플로까지 작성(Windows 러너 첫 빌드·실행은 미검증 — [데스크톱 앱](#데스크톱-앱-windowskali) 참고)
 4. ~~**폴더 열기 + 소스 편집**: Monaco 에디터(자동완성·구문강조·코드접기)~~ — ✅ 완료(`workspace.py`, `frontend/js/workspace.js`)
-5. **디컴파일 고도화**: 완전한 if/else·switch·루프 구조화, 타입/인자 추론, ARM 의사코드
+5. ~~**디컴파일 고도화**: 완전한 if/else·switch·루프 구조화, 타입/인자 추론, ARM 의사코드~~ — ✅ 완료(`backend/app/decomp/`, 차분 시험으로 검증). 남은 한계: SIMD·부동소수점·x87 명령 미지원(함수에 알림 표시), ARM 32비트·Thumb·MIPS 등은 의사코드 미지원(디스어셈블리 사용), 복잡한 흐름의 일부는 `goto` 로 남음
 6. **디버거 심화**: 조건부 중단점·워치포인트, 메모리/스택 뷰어, 역방향 디버깅, 원격 gdbserver
 7. **빌드/테스트 러너·Jupyter 셀** 등

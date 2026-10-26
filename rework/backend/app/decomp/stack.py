@@ -1,0 +1,308 @@
+"""스택 프레임 분석.
+
+1) track_stack — sp·bp 가 '진입 시 sp + 상수' 인 곳을 흐름 따라 추적해, 식 안의 레지스터를 `stk(off)` 로 바꾼다.
+   그러면 모든 스택 접근이 `mem(stk(off))` 꼴로 정규화된다(프레임 포인터가 있든 없든, push/pop 이 있든 없든 같다).
+2) promote_slots — 주소가 밖으로 새지 않는 스칼라 슬롯을 레지스터처럼 다루는 위치('slot:off')로 승격한다.
+   주소를 넘기거나(&x) 배열처럼 산술에 쓰이는 슬롯은 승격하지 않고 '메모리 변수'로 남긴다(의미를 그대로 보존).
+"""
+from __future__ import annotations
+
+from . import ir
+from .ir import X, S, C, loc, stk, mem, subst, to_signed
+
+
+
+def map_stmt(s: S, f) -> None:
+    """문장 안의 모든 식을 f(식) → 식 으로 바꾼다(제자리)."""
+    k = s.k
+    if k == "asg":
+        if s.dst.op == "mem":
+            s.dst = ir.rebuild(s.dst, (f(s.dst.args[0]),))
+        s.src = f(s.src)
+    elif k == "call":
+        s.src = f(s.src)
+    elif k in ("cj", "ij", "sw", "ret") and s.src is not None:
+        s.src = f(s.src)
+
+
+def stmt_exprs(s: S):
+    """문장이 읽는 식들(대입 대상 메모리의 주소 포함)."""
+    k = s.k
+    if k == "asg":
+        if s.dst.op == "mem":
+            yield s.dst.args[0]
+        yield s.src
+    elif k == "call":
+        yield s.src
+    elif k in ("cj", "ij", "sw", "ret") and s.src is not None:
+        yield s.src
+
+
+# ---- 1. 심볼릭 sp 추적 ----------------------------------------------------------------
+def _aeval(e: X, env: dict):
+    op = e.op
+    if op == "stk":
+        return e.aux
+    if op == "loc":
+        return env.get(e.aux)
+    if op == "add" and e.args[1].op == "c":
+        v = _aeval(e.args[0], env)
+        return None if v is None else v + to_signed(e.args[1].aux, e.sz)
+    return None
+
+
+class StackTracker:
+    def __init__(self, blocks: dict, graph, entry: int, abi):
+        self.blocks = blocks
+        self.graph = graph
+        self.entry = entry
+        self.abi = abi
+        self.sp = abi.sp
+        self.outs: dict = {}
+
+    def _transfer(self, b, env: dict, rewrite: bool):
+        def sub_loc(e):
+            if e.op == "loc" and e.aux in env:
+                return stk(env[e.aux], e.sz)
+            return None
+
+        for s in b.stmts + [b.term]:
+            if rewrite:
+                map_stmt(s, lambda e: subst(e, sub_loc))
+                if s.k == "call":
+                    s.extra = dict(s.extra) if isinstance(s.extra, dict) else {}
+                    s.extra["sp"] = env.get(self.sp)
+            if s.k == "asg" and s.dst.op == "loc":
+                v = _aeval(s.src, env)
+                if v is None:
+                    env.pop(s.dst.aux, None)
+                else:
+                    env[s.dst.aux] = v
+            elif s.k == "call":
+                for r in list(env):
+                    if r not in self.abi.callee_saved:
+                        env.pop(r, None)
+            elif s.k == "unk":
+                for r in s.extra["defs"]:
+                    env.pop(r, None)
+        return env
+
+    def _in_env(self, a):
+        if a == self.entry:
+            return {self.sp: 0}
+        env = None
+        for p in self.blocks[a].preds:
+            po = self.outs.get(p)
+            if po is None:
+                continue
+            env = dict(po) if env is None else {r: v for r, v in env.items() if po.get(r) == v}
+        return env
+
+    def run(self):
+        rpo = self.graph.rpo
+        for _ in range(60):
+            changed = False
+            for a in rpo:
+                env = self._in_env(a)
+                if env is None:
+                    continue
+                out = self._transfer(self.blocks[a], dict(env), False)
+                if self.outs.get(a) != out:
+                    self.outs[a] = out
+                    changed = True
+            if not changed:
+                break
+        frame = None
+        for a in rpo:
+            env = self._in_env(a)
+            if env is None:
+                env = {}
+            b = self.blocks[a]
+            if frame is None:
+                e2 = dict(env)
+                for s in b.stmts:
+                    if s.k == "asg" and s.dst.op == "loc" and s.dst.aux in self.abi.fps:
+                        v = _aeval(s.src, e2)
+                        if v is not None:
+                            frame = v
+                            break
+                    if s.k == "asg" and s.dst.op == "loc":
+                        v = _aeval(s.src, e2)
+                        if v is None:
+                            e2.pop(s.dst.aux, None)
+                        else:
+                            e2[s.dst.aux] = v
+            self._transfer(b, dict(env), True)
+        return frame
+
+
+def _addr_valued(e: X) -> bool:
+    """식의 값이 스택 주소인가(메모리에서 읽어 온 값은 아니다)."""
+    if e.op == "mem":
+        return False
+    if e.op == "stk":
+        return True
+    return any(_addr_valued(a) for a in e.args)
+
+
+def drop_dead_bookkeeping(blocks: dict, abi) -> None:
+    """sp·bp 갱신이나 스택 주소를 레지스터에 담았다가 다시 쓰이지 않는 대입을 지운다(슬롯의 주소 유출 판정이 부풀지 않게)."""
+    while True:
+        read = set()
+        for b in blocks.values():
+            for s in b.stmts + [b.term]:
+                for e in stmt_exprs(s):
+                    for n in ir.walk(e):
+                        if n.op == "loc":
+                            read.add(n.aux)
+                if s.k == "unk":
+                    read.update(s.extra["uses"])
+        removed = False
+        for b in blocks.values():
+            keep = []
+            for s in b.stmts:
+                if s.k == "asg" and s.dst.op == "loc" and s.dst.aux not in read and (
+                        s.dst.aux == abi.sp or s.dst.aux in abi.fps or _addr_valued(s.src)):
+                    removed = True
+                    continue
+                keep.append(s)
+            b.stmts = keep
+        if not removed:
+            return
+
+
+# ---- 2. 슬롯 승격 ---------------------------------------------------------------------
+def slot_name(off: int) -> str:
+    return f"slot:{off}"
+
+
+def find_save_slots(stmts, terms, abi) -> set:
+    """콜리 세이브드 레지스터를 저장했다가 되돌리는 칸(push rbx … pop rbx): 저장은 `slot ← reg`, 읽기는 `reg ← slot` 뿐이다.
+    이런 칸은 지역 변수의 주소가 새는 것과 무관하므로 구조체 `locals` 에 끌려 들어가지 않게 따로 가려낸다."""
+    stores: dict = {}
+    other: set = set()
+
+    def scan(e: X):
+        for n in ir.walk(e):
+            if n.op == "mem" and n.args[0].op == "stk":
+                other.add(n.args[0].aux)
+            elif n.op == "stk":
+                other.add(n.aux)
+
+    for s in stmts:
+        if s.k == "asg" and s.dst.op == "mem" and s.dst.args[0].op == "stk" and s.src.op == "loc" and s.src.aux in abi.callee_saved \
+                and s.src.sz == abi.full:
+            stores.setdefault(s.dst.args[0].aux, set()).add(s.src.aux)
+            continue
+        if s.k == "asg" and s.dst.op == "loc" and s.dst.aux in abi.callee_saved and s.src.op == "mem" and s.src.args[0].op == "stk" \
+                and s.src.sz == abi.full:
+            stores.setdefault(s.src.args[0].aux, set()).add(s.dst.aux)
+            continue
+        for e in stmt_exprs(s):
+            scan(e)
+    for s in terms:
+        for e in stmt_exprs(s):
+            scan(e)
+    return {o for o, regs in stores.items() if o not in other and len(regs) == 1}
+
+
+def promote_slots(blocks: dict, abi, frame_top: int = 0, frame_known: bool = True) -> dict:
+    """반환: {'promoted': {off: size}, 'memvars': {off: {sizes}}, 'escapes': [(off, kind)], 'canary': {off}}"""
+    stmts = [s for b in blocks.values() for s in b.stmts]
+    terms = [b.term for b in blocks.values()]
+
+    # 카나리(스택 보호기) 슬롯: 저장은 지우고 읽기는 canary 값으로 — 검사 분기가 상수로 접혀 사라진다
+    canary = set()
+    for s in stmts:
+        if s.k == "asg" and s.dst.op == "mem" and s.dst.args[0].op == "stk" and s.src.op == "canary":
+            canary.add(s.dst.args[0].aux)
+    if canary:
+        def deref_canary(e):
+            if e.op == "mem" and e.args[0].op == "stk" and e.args[0].aux in canary:
+                return X("canary", (), e.sz)
+            return None
+        for b in blocks.values():
+            b.stmts = [s for s in b.stmts
+                       if not (s.k == "asg" and s.dst.op == "mem" and s.dst.args[0].op == "stk" and s.dst.args[0].aux in canary)]
+            for s in b.stmts + [b.term]:
+                map_stmt(s, lambda e: subst(e, deref_canary))
+        stmts = [s for b in blocks.values() for s in b.stmts]
+
+    direct: dict = {}                      # off → {size, ...}
+    escapes: list = []                     # (off, 'addr' | 'arith')
+
+    arr_hints: dict = {}                   # 배열 기준 오프셋 → {(접근 크기, 색인 배율)}
+
+    def scan(e: X, under_arith: bool = False):
+        if e.op == "mem" and e.args[0].op == "add" and e.args[0].args[0].op == "stk":
+            idx = e.args[0].args[1]
+            sc = None
+            if idx.op == "mul" and idx.args[1].op == "c":
+                sc = idx.args[1].aux
+            elif idx.op == "shl" and idx.args[1].op == "c":
+                sc = 1 << idx.args[1].aux
+            if sc is not None:
+                arr_hints.setdefault(e.args[0].args[0].aux, set()).add((e.sz, sc))
+        if e.op == "mem" and e.args[0].op == "stk":
+            direct.setdefault(e.args[0].aux, set()).add(e.sz)
+            return
+        if e.op == "stk":
+            escapes.append((e.aux, "arith" if under_arith else "addr"))
+            return
+        arith = e.op in ("add", "sub", "mul", "shl") and any(a.op == "stk" for a in e.args)
+        for a in e.args:
+            scan(a, arith)
+
+    bookkeeping = ({abi.sp} | abi.fps) if frame_known else {abi.sp}      # 프레임 포인터를 쓰지 않는 함수의 rbp/ebp 는 범용 레지스터다
+    raw_sp_reads = False
+    for s in stmts + terms:
+        if s.k == "asg" and s.dst.op == "loc" and s.dst.aux in bookkeeping and s.src.op == "stk":
+            continue                                                  # 프레임 포인터 설정(mov rbp, rsp)은 주소 유출이 아니다
+        for e in stmt_exprs(s):
+            if any(n.op == "loc" and n.aux in bookkeeping for n in ir.walk(e)) and not (
+                    s.k == "asg" and s.dst.op == "mem" and s.dst.args[0].op == "stk" and s.src.op == "loc"):
+                raw_sp_reads = True                                   # sp/bp 값을 모르는 채 쓰는 곳(alloca·스택 정렬 등)
+        if s.k == "asg" and s.dst.op == "mem":
+            if s.dst.args[0].op == "stk":
+                direct.setdefault(s.dst.args[0].aux, set()).add(s.dst.sz)
+            else:
+                scan(s.dst.args[0])
+            scan(s.src)
+        else:
+            for e in stmt_exprs(s):
+                scan(e)
+
+    maxsz = {o: max(z) for o, z in direct.items()}
+    memvars = set()
+    for o, z in direct.items():                                  # 한 위치에 서로 다른 크기로 접근
+        if len(z) > 1:
+            memvars.add(o)
+    offs = sorted(direct)
+    for i, o in enumerate(offs):                                 # 구간이 겹치는 슬롯
+        for p in offs[i + 1:]:
+            if p >= o + maxsz[o]:
+                break
+            memvars.add(o)
+            memvars.add(p)
+    saves = find_save_slots(stmts, terms, abi)
+    esc_pts = sorted({x for x, _ in escapes})
+    for x, kind in escapes:
+        # 주소를 받은 쪽이 몇 바이트를 만질지(구조체·배열 전체인지) 알 수 없으므로, 그 주소 위쪽의 지역 슬롯은 모두 메모리로 둔다
+        for o in offs:
+            if o + maxsz[o] > x and o < frame_top and o not in saves:
+                memvars.add(o)
+    if raw_sp_reads:                                             # 추적하지 못한 스택 접근이 섞여 있으면 승격하지 않는다
+        memvars.update(offs)
+    promoted = {o: maxsz[o] for o in offs if o not in memvars}
+    if promoted:
+        def to_slot(e):
+            if e.op == "mem" and e.args[0].op == "stk" and e.args[0].aux in promoted:
+                return loc(slot_name(e.args[0].aux), e.sz)
+            return None
+        for b in blocks.values():
+            for s in b.stmts + [b.term]:
+                if s.k == "asg" and s.dst.op == "mem" and s.dst.args[0].op == "stk" and s.dst.args[0].aux in promoted:
+                    s.dst = loc(slot_name(s.dst.args[0].aux), s.dst.sz)
+                map_stmt(s, lambda e: subst(e, to_slot))
+    return {"promoted": promoted, "memvars": {o: direct[o] for o in memvars}, "escapes": escapes, "canary": canary,
+            "arr_hints": arr_hints}

@@ -192,6 +192,7 @@ button { font-family: inherit; color: var(--fg); cursor: pointer; }
 .dec-line:hover { background: var(--bg-2); }
 .dec-sig { color: var(--c-call); font-weight: 600; }
 .dec .kw { color: var(--c-kw); }
+.dec .ty { color: var(--c-mnem); }
 .dec .var { color: var(--c-var); cursor: pointer; border-radius: 3px; }
 .dec .var:hover { background: var(--accent-bg); outline: 1px solid var(--accent); }
 .dec .call { color: var(--c-call); cursor: pointer; }

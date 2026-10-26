@@ -561,7 +561,8 @@ async function renderDisasm(view, addr) {
 }
 
 // ---- 디컴파일(의사코드) 렌더 -------------------------------------------
-const KW = new Set(["if", "else", "goto", "return", "while", "do", "for", "break", "continue"]);
+const KW = new Set(["if", "else", "goto", "return", "while", "do", "for", "break", "continue", "switch", "case", "default", "static", "const", "struct", "sizeof"]);
+const TYPE_RE = /^(?:u?int(?:8|16|32|64)_t|void|char|short|int|long|float|double|unsigned|signed|bool)$/;
 function tokenizeDec(text, varSet) {
   const re = /("(?:[^"\\]|\\.)*")|([A-Za-z_]\w*)|(0x[0-9a-fA-F]+|\d+)|(\s+)|([^\sA-Za-z0-9_"]+)/g;
   let out = "", m;
@@ -571,6 +572,7 @@ function tokenizeDec(text, varSet) {
       const id = m[2];
       const after = text.slice(re.lastIndex).match(/^\s*\(/);
       if (KW.has(id)) out += `<span class="kw">${id}</span>`;
+      else if (TYPE_RE.test(id)) out += `<span class="ty">${id}</span>`;
       else if (after && !varSet.has(id)) out += `<span class="call" data-call="${esc(id)}">${esc(id)}</span>`;
       else if (varSet.has(id)) out += `<span class="var" data-var="${esc(id)}">${esc(id)}</span>`;
       else out += esc(id);
