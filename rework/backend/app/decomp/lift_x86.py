@@ -99,8 +99,10 @@ class X86Lifter:
     def write_reg(self, rid, val: X, addr: int) -> S:
         canon, sz, shift = self.reg_info(rid)
         full = loc(canon, self.full)
-        if shift:
-            raise Unsupported("ah")
+        if shift:                                       # ah·ch·dh·bh: 둘째 바이트만 바꾼다
+            keep = binop("and", full, C(~(mask(sz) << shift) & mask(self.full), self.full), self.full)
+            put = binop("shl", zext(val, self.full), C(shift, 1), self.full)
+            return S("asg", addr, full, binop("or", keep, put, self.full))
         if sz == self.full:
             src = val
         elif sz == 4 and self.bits == 64:
@@ -108,6 +110,175 @@ class X86Lifter:
         else:
             src = insert(full, val)
         return S("asg", addr, full, src)
+
+    # ---- xmm: 하위·상위 64비트 두 조각의 위치로 다룬다 --------------------------------------
+    def xmm_name(self, rid):
+        n = self.cs.reg_name(rid)
+        if n and n.startswith(("xmm", "ymm")) and n[3:].isdigit():
+            return "xmm" + n[3:]
+        return None
+
+    def xmm_lanes_of(self, rid):
+        n = self.xmm_name(rid)
+        return [n, n + "h"] if n else None
+
+    def is_xmm(self, op) -> bool:
+        return op.type == CS_OP_REG and self.xmm_name(op.reg) is not None
+
+    def lanes_read(self, insn, op):
+        """128비트 피연산자의 (하위, 상위) 64비트 식."""
+        if op.type == CS_OP_REG:
+            n = self.xmm_name(op.reg)
+            if n is None:
+                raise Unsupported("xmm")
+            return loc(n, 8), loc(n + "h", 8)
+        if op.type == CS_OP_MEM:
+            a = self.mem_addr(insn, op)
+            return mem(a, 8), mem(add(a, C(8, self.full)), 8)
+        raise Unsupported("xmm operand")
+
+    def lanes_write(self, insn, op, lo: X, hi: X) -> list:
+        a = insn.address
+        if op.type == CS_OP_REG:
+            n = self.xmm_name(op.reg)
+            if n is None:
+                raise Unsupported("xmm")
+            return [S("asg", a, loc(n, 8), lo), S("asg", a, loc(n + "h", 8), hi)]
+        if op.type == CS_OP_MEM:
+            ad = self.mem_addr(insn, op)
+            return [S("asg", a, mem(ad, 8), lo), S("asg", a, mem(add(ad, C(8, self.full)), 8), hi)]
+        raise Unsupported("xmm dest")
+
+    def _sse(self, insn, m, ops):
+        """데이터 이동·비트 연산 위주의 SSE 명령(부동소수점 계산은 하지 않는다). 해당하지 않으면 None."""
+        a = insn.address
+        n = len(ops)
+        if n == 0 or not any(self.is_xmm(o) for o in ops):
+            return None
+        Z = C(0, 8)
+        if m in ("movaps", "movups", "movdqa", "movdqu", "movapd", "movupd", "lddqu", "movntdq", "movntps", "movntpd") and n == 2:
+            lo, hi = self.lanes_read(insn, ops[1])
+            return self.lanes_write(insn, ops[0], lo, hi)
+        if m in ("pxor", "xorps", "xorpd", "pand", "andps", "andpd", "por", "orps", "orpd", "pandn", "andnps", "andnpd") and n == 2:
+            if m in ("pxor", "xorps", "xorpd") and self.is_xmm(ops[0]) and self.is_xmm(ops[1]) and ops[0].reg == ops[1].reg:
+                return self.lanes_write(insn, ops[0], Z, Z)
+            l0, h0 = self.lanes_read(insn, ops[0])
+            l1, h1 = self.lanes_read(insn, ops[1])
+            if m in ("pxor", "xorps", "xorpd"):
+                op = "xor"
+            elif m in ("pand", "andps", "andpd"):
+                op = "and"
+            elif m in ("por", "orps", "orpd"):
+                op = "or"
+            else:
+                l0, h0 = unop("not", l0), unop("not", h0)
+                op = "and"
+            return self.lanes_write(insn, ops[0], binop(op, l0, l1, 8), binop(op, h0, h1, 8))
+        if m in ("movq", "movd") and n == 2:
+            vsz = 8 if m == "movq" else 4
+            if self.is_xmm(ops[0]):
+                if ops[1].type == CS_OP_REG and self.is_xmm(ops[1]):
+                    lo, _ = self.lanes_read(insn, ops[1])
+                    lo = lo if vsz == 8 else zext(trunc(lo, 4), 8)
+                else:
+                    v = self.read_op(insn, ops[1], vsz)
+                    if v.sz > vsz:
+                        v = trunc(v, vsz)
+                    lo = v if vsz == 8 else zext(v, 8)
+                    if lo.sz != 8:
+                        lo = zext(lo, 8)
+                return self.lanes_write(insn, ops[0], lo, Z)
+            if self.is_xmm(ops[1]):
+                lo, _ = self.lanes_read(insn, ops[1])
+                v = lo if vsz == 8 else trunc(lo, 4)
+                if ops[0].type == CS_OP_REG and self.reg_info(ops[0].reg)[1] > vsz:
+                    v = zext(v, self.reg_info(ops[0].reg)[1])
+                return [self.write_op(insn, ops[0], v)]
+            return None
+        if m in ("movsd", "movss") and n == 2:
+            vsz = 8 if m == "movsd" else 4
+            if self.is_xmm(ops[0]) and ops[1].type == CS_OP_MEM:
+                v = mem(self.mem_addr(insn, ops[1]), vsz)
+                return self.lanes_write(insn, ops[0], v if vsz == 8 else zext(v, 8), Z)
+            if ops[0].type == CS_OP_MEM and self.is_xmm(ops[1]):
+                lo, _ = self.lanes_read(insn, ops[1])
+                return [S("asg", a, mem(self.mem_addr(insn, ops[0]), vsz), lo if vsz == 8 else trunc(lo, 4))]
+            if self.is_xmm(ops[0]) and self.is_xmm(ops[1]):
+                n0, n1 = self.xmm_name(ops[0].reg), self.xmm_name(ops[1].reg)
+                src = loc(n1, 8)
+                if vsz == 8:
+                    return [S("asg", a, loc(n0, 8), src)]
+                return [S("asg", a, loc(n0, 8), insert(loc(n0, 8), trunc(src, 4)))]
+            return None
+        if m in ("movhps", "movhpd", "movlps", "movlpd") and n == 2:
+            hi = m.startswith("movh")
+            if self.is_xmm(ops[0]) and ops[1].type == CS_OP_MEM:
+                v = mem(self.mem_addr(insn, ops[1]), 8)
+                nm = self.xmm_name(ops[0].reg)
+                return [S("asg", a, loc(nm + ("h" if hi else ""), 8), v)]
+            if ops[0].type == CS_OP_MEM and self.is_xmm(ops[1]):
+                nm = self.xmm_name(ops[1].reg)
+                return [S("asg", a, mem(self.mem_addr(insn, ops[0]), 8), loc(nm + ("h" if hi else ""), 8))]
+            return None
+        if m in ("movlhps", "punpcklqdq", "unpcklpd") and n == 2 and self.is_xmm(ops[0]) and self.is_xmm(ops[1]):
+            n0, n1 = self.xmm_name(ops[0].reg), self.xmm_name(ops[1].reg)
+            return [S("asg", a, loc(n0 + "h", 8), loc(n1, 8))]
+        if m == "movhlps" and n == 2 and self.is_xmm(ops[0]) and self.is_xmm(ops[1]):
+            n0, n1 = self.xmm_name(ops[0].reg), self.xmm_name(ops[1].reg)
+            return [S("asg", a, loc(n0, 8), loc(n1 + "h", 8))]
+        if m in ("punpckhqdq", "unpckhpd") and n == 2 and self.is_xmm(ops[0]) and self.is_xmm(ops[1]):
+            n0, n1 = self.xmm_name(ops[0].reg), self.xmm_name(ops[1].reg)
+            return [S("asg", a, loc(n0, 8), loc(n0 + "h", 8)), S("asg", a, loc(n0 + "h", 8), loc(n1 + "h", 8))]
+        if m == "shufpd" and n == 3 and ops[2].type == CS_OP_IMM:
+            l0, h0 = self.lanes_read(insn, ops[0])
+            l1, h1 = self.lanes_read(insn, ops[1])
+            imm = ops[2].imm
+            t0, t1 = self.tmp(8), self.tmp(8)
+            return [S("asg", a, t0, h0 if imm & 1 else l0), S("asg", a, t1, h1 if imm & 2 else l1)] + self.lanes_write(insn, ops[0], t0, t1)
+        if m == "pshufd" and n == 3 and ops[2].type == CS_OP_IMM:
+            l1, h1 = self.lanes_read(insn, ops[1])
+            imm = ops[2].imm & 0xff
+            sel = [(imm >> (2 * i)) & 3 for i in range(4)]
+
+            def dword(k):
+                lane = l1 if k < 2 else h1
+                return trunc(lane if k % 2 == 0 else binop("shr", lane, C(32, 1), 8), 4)
+
+            def lane_of(i0, i1):
+                if i1 == i0 + 1 and i0 % 2 == 0:
+                    return l1 if i0 == 0 else h1
+                if i0 == i1 and False:
+                    return None
+                return binop("or", zext(dword(i0), 8), binop("shl", zext(dword(i1), 8), C(32, 1), 8), 8)
+            lo, hi = lane_of(sel[0], sel[1]), lane_of(sel[2], sel[3])
+            if self.is_xmm(ops[0]) and ops[1].type == CS_OP_REG and ops[0].reg == ops[1].reg:       # 제자리 섞기: 두 조각을 한꺼번에 읽는다
+                t0, t1 = self.tmp(8), self.tmp(8)
+                return [S("asg", a, t0, lo), S("asg", a, t1, hi)] + self.lanes_write(insn, ops[0], t0, t1)
+            return self.lanes_write(insn, ops[0], lo, hi)
+        return None
+
+    def _rep_string(self, insn, m):
+        """`rep movs·stos`(방향 플래그는 0 으로 가정): while (rcx != 0) { 한 원소 복사·저장; rsi/rdi 전진; rcx--; } 로 두 조각에 풀어 쓴다.
+        조각 경계는 명령 바이트 범위 안의 주소(addr, addr+1)를 쓰므로 다음 명령 주소는 그대로다."""
+        a = insn.address
+        esz = {"b": 1, "w": 2, "d": 4, "q": 8}[m[-1]]
+        full = self.full
+        rcx = loc("rcx" if full == 8 else "ecx", full)
+        rdi = loc("rdi" if full == 8 else "edi", full)
+        rsi = loc("rsi" if full == 8 else "esi", full)
+        rax = loc("rax" if full == 8 else "eax", full)
+        step = C(esz, full)
+        head = S("cj", a, src=cmp("eq", rcx, C(0, full)), t=a + insn.size, f=a + 1)
+        body = []
+        if m.startswith("movs"):
+            body.append(S("asg", a + 1, mem(rdi, esz), mem(rsi, esz)))
+            body.append(S("asg", a + 1, rsi, add(rsi, step)))
+        else:
+            body.append(S("asg", a + 1, mem(rdi, esz), trunc(rax, esz) if esz < full else rax))
+        body.append(S("asg", a + 1, rdi, add(rdi, step)))
+        body.append(S("asg", a + 1, rcx, sub(rcx, C(1, full))))
+        body.append(S("jmp", a + 1, t=a))
+        return [S("split", a, extra={"cuts": [a + 1]}), head] + body
 
     # ---- 피연산자 -----------------------------------------------------------------
     def mem_addr(self, insn, op) -> X:
@@ -189,6 +360,15 @@ class X86Lifter:
                 defs.add(c)
         for op in insn.operands:
             if op.type == CS_OP_REG:
+                xl = self.xmm_lanes_of(op.reg)
+                if xl:
+                    if op.access & 1:
+                        uses.update(xl)
+                    if op.access & 2:
+                        defs.update(xl)
+                        if not (op.access & 1):
+                            uses.update(xl)                 # 한 조각만 쓰는 명령일 수 있으니 옛 값에 의존한다고 본다
+                    continue
                 c = canon(op.reg)
                 if c:
                     if op.access & 1:
@@ -229,8 +409,10 @@ class X86Lifter:
             toks = m.split()
             while len(toks) > 1 and toks[0] in ("notrack", "bnd", "data16", "cs", "ds", "es", "ss"):
                 toks.pop(0)
+            if len(toks) == 2 and toks[0] == "rep" and toks[1] in ("movsb", "movsw", "movsd", "movsq", "stosb", "stosw", "stosd", "stosq"):
+                return self._rep_string(insn, toks[1])
             if len(toks) > 1:
-                raise Unsupported(m)                   # rep·lock 등은 알 수 없는 명령으로 보존한다
+                raise Unsupported(m)                   # lock·repne 등은 알 수 없는 명령으로 보존한다
             m = toks[0]
         ops = insn.operands
         a = insn.address
@@ -246,6 +428,33 @@ class X86Lifter:
         if m.startswith("nop"):
             return []
 
+        if m in ("bt", "bts", "btr", "btc") and n == 2 and (ops[0].type == CS_OP_REG or ops[1].type == CS_OP_IMM):
+            sz = ops[0].size
+            ta = self.tmp(sz)
+            out.append(S("asg", a, ta, self.read_op(insn, ops[0])))
+            if ops[1].type == CS_OP_IMM:
+                pos = C(ops[1].imm & (8 * sz - 1), sz)
+            else:
+                idx = self.read_op(insn, ops[1], sz)
+                if idx.sz != sz:
+                    idx = zext(idx, sz) if idx.sz < sz else trunc(idx, sz)
+                ti = self.tmp(sz)
+                out.append(S("asg", a, ti, idx))
+                pos = binop("and", ti, C(8 * sz - 1, sz), sz)
+            bit = binop("and", binop("shr", ta, pos, sz), C(1, sz), sz)
+            if m != "bt":
+                one = binop("shl", C(1, sz), pos, sz)
+                R = {"bts": binop("or", ta, one, sz), "btr": binop("and", ta, unop("not", one), sz), "btc": binop("xor", ta, one, sz)}[m]
+                out.append(self.write_op(insn, ops[0], R))
+            out.append(S("asg", a, loc(FLAGS, 1), flags("bt", (bit,), sz)))
+            return out
+        if m == "bswap" and n == 1 and ops[0].type == CS_OP_REG:
+            v = self.read_op(insn, ops[0])
+            return [self.write_op(insn, ops[0], X("bi", (v,), v.sz, "rev"))]
+        # -- SSE 데이터 이동·비트 연산 --
+        sse = self._sse(insn, m, ops)
+        if sse is not None:
+            return sse
         # -- 데이터 이동 --
         if m in ("mov", "movabs"):
             return [self.write_op(insn, ops[0], self.read_op(insn, ops[1], ops[0].size))]

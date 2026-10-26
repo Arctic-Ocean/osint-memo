@@ -148,7 +148,7 @@ def _addr_valued(e: X) -> bool:
 def drop_dead_bookkeeping(blocks: dict, abi) -> None:
     """sp·bp 갱신이나 스택 주소를 레지스터에 담았다가 다시 쓰이지 않는 대입을 지운다(슬롯의 주소 유출 판정이 부풀지 않게)."""
     while True:
-        read = set()
+        read = set(abi.arg_regs) | {abi.ret}                  # 호출 인자·반환값은 아직 묶이기 전이라 문장에 드러나지 않지만 읽힌다
         for b in blocks.values():
             for s in b.stmts + [b.term]:
                 for e in stmt_exprs(s):
@@ -176,37 +176,50 @@ def slot_name(off: int) -> str:
     return f"slot:{off}"
 
 
-def find_save_slots(stmts, terms, abi) -> set:
-    """콜리 세이브드 레지스터를 저장했다가 되돌리는 칸(push rbx … pop rbx): 저장은 `slot ← reg`, 읽기는 `reg ← slot` 뿐이다.
+def find_save_slots(blocks, entry, abi) -> set:
+    """콜리 세이브드 레지스터를 진입 직후 저장했다가 되돌리는 칸(push rbx … pop rbx).
+    저장은 진입 블록에서 그 레지스터를 건드리기 전의 `slot ← reg` 하나뿐이고, 그 칸의 다른 접근은 같은 레지스터로 되읽는 `reg ← slot` 뿐이다.
     이런 칸은 지역 변수의 주소가 새는 것과 무관하므로 구조체 `locals` 에 끌려 들어가지 않게 따로 가려낸다."""
-    stores: dict = {}
-    other: set = set()
+    eb = blocks.get(entry)
+    if eb is None:
+        return set()
+    cand: dict = {}                                    # 칸 → 레지스터
+    written = set()
+    for s in eb.stmts:
+        if s.k == "asg" and s.dst.op == "mem" and s.dst.args[0].op == "stk" and s.src.op == "loc" and s.src.aux in abi.callee_saved \
+                and s.src.sz == abi.full and s.src.aux not in written and s.dst.sz == abi.full and s.dst.args[0].aux not in cand:
+            cand[s.dst.args[0].aux] = s.src.aux
+        if s.k == "asg" and s.dst.op == "loc":
+            written.add(s.dst.aux)
+        elif s.k == "unk":
+            written.update(s.extra.get("defs", ()))
+    if not cand:
+        return set()
+    bad: set = set()
 
     def scan(e: X):
         for n in ir.walk(e):
-            if n.op == "mem" and n.args[0].op == "stk":
-                other.add(n.args[0].aux)
-            elif n.op == "stk":
-                other.add(n.aux)
+            if n.op == "mem" and n.args[0].op == "stk" and n.args[0].aux in cand:
+                bad.add(n.args[0].aux)
+            elif n.op == "stk" and n.aux in cand:
+                bad.add(n.aux)
 
-    for s in stmts:
-        if s.k == "asg" and s.dst.op == "mem" and s.dst.args[0].op == "stk" and s.src.op == "loc" and s.src.aux in abi.callee_saved \
-                and s.src.sz == abi.full:
-            stores.setdefault(s.dst.args[0].aux, set()).add(s.src.aux)
-            continue
-        if s.k == "asg" and s.dst.op == "loc" and s.dst.aux in abi.callee_saved and s.src.op == "mem" and s.src.args[0].op == "stk" \
-                and s.src.sz == abi.full:
-            stores.setdefault(s.src.args[0].aux, set()).add(s.dst.aux)
-            continue
-        for e in stmt_exprs(s):
-            scan(e)
-    for s in terms:
-        for e in stmt_exprs(s):
-            scan(e)
-    return {o for o, regs in stores.items() if o not in other and len(regs) == 1}
+    for b in blocks.values():
+        for s in b.stmts + [b.term]:
+            if s.k == "asg" and s.dst.op == "mem" and s.dst.args[0].op == "stk" and s.dst.args[0].aux in cand \
+                    and s.src.op == "loc" and s.src.aux == cand[s.dst.args[0].aux]:
+                if b is not eb:
+                    bad.add(s.dst.args[0].aux)             # 진입 블록 밖에서 다시 저장하면 일반 변수다
+                continue
+            if s.k == "asg" and s.dst.op == "loc" and s.src.op == "mem" and s.src.args[0].op == "stk" and s.src.args[0].aux in cand \
+                    and s.dst.aux == cand[s.src.args[0].aux]:
+                continue
+            for e in stmt_exprs(s):
+                scan(e)
+    return {o for o in cand if o not in bad}
 
 
-def promote_slots(blocks: dict, abi, frame_top: int = 0, frame_known: bool = True) -> dict:
+def promote_slots(blocks: dict, abi, frame_top: int = 0, frame_known: bool = True, entry=None) -> dict:
     """반환: {'promoted': {off: size}, 'memvars': {off: {sizes}}, 'escapes': [(off, kind)], 'canary': {off}}"""
     stmts = [s for b in blocks.values() for s in b.stmts]
     terms = [b.term for b in blocks.values()]
@@ -284,7 +297,7 @@ def promote_slots(blocks: dict, abi, frame_top: int = 0, frame_known: bool = Tru
                 break
             memvars.add(o)
             memvars.add(p)
-    saves = find_save_slots(stmts, terms, abi)
+    saves = find_save_slots(blocks, entry if entry is not None else next(iter(blocks)), abi)
     esc_pts = sorted({x for x, _ in escapes})
     for x, kind in escapes:
         # 주소를 받은 쪽이 몇 바이트를 만질지(구조체·배열 전체인지) 알 수 없으므로, 그 주소 위쪽의 지역 슬롯은 모두 메모리로 둔다

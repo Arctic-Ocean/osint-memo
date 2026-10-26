@@ -94,6 +94,24 @@ FN int st_sum(const P *p) { return p->x + p->y + (int)p->z; }
 FN void st_set(P *p, int a) { p->x = a; p->y = a * 2; p->z = a * 3L; }
 FN int st_local(int a) { P p; p.x = a; p.y = a + 1; p.z = a + 2; return st_sum(&p); }
 
+typedef struct { long a, b, c, d; } W;
+FN void w_copy(W *dst, const W *src) { *dst = *src; }
+FN void w_zero(W *w) { w->a = 0; w->b = 0; w->c = 0; w->d = 0; }
+FN long w_sum(const W *w) { return w->a + w->b + w->c + w->d; }
+FN void w_fill(W *w, long v) { w->a = v; w->b = v; w->c = v; w->d = v; }
+FN void w_rot(W *w) { long t = w->a; w->a = w->b; w->b = w->c; w->c = w->d; w->d = t; }
+FN long w_local(long v) { W t = {v, v + 1, v + 2, v + 3}; W u = t; return u.a * 2 + u.b + u.d; }
+
+typedef struct { long v[16]; } Big;
+FN void big_copy(Big *d, const Big *s) { *d = *s; }
+FN void big_zero(Big *b) { Big z = {{0}}; *b = z; }
+
+FN int bit_test(unsigned x, unsigned i) { return (x >> (i & 31)) & 1; }
+FN int bit_flag(unsigned long m, int i) { return (m & (1UL << (i & 63))) != 0; }
+FN unsigned bit_set(unsigned x, unsigned i) { return x | (1u << (i & 31)); }
+FN unsigned bswap32(unsigned x) { return __builtin_bswap32(x * 2654435761u); }
+FN unsigned long bswap64(unsigned long x) { return __builtin_bswap64(x * 11400714819323198485ul); }
+
 FN unsigned hash(const unsigned char *s, int n) { unsigned h = 5381; for (int i = 0; i < n; i++) h = h * 33 + s[i]; return h; }
 FN int bsearch_(const int *a, int n, int key) {
     int lo = 0, hi = n - 1;

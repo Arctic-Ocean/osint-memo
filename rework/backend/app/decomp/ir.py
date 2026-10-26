@@ -607,6 +607,13 @@ def reduce_cc(code: str, fl: X):
         return None
     if kind == "res":                             # 시프트 등: ZF·SF 만 안다
         return by_result(a[0]) if code in ("e", "ne", "s") else None
+    if kind == "bt":                              # bt/bts/btr/btc: CF = 검사한 비트(인자 하나가 그 비트 값 0/1)
+        bit = a[0]
+        if code == "b":
+            return cmp("ne", bit, C(0, bit.sz))
+        if code == "ae":
+            return cmp("eq", bit, C(0, bit.sz))
+        return None
     return None
 
 

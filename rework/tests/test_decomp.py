@@ -35,6 +35,9 @@ SPECS = {
     "many_args": ("i", "iiiiiiii"), "use_many": ("i", "i"), "st_sum": ("i", "T"), "st_set": ("v", "Ti"), "st_local": ("i", "i"),
     "hash": ("u", "Sn"), "bsearch_": ("i", "QQi"), "isprime": ("i", "p"), "bubble": ("i", "Pn"), "lsum": ("l", "L"),
     "neg_not": ("i", "i"), "goto_like": ("i", "n"), "while_true": ("i", "p"),
+    "w_copy": ("v", "WW"), "w_zero": ("v", "W"), "w_sum": ("l", "W"), "w_fill": ("v", "Wl"), "w_rot": ("v", "W"), "w_local": ("l", "l"),
+    "big_copy": ("v", "BB"), "big_zero": ("v", "B"),
+    "bit_test": ("i", "un"), "bit_flag": ("i", "Ln"), "bit_set": ("u", "un"), "bswap32": ("u", "u"), "bswap64": ("l", "L"),
 }
 # 인자 이름이 겹치는 특수 처리: bsearch_(const int *a, int n, int key) → Q(정렬 배열), n(<=16), i(키)
 SPECS["bsearch_"] = ("i", "Qni")
@@ -128,6 +131,16 @@ def gen_case(name, rng, kinds):
             a_orig.append(f"&{v}o")
             a_dec.append(f"&{v}d")
             bufs.append((f"{v}o", f"{v}d", "P", 1))
+        elif k == "B":
+            decl.append(f"Big {v}o = {{{{{', '.join(str(rng.randint(-99, 99)) for _ in range(16))}}}}}; Big {v}d = {v}o;")
+            a_orig.append(f"&{v}o")
+            a_dec.append(f"&{v}d")
+            bufs.append((f"{v}o", f"{v}d", "Big", 1))
+        elif k == "W":
+            decl.append(f"W {v}o = {{{', '.join(str(rng.randint(-99, 99)) for _ in range(4))}}}; W {v}d = {v}o;")
+            a_orig.append(f"&{v}o")
+            a_dec.append(f"&{v}d")
+            bufs.append((f"{v}o", f"{v}d", "W", 1))
     return decl, a_orig, a_dec, bufs
 
 
@@ -146,7 +159,7 @@ def make_driver(entries, seed, iterations=40):
                 pt = dparams[j] if j < len(dparams) else "int64_t"
                 if "*" in pt:
                     cast_args.append(f"({pt}){a}")
-                elif kinds[j] in ("P", "Q", "S", "T"):
+                elif kinds[j] in ("P", "Q", "S", "T", "W", "B"):
                     cast_args.append(f"({pt})(intptr_t){a}")
                 else:
                     cast_args.append(f"({pt}){a}")

@@ -33,15 +33,33 @@ class Abi:
         self.branch_prefix = branch_prefix
 
 
+def xmm_lanes(lo: int, hi: int):
+    """xmm 레지스터 번호 lo..hi-1 의 (하위·상위 64비트) 위치 이름들."""
+    out = set()
+    for i in range(lo, hi):
+        out.add(f"xmm{i}")
+        out.add(f"xmm{i}h")
+    return out
+
+
+def loc_size(name: str, abi: "Abi") -> int:
+    """위치 이름의 기본 폭(플래그 1바이트, xmm 한 조각 8바이트, 그 밖에는 레지스터 폭)."""
+    if name == FLAGS:
+        return 1
+    if name.startswith("xmm"):
+        return 8
+    return abi.full
+
+
 def abi_for(arch: str, bits: int, fmt: str) -> Abi:
     if arch == "x64":
         common = dict(sp="rsp", fps=("rbp",), callee_saved=("rbx", "rbp", "r12", "r13", "r14", "r15", "rsp"),
                       ret_reads=("rax", "eax", "ax", "al", "ah"))
         if fmt == "PE":
-            return Abi(["rcx", "rdx", "r8", "r9"], "rax", {"rax", "rcx", "rdx", "r8", "r9", "r10", "r11", FLAGS}, 8, "win64",
+            return Abi(["rcx", "rdx", "r8", "r9"], "rax", {"rax", "rcx", "rdx", "r8", "r9", "r10", "r11", FLAGS} | xmm_lanes(0, 6), 8, "win64",
                        stack_arg_base=40, **common)
         return Abi(["rdi", "rsi", "rdx", "rcx", "r8", "r9"], "rax",
-                   {"rax", "rcx", "rdx", "rsi", "rdi", "r8", "r9", "r10", "r11", FLAGS}, 8, "sysv", stack_arg_base=8, **common)
+                   {"rax", "rcx", "rdx", "rsi", "rdi", "r8", "r9", "r10", "r11", FLAGS} | xmm_lanes(0, 16), 8, "sysv", stack_arg_base=8, **common)
     if arch == "arm64":
         return Abi([f"x{i}" for i in range(8)], "x0", {f"x{i}" for i in range(19)} | {"x30", FLAGS}, 8, "aapcs64",
                    sp="sp", fps=("x29",), callee_saved={f"x{i}" for i in range(19, 30)} | {"sp"}, stack_arg_base=0,
@@ -50,7 +68,7 @@ def abi_for(arch: str, bits: int, fmt: str) -> Abi:
         return Abi(["r0", "r1", "r2", "r3"], "r0", {"r0", "r1", "r2", "r3", "r12", "r14", FLAGS}, 4, "aapcs",
                    sp="sp", fps=("r11",), callee_saved={f"r{i}" for i in range(4, 12)} | {"sp"}, stack_arg_base=0,
                    ret_reads=("r0",), call_mn=("bl", "blx"), ret_mn=("bx", "pop"), branch_prefix=("b",))
-    return Abi([], "eax", {"eax", "ecx", "edx", FLAGS}, 4, "cdecl", sp="esp", fps=("ebp",),
+    return Abi([], "eax", {"eax", "ecx", "edx", FLAGS} | xmm_lanes(0, 8), 4, "cdecl", sp="esp", fps=("ebp",),
                callee_saved=("ebx", "ebp", "esi", "edi", "esp"), stack_arg_base=4, ret_reads=("eax", "ax", "al", "ah"))
 
 
@@ -82,10 +100,10 @@ def stmt_defs(s: S, abi: Abi) -> list:
         clob = (s.extra or {}).get("clobbers")
         for c in sorted(clob if clob is not None else abi.clobbers):
             if s.dst is None or c != s.dst.aux:
-                out.append((c, FLAGS == c and 1 or abi.full, "clobber"))
+                out.append((c, loc_size(c, abi), "clobber"))
         return out
     if s.k == "unk":
-        out = [(r, abi.full, "unk") for r in s.extra["defs"]]
+        out = [(r, loc_size(r, abi), "unk") for r in s.extra["defs"]]
         if s.extra.get("writes_flags"):
             out.append((FLAGS, 1, "unk"))
         return out
@@ -132,7 +150,7 @@ class Flow:
                 stmt_defs_list[id(s)] = lst
         self.entry_def = {}
         for l in sorted(locs):
-            sz = abi.full
+            sz = loc_size(l, abi)
             d = Def(len(self.defs), l, "entry", None, sz)
             self.defs.append(d)
             self.entry_def[l] = d
@@ -286,6 +304,6 @@ def build_webs(flow: Flow) -> dict:
                 if s.dst is not None:
                     s.dst = var(web_of_def[ds[0].id], s.dst.sz)
             elif s.k == "unk":
-                s.extra["usevars"] = [var(umap[l], flow.abi.full) for l in sorted(umap)]
+                s.extra["usevars"] = [var(umap[l], loc_size(l, flow.abi)) for l in sorted(umap)]
                 s.extra["defvars"] = [var(web_of_def[d.id], d.sz) for d in ds]
     return webs

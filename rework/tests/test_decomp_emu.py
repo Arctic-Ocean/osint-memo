@@ -36,6 +36,11 @@ static inline uint32_t __mulhu32(uint32_t a, uint32_t b) { return (uint32_t)(((u
 static uint64_t __stack_chk_guard;
 """
 
+SUPPORT = """
+void *memcpy(void *d, const void *s, unsigned long n) { char *a = d; const char *b = s; while (n--) *a++ = *b++; return d; }
+void *memset(void *d, int c, unsigned long n) { char *a = d; while (n--) *a++ = (char)c; return d; }
+"""
+
 ARCH = {
     "i386": dict(target="i386-linux-gnu", cflags=[], uc=(UC_ARCH_X86, UC_MODE_32), ptr=4, long=4, abi="cdecl"),
     "arm64": dict(target="aarch64-linux-gnu", cflags=[], uc=(UC_ARCH_ARM64, UC_MODE_ARM), ptr=8, long=8, abi="aapcs64"),
@@ -181,6 +186,10 @@ def make_case(rng, name, kinds, a):
             out.append((k, ord(rng.choice("abc"))))
         elif k == "T":
             out.append((k, [rng.randint(-9, 9), rng.randint(-9, 9), rng.randint(-9, 9)]))
+        elif k == "W":
+            out.append((k, [rng.randint(-99, 99) for _ in range(4)]))
+        elif k == "B":
+            out.append((k, [rng.randint(-99, 99) for _ in range(16)]))
     return out
 
 
@@ -209,6 +218,8 @@ def run_one(m, addr, kinds_vals, ret, a, buf_slots):
                 data = b"".join((x & 0xFFFFFFFF).to_bytes(4, "little") for x in v)
             elif k == "S":
                 data = v.encode() + b"\x00" * (32 - len(v))
+            elif k in ("W", "B"):                                   # W: struct { long a, b, c, d; } · B: struct { long v[16]; }
+                data = b"".join((x & ((1 << (8 * a["long"])) - 1)).to_bytes(a["long"], "little") for x in v)
             else:                                                   # T: struct { int x; int y; long z; }
                 data = (v[0] & 0xFFFFFFFF).to_bytes(4, "little") + (v[1] & 0xFFFFFFFF).to_bytes(4, "little") + \
                     (v[2] & ((1 << (8 * a["long"])) - 1)).to_bytes(a["long"], "little")
@@ -228,6 +239,7 @@ def run_level(arch, opt, only, verbose, seed=1, iterations=30):
     src_text = open(CORPUS).read()
     if arch == "win64":                                           # ELF 위에서 Windows x64 호출 규약(ms_abi)으로 컴파일한 코퍼스
         src_text = src_text.replace("#define FN __attribute__((noinline, noclone))", "#define FN __attribute__((noinline, noclone, ms_abi))")
+    src_text += SUPPORT                                           # 독립 실행 환경에는 libc 가 없으므로 컴파일러가 만들어 내는 memcpy·memset 호출을 받아 준다
     corpus_path = os.path.join(WORK, f"corpus_{arch}.c")
     with open(corpus_path, "w") as fh:
         fh.write(src_text)
@@ -243,6 +255,8 @@ def run_level(arch, opt, only, verbose, seed=1, iterations=30):
             continue
         if name not in by:
             continue
+        if arch == "win64" and name in ("big_copy", "big_zero"):
+            continue                    # 컴파일러가 만드는 memcpy/memset 호출은 SysV 규약이라, ELF 위의 ms_abi 모의 환경에서는 호출 규약이 섞여 의미가 없다
         d = Decompiler(prog).decompile(by[name])
         lines = d["lines"]
         lits = [int(x, 16) for x in re.findall(r"\b0x[0-9a-f]{4,}\b", "".join(l["text"] for l in lines))]

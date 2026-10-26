@@ -10,8 +10,9 @@ from .ir import X, S, C, loc, Block
 from .cfg import build_blocks, Graph, relink, prune
 from .lift_x86 import X86Lifter
 from . import stack as stk_mod
+from .stack import stmt_exprs as stmt_exprs_
 from . import protos
-from .dataflow import Flow, build_webs, abi_for, FLAGS
+from .dataflow import Flow, build_webs, abi_for, bits_of, FLAGS
 from .propagate import Prop, used_vars
 from . import structure as st_mod
 from . import tables as tables_mod
@@ -111,7 +112,19 @@ class FuncDecomp:
         for ins in insns:
             if ins.address in leaders:
                 lifter.div_state = None
-            lifted.append((ins.address, ins.size, lifter.lift(ins)))
+            stmts = lifter.lift(ins)
+            parts = [(ins.address, ins.size, stmts)]
+            if stmts and stmts[0].k == "split":
+                # `rep movs/stos` 처럼 한 명령이 루프로 풀리는 경우: 첫 문장이 조각 경계(주소)를 알려 준다. 조각은 명령 바이트 범위 안의 주소를 쓴다.
+                cuts = stmts[0].extra["cuts"]
+                body = stmts[1:]
+                parts = []
+                prev = ins.address
+                for cut in cuts:
+                    parts.append((prev, cut - prev, [x for x in body if x.addr == prev]))
+                    prev = cut
+                parts.append((prev, ins.size - (prev - ins.address), [x for x in body if x.addr == prev]))
+            lifted.extend(parts)
         from .switch import resolve_switches
         resolve_switches(lifted, insns, self.prog, self.lo, self.hi, self.full)
         self.abi = abi_for(self.arch, self.bits, self.model.fmt)
@@ -138,7 +151,7 @@ class FuncDecomp:
         tr = stk_mod.StackTracker(self.blocks, self.graph, self.entry, self.abi)
         self.frame = tr.run()
         stk_mod.drop_dead_bookkeeping(self.blocks, self.abi)
-        self.slots = stk_mod.promote_slots(self.blocks, self.abi, self.frame if self.frame is not None else 0, self.frame is not None)
+        self.slots = stk_mod.promote_slots(self.blocks, self.abi, self.frame if self.frame is not None else 0, self.frame is not None, self.entry)
         # 바깥으로 넘기는 인자 칸: 승격된 슬롯 중 어디서도 읽히지 않는 것(저장만 되는 칸)
         read = set()
         for b in self.blocks.values():
@@ -446,11 +459,100 @@ class FuncDecomp:
         self.bind_rets(flow)
         flow = Flow(self.blocks, self.graph, self.abi, self.out_slots)
         flow.run()
+        again = self.drop_dead_flag_defs(flow)
+        again = self.fold_partial_defs(flow) or again          # 부분 레지스터 쓰기가 옛 값을 읽는 것처럼 보이는 문제를 풀고 다시 분석
+        if again:
+            flow = Flow(self.blocks, self.graph, self.abi, self.out_slots)
+            flow.run()
         self.flow = flow
         self.webs = build_webs(flow)
         self.prop = Prop(self.blocks, self.graph, self.webs)
         self.prop.check = self.check_time
         self.prop.run()
+
+    def drop_dead_flag_defs(self, flow) -> bool:
+        """아무도 읽지 않는 플래그 대입을 지운다. `inc/dec` 의 플래그식은 CF 를 위해 이전 플래그를 읽기 때문에, 죽은 대입이 남으면
+        그 이전 플래그와 한 변수로 묶여 불필요한 불리언 변수·대입이 생긴다."""
+        used = 0
+        for a in self.graph.rpo:
+            b = self.blocks[a]
+            for s in b.stmts + [b.term]:
+                m = s.meta["uses"].get(FLAGS)
+                if m:
+                    used |= m
+        changed = False
+        for a in self.graph.rpo:
+            b = self.blocks[a]
+            keep = []
+            for s in b.stmts:
+                if s.k == "asg" and s.dst.op == "loc" and s.dst.aux == FLAGS and not (used >> s.meta["defs"][0].id) & 1:
+                    changed = True
+                    continue
+                keep.append(s)
+            b.stmts = keep
+        return changed
+
+    def fold_partial_defs(self, flow) -> bool:
+        """`dl = *p` 같은 부분 쓰기는 레지스터 전체의 옛 값에 의존하는 `r = ins(r, 새 값)` 로 올라온다. 그 정의를 읽는 곳이 모두
+        아래쪽 몇 바이트(trunc)만 쓰거나 같은 종류의 부분 쓰기의 옛 값 자리뿐이면 옛 값은 아무도 볼 수 없으므로 `r = zext(새 값)` 로 바꾼다
+        (그러면 진입 값이 사용된 것으로 잡혀 가짜 매개변수가 생기는 일이 없다). 호출 인자·반환이 이미 묶인 뒤의 도달 정의를 쓴다."""
+        stmts = []
+        for a in self.graph.rpo:
+            b = self.blocks[a]
+            stmts.extend(b.stmts + [b.term])
+        cand = {}
+        for s in stmts:
+            if s.k == "asg" and s.dst.op == "loc" and s.src.op == "ins" and s.src.args[0].op == "loc" and s.src.args[0].aux == s.dst.aux:
+                cand[s.meta["defs"][0].id] = s.src.aux
+        if not cand:
+            return False
+        bad = set()
+        deps = []
+
+        def visit(e, parent, s, owner):
+            if e.op == "loc":
+                m = s.meta["uses"].get(e.aux, 0)
+                for i in bits_of(m):
+                    if i not in cand:
+                        continue
+                    if parent is not None and parent.op == "trunc" and parent.sz <= cand[i]:
+                        continue
+                    if parent is not None and parent.op == "ins" and parent.args[0] is e and owner is not None:
+                        deps.append((i, owner))
+                        continue
+                    bad.add(i)
+                return
+            for c in e.args:
+                visit(c, e, s, owner)
+
+        for s in stmts:
+            if s.k == "unk":
+                for name in s.extra["uses"]:
+                    for i in bits_of(s.meta["uses"].get(name, 0)):
+                        bad.add(i)
+                continue
+            if s.k == "asg" and s.dst.op == "loc" and s.src.op == "ins" and s.src.args[0].op == "loc" and s.src.args[0].aux == s.dst.aux:
+                owner = s.meta["defs"][0].id
+                visit(s.src.args[0], s.src, s, owner)
+                visit(s.src.args[1], s.src, s, None)
+                continue
+            for e in stmt_exprs_(s):
+                visit(e, None, s, None)
+        W = set(cand) - bad
+        changed = True
+        while changed:
+            changed = False
+            for i, owner in deps:
+                if i in W and owner not in W:
+                    W.discard(i)
+                    changed = True
+        if not W:
+            return False
+        for s in stmts:
+            if s.k == "asg" and s.dst.op == "loc" and s.src.op == "ins" and s.meta["defs"][0].id in W:
+                val = s.src.args[1]
+                s.src = ir.zext(val, s.dst.sz) if val.sz < s.dst.sz else val
+        return True
 
     def run_to_vars(self):
         self.load()
@@ -600,6 +702,8 @@ class FuncDecomp:
         if e.op == "c":
             return 4 if e.aux < (1 << 32) else 8
         if e.op in ("zext", "sext"):
+            if e.op == "zext" and e.sz == self.full and e.args[0].sz < 4:         # `xor eax,eax; setcc al` 처럼 레지스터 전체를 0 으로 만든 값은 int 로 돌려준다
+                return 4
             return e.args[0].sz
         if e.op == "call":
             pr = (e.aux or {}).get("proto")

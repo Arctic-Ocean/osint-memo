@@ -505,8 +505,12 @@ class Renderer:
             return f"__{op}{8 * sz}({ta}, {tb})", s, PREC["prim"]
         if op == "bi":
             t, sg, p_ = self.P(e.args[0], "u")
+            if e.aux == "rev":
+                return f"__builtin_bswap{8 * sz}({t})", "u", PREC["prim"]
             return f"__{e.aux}{8 * sz}({t})", "u", PREC["prim"]
         if op == "call":
+            if self._ptr_ret(e):
+                return f"(uint64_t){self.call_text(e)}", "u", PREC["unary"]
             return self.call_text(e), None, PREC["prim"]
         if op == "canary":
             return "__stack_chk_guard", "u", PREC["prim"]
@@ -726,16 +730,26 @@ class Renderer:
             t, s, p = self.P(tgt, "u")
             callee = f"((uint64_t (*)()){t})" if True else t
         args = []
-        for a in e.args[1:]:
+        pr = info.get("proto")
+        ptypes_ = pr[1] if pr is not None else []
+        for i, a in enumerate(e.args[1:]):
             if a.op == "zext" and a.args[0].sz >= 4:
                 a = a.args[0]
+            want_ptr = i < len(ptypes_) and "*" in ptypes_[i]
             pt = self.ptr_text(a) if a.op in ("var", "stk", "add") else None
             if pt is not None and (a.op != "add" or pt[2] is None or True) and not (a.op == "var" and a.aux not in self.ptypes):
                 args.append(self._paren(pt[0], pt[1], PREC["cond"]))
                 continue
             t, s, p = self.P(a)
+            if want_ptr and not t.startswith('"') and t != "0":              # 원형이 포인터를 받는데 정수 식이면 형을 맞춘다
+                t, p = f"(void *){self._paren(t, p, PREC['unary'])}", PREC["unary"]
             args.append(self._paren(t, p, PREC["cond"]))
         return f"{callee}({', '.join(args)})"
+
+    @staticmethod
+    def _ptr_ret(e: X) -> bool:
+        pr = (e.aux or {}).get("proto")
+        return pr is not None and "*" in pr[0]
 
     # ---- 스택 주소·메모리 변수 ----------------------------------------------------------
     def stk_addr(self, e: X) -> str:
@@ -802,6 +816,8 @@ class Renderer:
             call = self.call_text(s.src)
             if s.dst is not None:
                 w = s.dst.aux
+                if self._ptr_ret(s.src) and w not in self.ptypes:
+                    return f"{self.vname(w)} = (uint64_t){call};"
                 return f"{self.vname(w)} = {call};"
             return f"{call};"
         if s.k == "unk":
