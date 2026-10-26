@@ -7,7 +7,7 @@
 실행:  .venv/bin/python tests/test_decomp_emu.py [i386 arm64 arm win64 x64] [-O0 -O1 -O2] [-k 함수,...] [-v]
 필요: clang · ld.lld · unicorn(pip install unicorn)
 """
-import os, random, re, subprocess, sys, tempfile
+import os, struct, random, re, subprocess, sys, tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -27,6 +27,17 @@ from app.decompile import Decompiler                # noqa: E402
 from test_decomp import SPECS, CORPUS, c_param_list, HELPERS as _H   # noqa: E402
 
 HELPERS = """#include <stdint.h>
+#if !defined(__clang__)
+#define __builtin_bit_cast(T, x) ({ __typeof__(x) _bcs = (x); T _bcd; __builtin_memcpy(&_bcd, &_bcs, sizeof _bcd); _bcd; })
+#endif
+#define sqrt __builtin_sqrt
+#define sqrtf __builtin_sqrtf
+#define fabs __builtin_fabs
+#define fabsf __builtin_fabsf
+#ifndef NAN
+#define NAN __builtin_nanf("")
+#define INFINITY __builtin_inff()
+#endif
 #ifdef __SIZEOF_INT128__
 static inline int64_t __mulhs64(int64_t a, int64_t b) { return (int64_t)(((__int128)a * b) >> 64); }
 static inline uint64_t __mulhu64(uint64_t a, uint64_t b) { return (uint64_t)(((unsigned __int128)a * b) >> 64); }
@@ -63,7 +74,7 @@ def sh(cmd, **kw):
 def cc(arch, opt, src, out, extra=()):
     a = ARCH[arch]
     cmd = ["clang", f"--target={a['target']}"] + a["cflags"] + [opt, "-ffreestanding", "-nostdlib", "-static", "-fuse-ld=lld", "-w",
-                                                             "-fno-stack-protector", "-fno-pic", "-fwrapv", "-fno-builtin", "-o", out, src,
+                                                             "-fno-stack-protector", "-fno-pic", "-fwrapv", "-fno-builtin", "-fno-math-errno", "-o", out, src,
                                                              "-Wl,-e,main", "-Wl,--no-gc-sections"] + list(extra)
     r = sh(cmd)
     if r.returncode:
@@ -96,8 +107,9 @@ class Machine:
     def reset_stack(self):
         self.uc.mem_write(STACK_BASE + STACK_SIZE - 0x4000, b"\x00" * 0x4000)
 
-    def call(self, addr, args, ret_size):
-        """args: [(값, 폭)] 정수 인자 목록. 반환: 정수(부호 없는 ret_size 바이트) 또는 None."""
+    def call(self, addr, args, ret_size, ret_fp=False):
+        """args: 위치 순서의 인자 목록. 정수는 (값, 폭), 부동소수점은 ("fp", 폭, 비트). 반환: 정수(부호 없는 ret_size 바이트) 또는 None.
+        부동소수점 반환(ret_fp)은 xmm0 의 아래쪽 ret_size 바이트."""
         uc, a = self.uc, self.a
         sp = STACK_BASE + STACK_SIZE - 0x1000
         mask_ = lambda v, n: v & ((1 << (8 * n)) - 1)
@@ -111,21 +123,39 @@ class Machine:
         elif a["abi"] in ("sysv", "win64"):
             regs = ([X.UC_X86_REG_RDI, X.UC_X86_REG_RSI, X.UC_X86_REG_RDX, X.UC_X86_REG_RCX, X.UC_X86_REG_R8, X.UC_X86_REG_R9]
                     if a["abi"] == "sysv" else [X.UC_X86_REG_RCX, X.UC_X86_REG_RDX, X.UC_X86_REG_R8, X.UC_X86_REG_R9])
-            stack_args = args[len(regs):]
-            shadow = 32 if a["abi"] == "win64" else 0
+            win = a["abi"] == "win64"
+            xregs = [X.UC_X86_REG_XMM0 + i for i in range(8)]
+            int_args, ii, fi = [], 0, 0
+            rng = random.Random(addr)
+            for pos, arg in enumerate(args):
+                if arg[0] == "fp":
+                    xi = pos if win else fi
+                    fi += 1
+                    raw = arg[2] & ((1 << (8 * arg[1])) - 1)
+                    junk = (rng.getrandbits(128) >> (8 * arg[1])) << (8 * arg[1]) if arg[1] < 16 else 0     # xmm 윗부분은 쓰레기
+                    uc.reg_write(xregs[xi], (raw | junk) & ((1 << 128) - 1))
+                else:
+                    int_args.append((pos, arg))
+            stack_args = []
+            slot = 0
+            for pos, (v, n) in int_args:
+                ri = pos if win else slot
+                slot += 1
+                if ri < len(regs):
+                    junk = rng.getrandbits(64) & ~((1 << (8 * n)) - 1) if n < 8 else 0           # 좁은 인자의 윗부분은 쓰레기
+                    uc.reg_write(regs[ri], (v & ((1 << (8 * n)) - 1)) | junk)
+                else:
+                    stack_args.append((v, n))
+            shadow = 32 if win else 0
             base = (sp - 8 * len(stack_args) - shadow - 8) & ~0xF
             base -= 8
-            rng = random.Random(addr)
-            for i, (v, n) in enumerate(args[:len(regs)]):
-                junk = rng.getrandbits(64) & ~((1 << (8 * n)) - 1) if n < 8 else 0           # 좁은 인자의 윗부분은 쓰레기
-                uc.reg_write(regs[i], (v & ((1 << (8 * n)) - 1)) | junk)
             for i, (v, n) in enumerate(stack_args):
                 uc.mem_write(base + 8 + shadow + 8 * i, mask_(v, 8).to_bytes(8, "little"))
             uc.mem_write(base, SENTINEL.to_bytes(8, "little"))
             uc.reg_write(X.UC_X86_REG_RSP, base)
             uc.reg_write(X.UC_X86_REG_RAX, 0xDEADBEEF12345678)
             uc.emu_start(addr, SENTINEL, count=3_000_000)
-            r = uc.reg_read(X.UC_X86_REG_RAX)
+            r = uc.reg_read(X.UC_X86_REG_XMM0 if ret_fp else X.UC_X86_REG_RAX)
         elif a["abi"] == "aapcs64":
             regs = [A64.UC_ARM64_REG_X0 + i for i in range(8)]
             rng = random.Random(addr)
@@ -186,6 +216,16 @@ def make_case(rng, name, kinds, a):
             out.append((k, ord(rng.choice("abc"))))
         elif k == "T":
             out.append((k, [rng.randint(-9, 9), rng.randint(-9, 9), rng.randint(-9, 9)]))
+        elif k in ("d", "a", "k"):
+            out.append((k, round(rng.uniform(0, 50) if k == "a" else (rng.uniform(-3, 3) if k == "k" else rng.uniform(-50, 50)), 3)))
+        elif k == "f":
+            out.append((k, rng.randint(-400, 400) / 8))
+        elif k == "E":
+            out.append((k, [round(rng.uniform(-9, 9), 3) for _ in range(16)]))
+        elif k == "G":
+            out.append((k, [rng.randint(-80, 80) / 8 for _ in range(16)]))
+        elif k == "V":
+            out.append((k, [round(rng.uniform(-9, 9), 3), round(rng.uniform(-9, 9), 3), rng.randint(-9, 9)]))
         elif k == "W":
             out.append((k, [rng.randint(-99, 99) for _ in range(4)]))
         elif k == "B":
@@ -212,12 +252,22 @@ def run_one(m, addr, kinds_vals, ret, a, buf_slots):
             args.append((v & 0xFFFFFFFF, 4))
         elif k in ("l", "L"):
             args.append((v, a["long"]))
+        elif k in ("d", "a", "k"):
+            args.append(("fp", 8, struct.unpack("<Q", struct.pack("<d", v))[0]))
+        elif k == "f":
+            args.append(("fp", 4, struct.unpack("<I", struct.pack("<f", v))[0]))
         else:
             base = DATA_BASE + buf_slots[idx]
             if k in ("P", "Q"):
                 data = b"".join((x & 0xFFFFFFFF).to_bytes(4, "little") for x in v)
             elif k == "S":
                 data = v.encode() + b"\x00" * (32 - len(v))
+            elif k == "E":
+                data = b"".join(struct.pack("<d", x) for x in v)
+            elif k == "G":
+                data = b"".join(struct.pack("<f", x) for x in v)
+            elif k == "V":                                          # V: struct { double x, y; int k; }
+                data = struct.pack("<ddi", v[0], v[1], v[2]) + b"\x00" * 4
             elif k in ("W", "B"):                                   # W: struct { long a, b, c, d; } · B: struct { long v[16]; }
                 data = b"".join((x & ((1 << (8 * a["long"])) - 1)).to_bytes(a["long"], "little") for x in v)
             else:                                                   # T: struct { int x; int y; long z; }
@@ -227,8 +277,8 @@ def run_one(m, addr, kinds_vals, ret, a, buf_slots):
             uc.mem_write(base, data)
             args.append((base, a["ptr"]))
             bufs.append((base, len(data)))
-    rs = {"i": 4, "u": 4, "l": a["long"], "v": 0}[ret]
-    r = m.call(addr, args, rs)
+    rs = {"i": 4, "u": 4, "l": a["long"], "v": 0, "D": 8, "F": 4}[ret]
+    r = m.call(addr, args, rs, ret_fp=ret in ("D", "F"))
     outs = [bytes(uc.mem_read(b, n)) for b, n in bufs]
     return r, outs
 

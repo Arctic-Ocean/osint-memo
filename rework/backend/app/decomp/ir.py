@@ -60,7 +60,13 @@ CMP_INV = {"eq": "ne", "ne": "eq", "slt": "sge", "sge": "slt", "sle": "sgt", "sg
            "ult": "uge", "uge": "ult", "ule": "ugt", "ugt": "ule"}
 CMP_SWAP = {"eq": "eq", "ne": "ne", "slt": "sgt", "sgt": "slt", "sle": "sge", "sge": "sle",
             "ult": "ugt", "ugt": "ult", "ule": "uge", "uge": "ule"}
-BOOL_OPS = CMP_OPS | {"land", "lor", "lnot"}
+# 부동소수점: 값은 IEEE 비트 패턴(폭 4 = float, 8 = double)으로 정수와 같은 방식으로 들고 다닌다.
+FOPS2 = {"fadd", "fsub", "fmul", "fdiv", "fmin", "fmax"}
+FOPS1 = {"fsqrt", "fneg", "fabs"}
+FCONV = {"i2f", "f2i", "f2f"}                # i2f: 정수→float(aux 's'|'u' 는 원본 부호) · f2i: float→정수(0 쪽으로 자름) · f2f: float↔double
+FOPS = FOPS2 | FOPS1 | FCONV
+FCMP_OPS = {"feq", "fne", "flt", "fle", "fgt", "fge", "funord"}                      # 불리언(NaN 이면 funord·fne 만 참)
+BOOL_OPS = CMP_OPS | {"land", "lor", "lnot"} | FCMP_OPS
 
 
 # ---- 기본 생성자 ----------------------------------------------------------------
@@ -200,6 +206,11 @@ def binop(op: str, a: X, b: X, sz: int | None = None) -> X:
                     return zext(trunc(a, k), sz)
         if a == b:
             return a
+        if b.op == "c" and sz in (4, 8) and b.aux == (mask(sz) >> 1) and _looks_fp(a):                # x & 부호 제외 비트 → fabs(x)
+            return X("fabs", (a,), sz)
+        if b.op == "c" and a.op == "neg" and a.args[0].op == "zext" and a.args[0].args[0].op in BOOL_OPS and a.sz == sz:   # (비교 마스크) & c
+            cond = a.args[0].args[0]
+            return zext(cond, sz) if b.aux == 1 else ite(cond, b, C(0, sz))
         # 한쪽이 좁은 값의 0 확장이면 다른 쪽도 그 폭만 보면 된다(위쪽 쓰레기 비트가 결과에 영향을 못 준다)
         if a.op == "zext" and a.args[0].sz < sz:
             k = a.args[0].sz
@@ -215,11 +226,16 @@ def binop(op: str, a: X, b: X, sz: int | None = None) -> X:
                 return C(mask(sz), sz)
         if a == b:
             return a
+        sel = _mask_select(a, b)                                          # (x & m) | (y & ~m), m = 비교 결과 마스크 → 비교 ? x : y
+        if sel is not None:
+            return sel
     elif op == "xor":
         if b.op == "c" and b.aux == 0:
             return a
         if a == b:
             return C(0, sz)
+        if b.op == "c" and sz in (4, 8) and b.aux == (1 << (8 * sz - 1)) and _looks_fp(a):          # x ^ 부호 비트 → -x
+            return X("fneg", (a,), sz)
     elif op in ("shl", "shr", "sar", "rol", "ror"):
         if b.op == "c":
             if b.aux == 0:
@@ -239,6 +255,35 @@ def binop(op: str, a: X, b: X, sz: int | None = None) -> X:
         if b.op == "c" and b.aux == 1:
             return C(0, sz)
     return X(op, (a, b), sz)
+
+
+def _looks_fp(a: X) -> bool:
+    """이 식이 부동소수점 값처럼 쓰이나(부호 비트 마스크를 fneg·fabs 로 바꿔도 되나): 연산 결과이거나 xmm 위치를 읽는다."""
+    return a.op in FOPS or (a.op in ("loc", "var") and False) or (a.op == "loc" and str(a.aux).startswith("xmm"))
+
+
+def _mask_m(x: X):
+    """`neg(zext(불리언))` 꼴의 비교 마스크면 그 불리언."""
+    if x.op == "neg" and x.args[0].op == "zext" and x.args[0].args[0].op in BOOL_OPS:
+        return x.args[0].args[0]
+    return None
+
+
+def _mask_select(a: X, b: X):
+    """SSE 의 마스크 선택: (x & m) | (~m & y)  또는  (x & m) | (y & ~m) → m 의 조건 ? x : y."""
+    if a.op != "and" or b.op != "and":
+        return None
+    for (p, q) in ((a, b), (b, a)):
+        for pi in (0, 1):
+            cond = _mask_m(p.args[pi])
+            if cond is None:
+                continue
+            x = p.args[1 - pi]
+            for qi in (0, 1):
+                nq = q.args[qi]
+                if nq.op == "not" and _mask_m(nq.args[0]) == cond:
+                    return ite(cond, x, q.args[1 - qi])
+    return None
 
 
 def add(a, b, sz=None):
@@ -382,11 +427,37 @@ def invert(c: X) -> X:
         return X(CMP_INV[c.op], c.args, 1)
     if c.op == "lnot":
         return c.args[0]
+    if c.op in FCMP_OPS:                                  # NaN 때문에 반대 비교로 바꿀 수 없다: !(a < b) 는 a >= b 가 아니다
+        return X("lnot", (c,), 1)
     if c.op == "land":
         return lor(invert(c.args[0]), invert(c.args[1]))
     if c.op == "lor":
         return land(invert(c.args[0]), invert(c.args[1]))
     return cmp("eq", c, C(0, c.sz))
+
+
+def _chain(e: X, op: str, out: list) -> list:
+    if e.op == op:
+        _chain(e.args[0], op, out)
+        _chain(e.args[1], op, out)
+    else:
+        out.append(e)
+    return out
+
+
+def _fcmp_fold(items: list, conj: bool) -> list:
+    """ucomisd 뒤의 `jp` + `jne`(=같지 않음)·`jnp` + `je`(=같음) 짝을 C 의 `a != b`·`a == b` 로 합친다.
+    ZF=1 은 같거나 정렬 불가라 `!(a < b || a > b)`, 정렬 불가는 `funord` 로 풀려 있으므로 세 항이 모두 있으면 한 비교가 된다."""
+    for e in list(items):
+        if e.op == ("funord" if not conj else "lnot") and (not conj or (e.args[0].op == "funord")):
+            u = e if not conj else e.args[0]
+            A, B = u.args
+            lt, gt = X("flt", (A, B), 1), X("fgt", (A, B), 1)
+            need = [lt, gt] if not conj else [X("lnot", (lt,), 1), X("lnot", (gt,), 1)]
+            if all(n in items for n in need):
+                rest = [x for x in items if x is not e and x not in need]
+                return rest + [X("fne" if not conj else "feq", (A, B), 1)]
+    return items
 
 
 def land(a: X, b: X) -> X:
@@ -396,6 +467,15 @@ def land(a: X, b: X) -> X:
         return a if b.aux else C(0, 1)
     if a == b:
         return a
+    if (a.op in FCMP_OPS or b.op in FCMP_OPS or a.op == "lnot" or b.op == "lnot" or a.op == "land" or b.op == "land"):
+        items = _chain(b, "land", _chain(a, "land", []))
+        if any(x.op == "lnot" and x.args[0].op in FCMP_OPS for x in items):
+            folded = _fcmp_fold(items, True)
+            if folded is not items:
+                r = folded[0]
+                for x in folded[1:]:
+                    r = X("land", (r, x), 1)
+                return r
     return X("land", (a, b), 1)
 
 
@@ -406,6 +486,15 @@ def lor(a: X, b: X) -> X:
         return C(1, 1) if b.aux else a
     if a == b:
         return a
+    if (a.op in FCMP_OPS or b.op in FCMP_OPS or a.op == "lor" or b.op == "lor"):
+        items = _chain(b, "lor", _chain(a, "lor", []))
+        if any(x.op == "funord" for x in items):
+            folded = _fcmp_fold(items, False)
+            if folded is not items:
+                r = folded[0]
+                for x in folded[1:]:
+                    r = X("lor", (r, x), 1)
+                return r
     return X("lor", (a, b), 1)
 
 
@@ -416,6 +505,17 @@ def truth(e: X) -> X:
     return cmp("ne", e, C(0, e.sz))
 
 
+def _as_bool(x: X):
+    """0/1 상수·불리언 식·불리언의 0 확장을 불리언 식으로(아니면 None)."""
+    if x.op == "c" and x.aux in (0, 1):
+        return C(x.aux, 1)
+    if x.op in BOOL_OPS:
+        return x
+    if x.op == "zext" and x.args[0].op in BOOL_OPS:
+        return x.args[0]
+    return None
+
+
 def ite(c: X, a: X, b: X) -> X:
     if c.op == "c":
         return a if c.aux else b
@@ -423,6 +523,11 @@ def ite(c: X, a: X, b: X) -> X:
         return a
     if c.op == "lnot":
         return ite(c.args[0], b, a)
+    if a.sz == b.sz and c.op in BOOL_OPS:                                   # 값이 모두 0/1 이면 &&·|| 로(부동소수점 비교의 NaN 처리 짝을 합치기 위해서도 필요)
+        ba, bb = _as_bool(a), _as_bool(b)
+        if ba is not None and bb is not None and (ba.op == "c" or bb.op == "c") and (ba.op != "c" or bb.op != "c"):
+            r = _bool_ite(c, ba, bb)
+            return r if a.sz == 1 else zext(r, a.sz)
     return X("ite", (c, a, b), a.sz)
 
 
@@ -607,6 +712,24 @@ def reduce_cc(code: str, fl: X):
         return None
     if kind == "res":                             # 시프트 등: ZF·SF 만 안다
         return by_result(a[0]) if code in ("e", "ne", "s") else None
+    if kind == "fcmp":                            # comiss/ucomisd: 같음·정렬 불가 → ZF=1, 작음·정렬 불가 → CF=1, 정렬 불가 → PF=1
+        A, B = a
+        lt, gt = X("flt", (A, B), 1), X("fgt", (A, B), 1)
+        if code == "a":
+            return gt
+        if code == "ae":
+            return X("fge", (A, B), 1)
+        if code == "b":
+            return invert(X("fge", (A, B), 1))
+        if code == "be":
+            return invert(gt)
+        if code == "p":
+            return X("funord", (A, B), 1)
+        if code == "ne":
+            return lor(lt, gt)
+        if code == "e":
+            return land(invert(lt), invert(gt))
+        return None
     if kind == "bt":                              # bt/bts/btr/btc: CF = 검사한 비트(인자 하나가 그 비트 값 0/1)
         bit = a[0]
         if code == "b":

@@ -47,6 +47,21 @@ _P = {
     "ftell": ("long", ["FILE *"], False),
     "rewind": ("void", ["FILE *"], False),
     "perror": ("void", ["const char *"], False),
+    # math
+    "sqrt": ("double", ["double"], False), "sqrtf": ("float", ["float"], False), "fabs": ("double", ["double"], False),
+    "fabsf": ("float", ["float"], False), "floor": ("double", ["double"], False), "floorf": ("float", ["float"], False),
+    "ceil": ("double", ["double"], False), "ceilf": ("float", ["float"], False), "round": ("double", ["double"], False),
+    "trunc": ("double", ["double"], False), "sin": ("double", ["double"], False), "cos": ("double", ["double"], False),
+    "tan": ("double", ["double"], False), "asin": ("double", ["double"], False), "acos": ("double", ["double"], False),
+    "atan": ("double", ["double"], False), "exp": ("double", ["double"], False), "log": ("double", ["double"], False),
+    "log10": ("double", ["double"], False), "log2": ("double", ["double"], False), "sinf": ("float", ["float"], False),
+    "cosf": ("float", ["float"], False), "expf": ("float", ["float"], False), "logf": ("float", ["float"], False),
+    "pow": ("double", ["double", "double"], False), "atan2": ("double", ["double", "double"], False),
+    "fmod": ("double", ["double", "double"], False), "hypot": ("double", ["double", "double"], False),
+    "fmin": ("double", ["double", "double"], False), "fmax": ("double", ["double", "double"], False),
+    "powf": ("float", ["float", "float"], False), "atan2f": ("float", ["float", "float"], False),
+    "atof": ("double", ["const char *"], False), "strtod": ("double", ["const char *", "char **"], False),
+    "strtof": ("float", ["const char *", "char **"], False), "ldexp": ("double", ["double", "int"], False),
     "remove": ("int", ["const char *"], False),
     "rename": ("int", ["const char *", "const char *"], False),
     # string / memory
@@ -195,6 +210,52 @@ def ret_width(rtype: str):
                                            "long long", "unsigned long long", "int64_t", "uint64_t", "ptrdiff_t", "off64_t"):
         return 8
     return None
+
+
+FP_TYPES = {"double": 8, "float": 4}
+
+
+def fp_kinds(types) -> list:
+    """원형의 인자형 목록 → 부동소수점 인자들의 폭(8 double · 4 float)을 순서대로."""
+    return [FP_TYPES[t] for t in types if t in FP_TYPES]
+
+
+def printf_kinds(fmt: str) -> list:
+    """printf 계열 형식 문자열이 소비하는 인자의 종류: 'i' 정수·포인터, 'd' 실수(double, %Lf 는 x87 이라 'x')."""
+    out = []
+    i, L = 0, len(fmt)
+    while i < L:
+        if fmt[i] != "%":
+            i += 1
+            continue
+        i += 1
+        if i < L and fmt[i] == "%":
+            i += 1
+            continue
+        while i < L and fmt[i] in "-+ #0'":
+            i += 1
+        if i < L and fmt[i] == "*":
+            out.append("i")
+            i += 1
+        else:
+            while i < L and fmt[i].isdigit():
+                i += 1
+        if i < L and fmt[i] == ".":
+            i += 1
+            if i < L and fmt[i] == "*":
+                out.append("i")
+                i += 1
+            else:
+                while i < L and fmt[i].isdigit():
+                    i += 1
+        mods = ""
+        while i < L and fmt[i] in "hlLqjzt":
+            mods += fmt[i]
+            i += 1
+        if i < L and fmt[i] in "diouxXeEfFgGaAcspnC S":
+            out.append(("x" if "L" in mods else "d") if fmt[i] in "eEfFgGaA" else "i")
+            i += 1
+    return out
 
 
 def is_noreturn(name: str) -> bool:

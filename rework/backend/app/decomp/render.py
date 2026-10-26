@@ -11,6 +11,7 @@ from . import ir
 from . import ptrtype
 from . import tables
 from . import protos
+from .render_fp import FpRender, FTYPE as FTYPE_
 from .ir import X, to_signed, mask
 
 PREC = {"prim": 16, "unary": 14, "mul": 13, "add": 12, "shift": 11, "rel": 10, "eq": 9, "band": 8, "bxor": 7,
@@ -18,6 +19,8 @@ PREC = {"prim": 16, "unary": 14, "mul": 13, "add": 12, "shift": 11, "rel": 10, "
 
 
 def itype(sz: int, sign: str) -> str:
+    if sign == "f":                                   # 부동소수점 원소(float·double)
+        return "double" if sz == 8 else "float"
     return ("int" if sign == "s" else "uint") + f"{8 * sz}_t"
 
 
@@ -42,7 +45,7 @@ def c_escape(s: str) -> str:
     return "".join(out)
 
 
-class Renderer:
+class Renderer(FpRender):
     def __init__(self, fd, ast, params, ret_info):
         self.fd = fd
         self.prog = fd.prog
@@ -229,6 +232,7 @@ class Renderer:
             self.vsign[w] = sign
         # 포인터 형: 메모리 접근의 주소식에서 추정
         exprs, copies, derived = [], [], []
+        asgs = []
 
         def collect(ns):
             for n in ns:
@@ -237,6 +241,7 @@ class Renderer:
                     s_ = n[1]
                     if s_.k == "asg":
                         exprs.append(s_.src)
+                        asgs.append((s_.dst, s_.src))
                         if s_.dst.op == "mem":
                             exprs.append(s_.dst)
                         elif s_.src.op == "var":
@@ -247,6 +252,8 @@ class Renderer:
                                 derived.append((s_.dst.aux, bs[0].aux))
                     elif s_.k == "call":
                         exprs.append(s_.src)
+                        if s_.dst is not None:
+                            asgs.append((s_.dst, s_.src))
                 elif k == "if":
                     exprs.append(n[1])
                     collect(n[2])
@@ -271,20 +278,21 @@ class Renderer:
                     exprs.append(n[1])
 
         collect(self.ast)
+        self.fp_prepare(exprs, asgs)
         induction = set()
         for e0 in self._all_stmts():
             if e0.k == "asg" and e0.dst.op == "var" and e0.src.op in ("add", "sub") and e0.src.args[0] == e0.dst \
                     and e0.src.args[1].op == "c":
                 induction.add(e0.dst.aux)
         params_ = {w for w, _ in self.params if w is not None}
-        self.ptypes = ptrtype.infer(exprs, fd.full, self.webs, induction, params_)
+        self.ptypes = ptrtype.infer(exprs, fd.full, self.webs, induction, params_, self.fpmem)
         ptrtype.propagate_copies(copies, self.ptypes, self.webs)
         for dst, src in derived:                                  # v = p + 오프셋 → v 도 p 와 같은 종류의 포인터
             if src in self.ptypes and dst not in self.ptypes and self.webs[dst].sz == fd.full:
                 self.ptypes[dst] = self.ptypes[src]
         ptrtype.propagate_copies(copies, self.ptypes, self.webs)
         for w, pt in self.ptypes.items():
-            pt.signed = "s" if pt.esz >= 4 else "u"
+            pt.signed = "f" if pt.fp else ("s" if pt.esz >= 4 else "u")
         # for 문의 반복 변수는 i, j, k.. 로 부른다(사용자가 바꾸지 않은 변수만)
         self.loopvars = []
 
@@ -387,6 +395,8 @@ class Renderer:
     def decl_type(self, w) -> str:
         if w in self.ptypes:
             return self.pointee(self.ptypes[w]) + " *"
+        if w in self.fkind:
+            return ("double" if self.fkind[w] == 8 else "float") + " "
         return itype(self.webs[w].sz, self.vsign[w]) + " "
 
     def fit(self, e: X, want, prec=0) -> str:
@@ -417,7 +427,16 @@ class Renderer:
         if op == "var":
             if e.aux in self.ptypes and want != "ptr":
                 return f"(uint64_t){self.vname(e.aux)}", "u", PREC["unary"]
+            if e.aux in self.fkind:
+                return self.bits_of_fp(e)
             return self.vname(e.aux), self.vsign[e.aux], PREC["prim"]
+        if op in ir.FCMP_OPS:
+            return self.fp_cmp_text(e)
+        if op == "f2i":
+            t, p = self.PF(e.args[0], e.args[0].sz)
+            return f"({itype(sz, 's')}){self._paren(t, p, PREC['unary'])}", "s", PREC["unary"]
+        if op in ir.FOPS:
+            return self.bits_of_fp(e)
         if op == "stk":
             return self.stk_addr(e), "u", PREC["add"] if "+" in self.stk_addr(e) else PREC["unary"]
         if op == "mem":
@@ -672,7 +691,7 @@ class Renderer:
         T = itype(sz, sign)
         if pt.kind == "arr":
             esz = pt.esz
-            if sz == esz and off % esz == 0 and (idx is None or idx[1] == esz):
+            if sz == esz and off % esz == 0 and (idx is None or idx[1] == esz) and pt.fp == (sign == "f"):
                 psign = pt.signed
                 if idx is None:
                     k = off // esz
@@ -731,8 +750,11 @@ class Renderer:
             callee = f"((uint64_t (*)()){t})" if True else t
         args = []
         pr = info.get("proto")
-        ptypes_ = pr[1] if pr is not None else []
-        for i, a in enumerate(e.args[1:]):
+        ptypes_ = [t for t in pr[1] if t not in protos.FP_TYPES] if pr is not None else []
+        fk = info.get("fp_kinds") or []
+        call_args = e.args[1:len(e.args) - len(fk)] if fk else e.args[1:]
+        fp_args = e.args[len(e.args) - len(fk):] if fk else ()
+        for i, a in enumerate(call_args):
             if a.op == "zext" and a.args[0].sz >= 4:
                 a = a.args[0]
             want_ptr = i < len(ptypes_) and "*" in ptypes_[i]
@@ -743,6 +765,9 @@ class Renderer:
             t, s, p = self.P(a)
             if want_ptr and not t.startswith('"') and t != "0":              # 원형이 포인터를 받는데 정수 식이면 형을 맞춘다
                 t, p = f"(void *){self._paren(t, p, PREC['unary'])}", PREC["unary"]
+            args.append(self._paren(t, p, PREC["cond"]))
+        for a, kind in zip(fp_args, fk):
+            t, p = self.PF(a, kind)
             args.append(self._paren(t, p, PREC["cond"]))
         return f"{callee}({', '.join(args)})"
 
@@ -763,6 +788,20 @@ class Renderer:
         self.lines.append({"addr": addr if addr is not None else self.cur_addr, "indent": indent, "text": text, "kind": kind})
 
     def assign_text(self, dst: X, src: X) -> str:
+        if dst.op == "var" and dst.aux in self.fkind and dst.aux not in self.ptypes:
+            t, p = self.PF(src, self.fkind[dst.aux])
+            return f"{self.vname(dst.aux)} = {t};"
+        if dst.op == "mem" and (dst in self.fpmem or self.fkind_of(src) == dst.sz):
+            kind = dst.sz
+            val, _ = self.PF(src, kind)
+            addr = dst.args[0]
+            if addr.op == "stk":
+                t, s_, p_ = self.mem_slot(addr.aux, kind, "f")
+                return f"{t} = {val};"
+            pd = self.ptr_deref(addr, kind, "f")
+            if pd is not None:
+                return f"{pd[0]} = {val};"
+            return f"*({itype(kind, 'f')} *){self.addr_text(addr)} = {val};"
         if dst.op == "var":
             w = dst.aux
             if w in self.ptypes:
@@ -880,6 +919,9 @@ class Renderer:
             i += 1
 
     def ret_value(self, e: X) -> str:
+        rk = getattr(self.fd, "ret_fp", None)
+        if rk:
+            return self.PF(e if e.sz == rk else (ir.trunc(e, rk) if e.sz > rk else ir.zext(e, rk)), rk)[0]
         sz, sign = self.ret_sz, self.ret_sign
         if e.sz != sz:
             e = ir.trunc(e, sz) if e.sz > sz else ir.zext(e, sz)
@@ -914,9 +956,14 @@ class Renderer:
         fd = self.fd
         name = fd.func_name
         ret_t = itype(self.ret_sz, self.ret_sign) if fd.returns_value else "void"
+        if getattr(fd, "ret_fp", None):
+            ret_t = FTYPE_[fd.ret_fp]
         ptxt = []
         for w, idx in self.params:
             if w is None:
+                if idx in getattr(fd, "fp_placeholders", {}):
+                    ptxt.append(f"{FTYPE_[fd.fp_placeholders[idx]]} {self.names[('p', idx)]}")
+                    continue
                 psz = fd.mem_params[idx][1] if idx in fd.mem_params else fd.full
                 ptxt.append(f"{itype(psz if psz in (1, 2, 4, 8) else fd.full, 's')} {self.names[('p', idx)]}")
             else:

@@ -88,6 +88,10 @@ class FuncDecomp:
         self.full = 8 if self.bits == 64 else 4
         self.deadline = time.monotonic() + TIME_BUDGET
 
+    def _const_data(self, va: int) -> bool:
+        sec = self.model.section_for(va)
+        return sec is not None and not sec.is_code and not sec.writable
+
     # ---- 단계 1: 디코드·리프트·CFG --------------------------------------------------------
     def load(self):
         prog = self.prog
@@ -100,7 +104,7 @@ class FuncDecomp:
         if self.ninsns > MAX_DECOMPILE_INSNS:
             raise TooLarge(self.ninsns)
         if self.arch in ("x86", "x64"):
-            lifter = X86Lifter(prog.dis.cs, self.bits)
+            lifter = X86Lifter(prog.dis.cs, self.bits, prog.dis.read, self._const_data)
         elif self.arch == "arm64":
             from .lift_arm64 import A64Lifter
             lifter = A64Lifter(prog.dis.cs, self.bits, prog.dis.read)
@@ -274,8 +278,8 @@ class FuncDecomp:
         self.infer_params()
         has_ret = any(b.term.k == "ret" for b in self.blocks.values())
         has_noret = any(b.term.k == "noret" for b in self.blocks.values())
-        return {"nparams": len(self.params), "returns": self.returns_value, "noreturn": has_noret and not has_ret,
-                "clobbers": sorted(written)}
+        return {"nparams": len(self.params), "returns": self.returns_value and not self.ret_fp, "noreturn": has_noret and not has_ret,
+                "clobbers": sorted(written), "fp_params": [(k, kind) for _w, k, kind in self.fp_params], "ret_fp": self.ret_fp}
 
     def _real(self, defs) -> bool:
         return any(d.kind in ("asg", "call", "unk") for d in defs)
@@ -318,24 +322,68 @@ class FuncDecomp:
         if info is not None:
             return info["nparams"]
         if pr is not None:
-            fixed = len(pr[1])
+            fixed = sum(1 for t in pr[1] if t not in protos.FP_TYPES)
             total = fixed
             if pr[2]:
-                fmt = None
-                if fixed and pr[1][-1].startswith("const char *") and fixed - 1 < len(regs):
-                    ds = flow.reaching_at(s, regs[fixed - 1])
-                    if len(ds) == 1 and ds[0].kind == "asg" and ds[0].stmt.src.op == "c":
-                        fmt = self.const_string(ds[0].stmt.src.aux)
+                fmt = self._call_fmt(flow, s, pr, regs)
                 if fmt is not None and any(k in (name or "") for k in ("printf", "scanf", "syslog", "warn", "err")):
-                    total = fixed + protos.printf_specs(fmt)
+                    total = fixed + sum(1 for k in protos.printf_kinds(fmt) if k == "i")
                 else:
                     total = max(fixed, contiguous(fixed))
             return total
         return contiguous(0)
 
-    def bind_calls(self, flow):
+    def _call_fmt(self, flow, s, pr, regs):
+        """가변 인자 함수 호출의 형식 문자열(상수일 때)."""
+        fixed = len(pr[1])
+        if fixed and pr[1][-1].startswith("const char *") and fixed - 1 < len(regs):
+            ds = flow.reaching_at(s, regs[fixed - 1])
+            if len(ds) == 1 and ds[0].kind == "asg" and ds[0].stmt.src.op == "c":
+                return self.const_string(ds[0].stmt.src.aux)
+        return None
+
+    def _fp_plan(self, flow, s, blk, name, pr, ci):
+        """호출의 부동소수점 인자: [(xmm 번호, 폭)]. Windows x64 는 위치가 곧 번호다. 반환형은 (인자 목록, 반환 폭 또는 None)."""
+        if self.arch != "x64":
+            return [], None
+        win = self.abi.name == "win64"
+        rk = None
+        plan = []
+        if pr is not None:
+            if pr[0] in protos.FP_TYPES:
+                rk = protos.FP_TYPES[pr[0]]
+            kinds_by_pos = [protos.FP_TYPES.get(t) for t in pr[1]]
+            if pr[2]:
+                fmt = self._call_fmt(flow, s, pr, self.abi.arg_regs)
+                if fmt is not None and any(k in (name or "") for k in ("printf", "scanf", "syslog", "warn", "err")):
+                    kinds_by_pos += [8 if k == "d" else None for k in protos.printf_kinds(fmt) if k in ("i", "d")]
+            if win:
+                plan = [(i, k) for i, k in enumerate(kinds_by_pos) if k]
+            else:
+                plan = [(j, k) for j, k in enumerate([k for k in kinds_by_pos if k])]
+            return plan, rk
+        if ci is not None:
+            rk = ci.get("ret_fp")
+            fps = ci.get("fp_params") or []
+            if win:
+                plan = [(k, kind) for k, kind in fps]
+            else:
+                plan = [(j, kind) for j, (_k, kind) in enumerate(fps)]
+            return plan, rk
+        # 알 수 없는 호출 대상: 같은 기본 블록에서 실제로 쓴 xmm 인자 레지스터만 인자로 본다(앞 코드의 남은 값을 인자로 오해하지 않도록)
+        n = 0
+        stmts = blk.stmts
+        while n < (4 if win else 8):
+            ds = flow.reaching_at(s, f"xmm{n}")
+            if not any(d.kind in ("asg", "unk") and d.stmt is not None and d.stmt in stmts for d in ds):
+                break
+            n += 1
+        return [(j, 8) for j in range(n)], None
+
+    def bind_calls(self, flow) -> bool:
         abi = self.abi
         full = self.full
+        fp_ret = False
         for a in flow.graph.rpo:
             for s in self.blocks[a].stmts:
                 if s.k != "call":
@@ -348,18 +396,34 @@ class FuncDecomp:
                     total = len(pr[1]) if pr is not None else self._tail_arity(flow, s)
                 else:
                     total = self._arity(flow, s, name, pr, sp)
+                ci = self.callee_info(tgt) if pr is None else None
+                fp, rk = ([], None) if (s.src.aux or {}).get("tail") else self._fp_plan(flow, s, self.blocks[a], name, pr, ci)
+                fp_pos = {k for k, _ in fp} if abi.name == "win64" else set()
                 args = []
+                pos = 0
                 for i in range(total):
-                    if i < len(abi.arg_regs):
-                        args.append(loc(abi.arg_regs[i], full))
+                    while pos in fp_pos:                                  # Windows x64: 실수 인자가 차지한 위치의 정수 레지스터는 건너뛴다
+                        pos += 1
+                    if pos < len(abi.arg_regs):
+                        args.append(loc(abi.arg_regs[pos], full))
                     elif sp is not None:
                         shadow = 32 if abi.name == "win64" else 0
-                        args.append(self._stack_arg(sp + shadow + (i - len(abi.arg_regs)) * full, full))
+                        args.append(self._stack_arg(sp + shadow + (pos - len(abi.arg_regs)) * full, full))
                     else:
                         break
+                    pos += 1
+                fargs, fkinds = [], []
+                for k, kind in fp:
+                    x = loc(f"xmm{k}", 8)
+                    fargs.append(x if kind == 8 else ir.trunc(x, 4))
+                    fkinds.append(kind)
                 info = dict(s.src.aux or {})
-                info.update(name=name, proto=pr, nargs=len(args), callee=self.callee_info(tgt) if pr is None else None)
-                s.src = X("call", (tgt,) + tuple(args), full, info)
+                info.update(name=name, proto=pr, nargs=len(args), callee=ci, fp_kinds=fkinds, ret_fp=rk)
+                if rk:
+                    s.dst = loc("xmm0", 8)
+                    fp_ret = True
+                s.src = X("call", (tgt,) + tuple(args) + tuple(fargs), full, info)
+        return fp_ret
 
     def _tail_arity(self, flow, s):
         n = 0
@@ -399,9 +463,166 @@ class FuncDecomp:
             if used is False:
                 rv = False
         self.returns_value = rv
+        self.ret_fp = None
+        if self.arch == "x64":
+            fpk = self._fp_return_kind(flow)
+            if fpk:
+                pf = self._ret_pure(flow, "xmm0")
+                pi = self._ret_pure(flow, self.abi.ret)
+                used = self.callers_use_fp_result()
+                if used is None and rv and pi is not None:
+                    uint = self.callers_use_result()
+                    if uint is True and not self.callers_use_fp_result():
+                        used = False
+                if used is True:
+                    choose = True
+                elif used is False and rv and pi is not None:
+                    choose = False
+                elif not rv or pi is None:
+                    choose = True
+                elif pf and not pi:
+                    choose = True
+                elif pi and not pf:
+                    choose = False
+                else:
+                    fa = max((d.stmt.addr for t in self._ret_terms() for d in flow.reaching_at(t, self.abi.ret) if d.kind in ("asg", "unk")), default=-1)
+                    ff = max((d.stmt.addr for t in self._ret_terms() for d in flow.reaching_at(t, "xmm0")
+                              if d.kind in ("asg", "unk", "call") and d.stmt is not None), default=-1)
+                    choose = ff > fa
+                if choose:
+                    self.ret_fp = fpk
+                    self.returns_value = rv = True
         for b in self.blocks.values():
             if b.term.k == "ret":
-                b.term.src = loc(self.abi.ret, self.full) if rv else None
+                if self.ret_fp:
+                    x0 = loc("xmm0", 8)
+                    b.term.src = x0 if self.ret_fp == 8 else ir.trunc(x0, 4)
+                else:
+                    b.term.src = loc(self.abi.ret, self.full) if rv else None
+
+    def _def_uses(self, flow):
+        """정의 번호 → [(그 정의를 읽는 문장, 읽는 위치 이름)]."""
+        m = getattr(flow, "_use_map", None)
+        if m is None:
+            m = {}
+            for a in flow.graph.rpo:
+                b = self.blocks[a]
+                for s in b.stmts + [b.term]:
+                    for name, mask_ in s.meta["uses"].items():
+                        for i in bits_of(mask_):
+                            m.setdefault(i, []).append((s, name))
+            flow._use_map = m
+        return m
+
+    def _ret_pure(self, flow, reg):
+        """ret 에 닿는 reg 의 실제 정의들이 모두 '결과 사슬'(자기 자신을 갱신하거나 ret 으로만 흐름)이면 True,
+        조건·주소·호출 인자·다른 레지스터 계산에 쓰이면 False, 실제 정의가 없으면 None. 반환값은 이런 보조 값(반복 변수 등)이 아니라 결과 사슬 쪽이다."""
+        uses = self._def_uses(flow)
+        defs = [d for t in self._ret_terms() for d in flow.reaching_at(t, reg) if d.kind in ("asg", "unk", "call") and d.stmt is not None]
+        if not defs:
+            return None
+
+        def flag_dead(stmt):
+            ds = stmt.meta["defs"]
+            return bool(ds) and all(not uses.get(x.id) for x in ds)
+
+        def pure(d, depth):
+            for (u, name) in uses.get(d.id, ()):
+                if u.k == "ret":
+                    continue
+                if u.k == "asg" and u.dst.op == "loc":
+                    dn = u.dst.aux
+                    if dn == reg:
+                        continue
+                    if dn == FLAGS:
+                        if flag_dead(u):
+                            continue
+                        return False
+                    if dn.startswith("t") and dn[1:].isdigit() and depth < 3:
+                        if all(pure(x, depth + 1) for x in u.meta["defs"]):
+                            continue
+                    return False
+                return False
+            return True
+
+        return all(pure(d, 0) for d in defs)
+
+    def _ret_terms(self):
+        return [b.term for b in self.blocks.values() if b.term.k == "ret"]
+
+    def _fp_return_kind(self, flow):
+        """xmm0 의 하위 조각을 ret 직전에 실제로 쓰는 정의가 있으면 부동소수점 반환으로 보고 그 폭(4·8)을 돌려준다. 없으면 None."""
+        found = False
+        kind = None
+        for t in self._ret_terms():
+            for d in flow.reaching_at(t, "xmm0"):
+                if d.kind == "call":
+                    info = d.stmt.src.aux or {}
+                    rk = info.get("ret_fp")
+                    if rk:
+                        found = True
+                        kind = kind or rk
+                elif d.kind in ("asg", "unk") and d.stmt is not None:
+                    found = True
+                    kind = kind or self._fp_def_width(flow, d, 0)
+        if not found:
+            return None
+        if kind:
+            return kind
+        return 8 if self.callers_use_fp_result() is True else None                  # 증거가 없으면 호출자가 xmm0 을 읽을 때만
+
+    def _fp_def_width(self, flow, d, depth):
+        """정의 d 의 값이 float(4)·double(8)임을 알려 주는 증거(연산·읽기·복사 경로). 모르면 None."""
+        if d.kind != "asg" or d.stmt is None or depth > 6:
+            return None
+        src = d.stmt.src
+        if src.op == "ins" and src.aux == 4:
+            return 4
+        if src.op == "zext" and src.args[0].sz == 4:
+            src = src.args[0]
+        if src.op in ir.FOPS2 | ir.FOPS1 | {"i2f", "f2f"}:
+            return src.sz
+        if src.op == "mem" and src.sz in (4, 8):
+            return src.sz
+        if src.op == "c" and src.sz in (4, 8) and src.aux != 0:                      # 0 은 pxor 로도 만들어지므로 폭의 증거가 못 된다
+            return src.sz
+        if src.op in ("loc", "xor", "and", "trunc", "zext", "ins", "or"):
+            names = [n.aux for n in ir.walk(src) if n.op == "loc"]
+            for nm in names:
+                for dd in flow.reaching(d.stmt, nm):
+                    k = self._fp_def_width(flow, dd, depth + 1)
+                    if k:
+                        return k
+        return None
+
+    def callers_use_fp_result(self):
+        """호출하는 쪽이 xmm0 을 읽는지: True/False, 호출자를 모르면 None."""
+        try:
+            xs = [x for x in self.prog.xrefs_to(self.addr) if x["kind"] == "call"]
+        except Exception:                                   # noqa: BLE001
+            return None
+        if not xs:
+            return None
+        cs = self.prog.dis.cs
+        for x in xs[:20]:
+            site = x["from"]
+            code = self.prog.dis.read(site, 96)
+            for ins in list(cs.disasm(code, site))[1:9]:
+                reads, writes = set(), set()
+                for op in ins.operands:
+                    if op.type == CS_OP_REG_:
+                        n = cs.reg_name(op.reg)
+                        if op.access & 1:
+                            reads.add(n)
+                        if op.access & 2:
+                            writes.add(n)
+                if "xmm0" in reads:
+                    return True
+                if "xmm0" in writes:
+                    break
+                if ins.mnemonic.startswith(("j", "ret", "call")):
+                    break
+        return False
 
     def callers_use_result(self):
         """호출하는 쪽이 반환 레지스터를 읽는지로 값을 반환하는 함수인지 판단한다. 호출자를 모르면 None."""
@@ -455,7 +676,9 @@ class FuncDecomp:
         self.prebind_calls()
         flow = Flow(self.blocks, self.graph, self.abi, self.out_slots)
         flow.run()
-        self.bind_calls(flow)
+        if self.bind_calls(flow):                                 # 호출 반환값이 xmm0 으로 바뀌었으면 반환 판정이 새 분석을 보게 한다
+            flow = Flow(self.blocks, self.graph, self.abi, self.out_slots)
+            flow.run()
         self.bind_rets(flow)
         flow = Flow(self.blocks, self.graph, self.abi, self.out_slots)
         flow.run()
@@ -624,6 +847,78 @@ class FuncDecomp:
             else:
                 params.append((None, i))
         self.params = params
+        self.infer_fp_params(used)
+
+    def fp_operand_kinds(self) -> dict:
+        """웹 → 그 웹이 부동소수점 연산의 피연산자로 쓰인 폭(4·8). 연산에 안 쓰이면 들어 있지 않다."""
+        kinds: dict = {}
+
+        def mark(e, k):
+            if e.op == "trunc" and e.args[0].op == "var":
+                kinds.setdefault(e.args[0].aux, e.sz)
+            elif e.op == "var":
+                kinds.setdefault(e.aux, k)
+
+        for b in self.blocks.values():
+            for s in b.stmts + [b.term]:
+                for ex in stk_mod.stmt_exprs(s):
+                    for n in ir.walk(ex):
+                        if n.op in ir.FOPS2 or n.op in ir.FCMP_OPS:
+                            sz = n.sz if n.op in ir.FOPS2 else n.args[0].sz
+                            mark(n.args[0], sz)
+                            mark(n.args[1], sz)
+                        elif n.op in ir.FOPS1:
+                            mark(n.args[0], n.sz)
+                        elif n.op in ("f2i", "f2f"):
+                            mark(n.args[0], n.args[0].sz)
+        return kinds
+
+    def infer_fp_params(self, used):
+        """xmm 인자 레지스터(SysV 는 xmm0..7, Windows x64 는 위치별 xmm0..3)로 들어오는 부동소수점 매개변수.
+        정수 매개변수(self.params)와는 따로 두고, 시그니처를 만들 때만 뒤에 붙인다."""
+        self.fp_params = []                      # [(웹 또는 None, xmm 번호, 폭)]
+        self.fp_param_kinds = {}
+        self.fp_placeholders = {}
+        self.fp_entries = []                     # 시그니처용 (웹 또는 None, 번호)
+        if self.arch != "x64":
+            return
+        flow = self.flow
+        kinds = self.fp_operand_kinds()
+        cnt = 8 if self.abi.name == "sysv" else 4
+        xw = {}
+        for k in range(cnt):
+            d = flow.entry_def.get(f"xmm{k}")
+            if d is not None:
+                w = flow.web_of_def[d.id]
+                if w in used and self.webs[w].entry and not self.webs[w].param:
+                    xw[k] = w
+        if not xw:
+            return
+        n_int = len(self.params)
+        if self.abi.name == "sysv":
+            top = max(xw)
+            for k in range(top + 1):
+                w = xw.get(k)
+                kind = kinds.get(w, 8) if w is not None else 8
+                self.fp_params.append((w, k, kind))
+        else:                                    # Windows x64: 위치가 정수·실수 인자 레지스터를 함께 정한다
+            int_used = {i for i, (w, _i) in enumerate(self.params) if w is not None}
+            top = max(max(xw), n_int - 1)
+            for k in range(top + 1):
+                if k in int_used or k >= cnt:
+                    continue
+                w = xw.get(k)
+                if w is not None:
+                    self.fp_params.append((w, k, kinds.get(w, 8)))
+            n_int = 0
+        for pos, (w, k, kind) in enumerate(self.fp_params):
+            idx = (n_int + pos) if self.abi.name == "sysv" else k
+            if w is not None:
+                self.webs[w].param = idx
+                self.fp_param_kinds[w] = kind
+            else:
+                self.fp_placeholders[idx] = kind
+            self.fp_entries.append((w, idx))
 
     def ret_info(self):
         if getattr(self, "ret_width", None):
@@ -738,7 +1033,7 @@ class FuncDecomp:
 
     def trim_return(self):
         """반환값을 읽는 폭을 정해 ret 의 식을 그 폭으로 자른다(변수 폭 줄이기가 이어서 작동한다)."""
-        if not self.returns_value:
+        if not self.returns_value or getattr(self, "ret_fp", None):
             return
         w = 0
         for b in self.blocks.values():
@@ -862,7 +1157,7 @@ class FuncDecomp:
         stz = st_mod.Structurer(self.blocks, self.graph, self.entry)
         stz.check = self.check_time
         ast = stz.run()
-        r = Renderer(self, ast, self.params, self.ret_info())
+        r = Renderer(self, ast, self.params + self.fp_entries, self.ret_info())
         lines = r.build()
         return r, lines
 
@@ -1016,6 +1311,8 @@ class StackNames:
                 return pa[2], sign, PREC["prim"]
             return f"*({itype(sz, sign)} *){self.addr(off)}", sign, PREC["unary"]
         iv = self.find(off)
+        if sign == "f":                                    # 부동소수점으로 읽기·쓰기: 정수 칸을 형 변환으로 본다
+            return f"*({itype(sz, 'f')} *){self.addr(off)}", "f", PREC["unary"]
         if iv is not None:
             nm = self._nm(iv[0])
             if iv[3] == "scalar" and off == iv[0] and sz == iv[2]:

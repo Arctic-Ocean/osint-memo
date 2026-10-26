@@ -65,8 +65,10 @@ def cc_of(mnem: str, prefix: str) -> str | None:
 
 
 class X86Lifter:
-    def __init__(self, cs, bits: int):
+    def __init__(self, cs, bits: int, read=None, is_const=None):
         self.cs = cs
+        self.read = read                 # (va, size) → bytes: 읽기 전용 데이터(부호 마스크 등)를 들여다볼 때 쓴다
+        self.is_const = is_const         # va → 읽기 전용 데이터 구역인가(상수 주소의 읽기를 값으로 접는다)
         self.bits = bits
         self.full = 8 if bits == 64 else 4
         self.regs = build_regs(bits)
@@ -134,7 +136,7 @@ class X86Lifter:
             return loc(n, 8), loc(n + "h", 8)
         if op.type == CS_OP_MEM:
             a = self.mem_addr(insn, op)
-            return mem(a, 8), mem(add(a, C(8, self.full)), 8)
+            return self.load_mem(a, 8), self.load_mem(add(a, C(8, self.full)), 8)
         raise Unsupported("xmm operand")
 
     def lanes_write(self, insn, op, lo: X, hi: X) -> list:
@@ -153,6 +155,9 @@ class X86Lifter:
         """데이터 이동·비트 연산 위주의 SSE 명령(부동소수점 계산은 하지 않는다). 해당하지 않으면 None."""
         a = insn.address
         n = len(ops)
+        r = self._fp(insn, m, ops)
+        if r is not None:
+            return r
         if n == 0 or not any(self.is_xmm(o) for o in ops):
             return None
         Z = C(0, 8)
@@ -198,7 +203,7 @@ class X86Lifter:
         if m in ("movsd", "movss") and n == 2:
             vsz = 8 if m == "movsd" else 4
             if self.is_xmm(ops[0]) and ops[1].type == CS_OP_MEM:
-                v = mem(self.mem_addr(insn, ops[1]), vsz)
+                v = self.load_mem(self.mem_addr(insn, ops[1]), vsz)
                 return self.lanes_write(insn, ops[0], v if vsz == 8 else zext(v, 8), Z)
             if ops[0].type == CS_OP_MEM and self.is_xmm(ops[1]):
                 lo, _ = self.lanes_read(insn, ops[1])
@@ -280,6 +285,107 @@ class X86Lifter:
         body.append(S("jmp", a + 1, t=a))
         return [S("split", a, extra={"cuts": [a + 1]}), head] + body
 
+    # ---- 스칼라 부동소수점(SSE) ----------------------------------------------------------
+    def f_read(self, insn, op, sz) -> X:
+        """피연산자를 폭 sz(4 float · 8 double)의 IEEE 비트 패턴으로."""
+        if op.type == CS_OP_REG:
+            n = self.xmm_name(op.reg)
+            if n is None:
+                raise Unsupported("fp operand")
+            lo = loc(n, 8)
+            return lo if sz == 8 else trunc(lo, 4)
+        if op.type == CS_OP_MEM:
+            return self.load_mem(self.mem_addr(insn, op), sz)
+        raise Unsupported("fp operand")
+
+    def f_write(self, insn, op, val: X, sz) -> S:
+        n = self.xmm_name(op.reg)
+        if n is None:
+            raise Unsupported("fp dest")
+        lo = loc(n, 8)
+        return S("asg", insn.address, lo, val if sz == 8 else insert(lo, val))
+
+    def _mask_lanes(self, insn, op):
+        """상수 주소의 16바이트 마스크 (하위, 상위) 64비트 값. 읽을 수 없으면 None."""
+        if self.read is None or op.type != CS_OP_MEM:
+            return None
+        ad = self.mem_addr(insn, op)
+        if ad.op != "c":
+            return None
+        data = self.read(ad.aux, 16)
+        if not data or len(data) < 16:
+            return None
+        return int.from_bytes(data[:8], "little"), int.from_bytes(data[8:16], "little")
+
+    def _fp(self, insn, m, ops):
+        a = insn.address
+        n = len(ops)
+        if m in ("xorps", "xorpd", "andps", "andpd") and n == 2 and self.is_xmm(ops[0]) and ops[1].type == CS_OP_MEM:
+            mk = self._mask_lanes(insn, ops[1])
+            if mk is not None:
+                nm = self.xmm_name(ops[0].reg)
+                lo, hi = loc(nm, 8), loc(nm + "h", 8)
+                mlo, mhi = mk
+                xor = m.startswith("xor")
+                lo2 = None
+                if xor and mlo == 0x8000000000000000:
+                    lo2 = X("fneg", (lo,), 8)
+                elif xor and mlo == 0x80000000:
+                    lo2 = insert(lo, X("fneg", (trunc(lo, 4),), 4))
+                elif not xor and mlo == 0x7fffffffffffffff:
+                    lo2 = X("fabs", (lo,), 8)
+                elif not xor and mlo == 0x7fffffff:
+                    lo2 = zext(X("fabs", (trunc(lo, 4),), 4), 8)
+                if lo2 is not None:
+                    op = "xor" if xor else "and"
+                    return [S("asg", a, lo, lo2), S("asg", a, hi, binop(op, hi, C(mhi, 8), 8))]
+        if m in ("addsd", "subsd", "mulsd", "divsd", "minsd", "maxsd", "addss", "subss", "mulss", "divss", "minss", "maxss") and n == 2:
+            sz = 8 if m.endswith("sd") else 4
+            op = {"add": "fadd", "sub": "fsub", "mul": "fmul", "div": "fdiv", "min": "fmin", "max": "fmax"}[m[:3]]
+            A, B = self.f_read(insn, ops[0], sz), self.f_read(insn, ops[1], sz)
+            return [self.f_write(insn, ops[0], X(op, (A, B), sz), sz)]
+        if m in ("sqrtsd", "sqrtss") and n == 2:
+            sz = 8 if m == "sqrtsd" else 4
+            return [self.f_write(insn, ops[0], X("fsqrt", (self.f_read(insn, ops[1], sz),), sz), sz)]
+        if m in ("cvtsi2sd", "cvtsi2ss") and n == 2 and self.is_xmm(ops[0]):
+            sz = 8 if m == "cvtsi2sd" else 4
+            src = self.read_op(insn, ops[1])
+            return [self.f_write(insn, ops[0], X("i2f", (src,), sz, "s"), sz)]
+        if m in ("cvttsd2si", "cvttss2si") and n == 2 and (self.is_xmm(ops[1]) or ops[1].type == CS_OP_MEM):
+            fsz = 8 if m == "cvttsd2si" else 4
+            v = X("f2i", (self.f_read(insn, ops[1], fsz),), ops[0].size)
+            return [self.write_op(insn, ops[0], v)]
+        if m == "cvtss2sd" and n == 2 and self.is_xmm(ops[0]):
+            return [self.f_write(insn, ops[0], X("f2f", (self.f_read(insn, ops[1], 4),), 8), 8)]
+        if m == "cvtsd2ss" and n == 2 and self.is_xmm(ops[0]):
+            return [self.f_write(insn, ops[0], X("f2f", (self.f_read(insn, ops[1], 8),), 4), 4)]
+        if (m.startswith("cmp") and m[-2:] in ("sd", "ss") and self.is_xmm(ops[0]) and n in (2, 3)):
+            pred = None
+            if n == 3 and ops[2].type == CS_OP_IMM:
+                pred = ops[2].imm & 7
+            elif n == 2:
+                pred = {"eq": 0, "lt": 1, "le": 2, "unord": 3, "neq": 4, "nlt": 5, "nle": 6, "ord": 7}.get(m[3:-2])
+            if pred is not None:
+                sz = 8 if m.endswith("sd") else 4
+                A, B = self.f_read(insn, ops[0], sz), self.f_read(insn, ops[1], sz)
+                c = [X("feq", (A, B), 1), X("flt", (A, B), 1), X("fle", (A, B), 1), X("funord", (A, B), 1),
+                     ir.invert(X("feq", (A, B), 1)), ir.invert(X("flt", (A, B), 1)), ir.invert(X("fle", (A, B), 1)),
+                     ir.invert(X("funord", (A, B), 1))][pred]
+                mask_ = unop("neg", zext(c, sz))                       # 참이면 모든 비트 1, 거짓이면 0
+                return [self.f_write(insn, ops[0], mask_, sz)] if sz == 8 else [S("asg", a, loc(self.xmm_name(ops[0].reg), 8),
+                                                                                  insert(loc(self.xmm_name(ops[0].reg), 8), mask_))]
+        if m in ("comisd", "ucomisd", "comiss", "ucomiss") and n == 2 and self.is_xmm(ops[0]):
+            sz = 8 if m.endswith("sd") else 4
+            pre = []
+            A = self.f_read(insn, ops[0], sz)
+            B = self.f_read(insn, ops[1], sz)
+            if ops[1].type == CS_OP_MEM:
+                t = self.tmp(sz)
+                pre.append(S("asg", a, t, B))
+                B = t
+            return pre + [S("asg", a, loc(FLAGS, 1), flags("fcmp", (A, B), sz))]
+        return None
+
     # ---- 피연산자 -----------------------------------------------------------------
     def mem_addr(self, insn, op) -> X:
         m = op.mem
@@ -311,6 +417,14 @@ class X86Lifter:
         return addr.op == "add" and addr.args[0].op == "seg" and addr.args[0].aux == "fs" \
             and addr.args[1].op == "c" and addr.args[1].aux in (0x28, 0x14)
 
+    def load_mem(self, a: X, sz: int) -> X:
+        """메모리 읽기. 읽기 전용 구역의 상수 주소(`.rodata` 의 상수)는 그 값으로 접는다."""
+        if a.op == "c" and self.is_const is not None and sz in (1, 2, 4, 8) and self.is_const(a.aux):
+            data = self.read(a.aux, sz) if self.read is not None else None
+            if data and len(data) == sz:
+                return C(int.from_bytes(data, "little"), sz)
+        return mem(a, sz)
+
     def read_op(self, insn, op, sz=None) -> X:
         if op.type == CS_OP_REG:
             return self.read_reg(op.reg)
@@ -320,7 +434,7 @@ class X86Lifter:
             a = self.mem_addr(insn, op)
             if self.is_canary(a):
                 return X("canary", (), op.size)
-            return mem(a, sz or op.size)
+            return self.load_mem(a, sz or op.size)
         raise Unsupported("operand")
 
     def write_op(self, insn, op, val: X) -> S:

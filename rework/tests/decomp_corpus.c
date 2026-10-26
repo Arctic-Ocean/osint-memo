@@ -112,6 +112,40 @@ FN unsigned bit_set(unsigned x, unsigned i) { return x | (1u << (i & 31)); }
 FN unsigned bswap32(unsigned x) { return __builtin_bswap32(x * 2654435761u); }
 FN unsigned long bswap64(unsigned long x) { return __builtin_bswap64(x * 11400714819323198485ul); }
 
+FN double d_add(double a, double b) { return a + b; }
+FN double d_mix(double a, double b, double c) { return a * b - c / 2.0; }
+FN double d_abs(double x) { return x < 0 ? -x : x; }
+FN double d_max(double a, double b) { return a > b ? a : b; }
+FN int d_cmp(double a, double b) { if (a < b) return -1; if (a > b) return 1; return 0; }
+FN int d_eq(double a, double b) { return a == b; }
+FN int d_ne(double a, double b) { return a != b; }
+FN int d2i(double x) { return (int)x; }
+FN double i2d(int x) { return x * 0.5 + 1.25; }
+FN float f_add(float a, float b) { return a + b * 2.0f; }
+FN double f2d(float x) { return x * 3.0; }
+FN float d2f(double x) { return (float)x - 1.0f; }
+FN double d_poly(double x) { return ((x * 3.0 + 2.0) * x - 1.0) * x + 0.5; }
+FN double d_neg(double x) { return -x; }
+FN long d2l(double x) { return (long)x; }
+FN double l2d(long x) { return (double)x / 4; }
+
+FN double d_sum(const double *p, int n) { double s = 0; for (int i = 0; i < n; i++) s += p[i]; return s; }
+FN double d_dot(const double *a, const double *b, int n) { double s = 0; for (int i = 0; i < n; i++) s += a[i] * b[i]; return s; }
+FN void d_scale(double *p, int n, double k) { for (int i = 0; i < n; i++) p[i] *= k; }
+FN double d_loop(int n) { double s = 0; for (int i = 1; i <= n; i++) s += 1.0 / i; return s; }
+FN float f_sum(const float *p, int n) { float s = 0; for (int i = 0; i < n; i++) s += p[i]; return s; }
+FN double d_sqrt(double x) { return __builtin_sqrt(x); }
+FN double d_hyp(double a, double b) { return __builtin_sqrt(a * a + b * b); }
+FN int d_clamp(double x) { if (x < 0) return 0; if (x > 255) return 255; return (int)x; }
+FN unsigned d2u(double x) { return (unsigned)x; }
+FN double u2d(unsigned x) { return x; }
+FN double d_calls(double a, double b) { return d_add(a, b) * d_max(a, b); }
+FN double d_ifp(int n, double x) { return n * x; }
+FN void d_store(double *out, double x) { *out = x * 2.0 + 1.0; }
+typedef struct { double x, y; int k; } V;
+FN double v_len2(const V *v) { return v->x * v->x + v->y * v->y; }
+FN void v_set(V *v, double a) { v->x = a; v->y = a * 2; v->k = 3; }
+
 FN unsigned hash(const unsigned char *s, int n) { unsigned h = 5381; for (int i = 0; i < n; i++) h = h * 33 + s[i]; return h; }
 FN int bsearch_(const int *a, int n, int key) {
     int lo = 0, hi = n - 1;

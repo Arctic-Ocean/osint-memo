@@ -10,11 +10,12 @@ from .ir import X, mask
 
 
 class PtrType:
-    __slots__ = ("kind", "esz", "signed", "cstr")
+    __slots__ = ("kind", "esz", "signed", "cstr", "fp")
 
-    def __init__(self, kind, esz, signed="u"):
+    def __init__(self, kind, esz, signed="u", fp=False):
         self.kind, self.esz, self.signed = kind, esz, signed
         self.cstr = False
+        self.fp = fp                         # 원소가 부동소수점(float·double)
 
 
 def split_addr(e: X, full: int):
@@ -70,7 +71,7 @@ def pick_base(bases, idxs, ptypes):
     return chosen, idxs + others
 
 
-def infer(all_exprs, full: int, webs, induction=frozenset(), params=frozenset()) -> dict:
+def infer(all_exprs, full: int, webs, induction=frozenset(), params=frozenset(), fpmem=frozenset()) -> dict:
     """모든 식(문장의 원천·주소·조건)을 훑어 {web id: PtrType} 를 만든다.
     기준 변수가 둘 이상 후보일 때는 반복마다 1씩 커지는 색인 변수(induction)가 아닌 쪽, 다른 접근에서 이미 기준이었던 쪽, 매개변수를 우선한다."""
     accesses = []                                      # (후보 var 노드들, 색인 후보, 상수, sz)
@@ -85,23 +86,24 @@ def infer(all_exprs, full: int, webs, induction=frozenset(), params=frozenset())
                 continue
             if len(bases) == 1:
                 definite.add(bases[0].aux)
-            accesses.append((bases, idxs, off, n.sz))
+            accesses.append((bases, idxs, off, n.sz, n in fpmem))
     ev: dict = {}
-    for bases, idxs, off, sz in accesses:
+    for bases, idxs, off, sz, isfp in accesses:
         cand = sorted(bases, key=lambda b: (b.aux in induction, b.aux not in definite, b.aux not in params))
         base = cand[0]
         others = [(b, 1) for b in bases if b is not base]
         ix = idxs + others
         if len(ix) > 1:
             continue
-        ev.setdefault(base.aux, []).append((off, sz, ix[0][1] if ix else None))
+        ev.setdefault(base.aux, []).append((off, sz, ix[0][1] if ix else None, isfp))
     out = {}
     for v, accs in ev.items():
-        sizes = {sz for _, sz, _ in accs}
+        sizes = {sz for _, sz, _, _ in accs}
         if len(sizes) == 1:
             esz = next(iter(sizes))
-            if all((off % esz == 0) and (sc is None or sc == esz) for off, _, sc in accs):
-                out[v] = PtrType("arr", esz)
+            if all((off % esz == 0) and (sc is None or sc == esz) for off, _, sc, _ in accs):
+                fps = {f for _, _, _, f in accs}
+                out[v] = PtrType("arr", esz, fp=(fps == {True} and esz in (4, 8)))
                 continue
         out[v] = PtrType("bytes", 1)
     return out

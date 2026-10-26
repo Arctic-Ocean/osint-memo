@@ -19,8 +19,9 @@ from app.decompile import Decompiler   # noqa: E402
 
 CORPUS = os.path.join(HERE, "decomp_corpus.c")
 
-# 이름: (반환 종류, [인자 종류...])  — 반환: i int · u unsigned · l long · v void
+# 이름: (반환 종류, [인자 종류...])  — 반환: i int · u unsigned · l long · v void · D double · F float
 # 인자: i 작은 int · n 0..12 · p 1..40 · u 0..80 unsigned · l long · b uchar · h short · P int[16] 버퍼 · Q 정렬된 int[16] · S 문자열 · C 글자 · T struct P
+#        d double · f float · E double[16] 버퍼
 SPECS = {
     "add": ("i", "ii"), "sub3": ("i", "iii"), "maxi": ("i", "ii"), "mini": ("i", "ii"), "absdiff": ("i", "ii"),
     "clampi": ("i", "iii"), "sign": ("i", "i"), "nested": ("i", "iii"), "shortc": ("i", "ii"), "andor": ("i", "iii"),
@@ -37,6 +38,12 @@ SPECS = {
     "neg_not": ("i", "i"), "goto_like": ("i", "n"), "while_true": ("i", "p"),
     "w_copy": ("v", "WW"), "w_zero": ("v", "W"), "w_sum": ("l", "W"), "w_fill": ("v", "Wl"), "w_rot": ("v", "W"), "w_local": ("l", "l"),
     "big_copy": ("v", "BB"), "big_zero": ("v", "B"),
+    "d_add": ("D", "dd"), "d_mix": ("D", "ddd"), "d_abs": ("D", "d"), "d_max": ("D", "dd"), "d_cmp": ("i", "dd"), "d_eq": ("i", "dd"),
+    "d_ne": ("i", "dd"), "d2i": ("i", "d"), "i2d": ("D", "i"), "f_add": ("F", "ff"), "f2d": ("D", "f"), "d2f": ("F", "d"),
+    "d_poly": ("D", "d"), "d_neg": ("D", "d"), "d2l": ("l", "d"), "l2d": ("D", "l"),
+    "d_sum": ("D", "En"), "d_dot": ("D", "EEn"), "d_scale": ("v", "Enk"), "d_loop": ("D", "n"), "f_sum": ("F", "Gn"), "d_sqrt": ("D", "a"),
+    "d_hyp": ("D", "aa"), "d_clamp": ("i", "d"), "d2u": ("u", "d"), "u2d": ("D", "u"), "d_calls": ("D", "dd"), "d_ifp": ("D", "id"),
+    "d_store": ("v", "Ed"), "v_len2": ("D", "V"), "v_set": ("v", "Vd"),
     "bit_test": ("i", "un"), "bit_flag": ("i", "Ln"), "bit_set": ("u", "un"), "bswap32": ("u", "u"), "bswap64": ("l", "L"),
 }
 # 인자 이름이 겹치는 특수 처리: bsearch_(const int *a, int n, int key) → Q(정렬 배열), n(<=16), i(키)
@@ -49,7 +56,7 @@ def sh(cmd, **kw):
 
 
 def build(opt, extra, out):
-    flags = opt.split(",")                                  # "-O2,-fPIE,-pie,-fstack-protector-all" 처럼 쉼표로 이어 쓴다
+    flags = opt.split(",") + ["-fno-math-errno"]                                  # "-O2,-fPIE,-pie,-fstack-protector-all" 처럼 쉼표로 이어 쓴다
     base = [f for f in ["-fno-pie", "-no-pie", "-fno-stack-protector"]
             if not (f == "-fno-pie" and any(x in flags for x in ("-fPIE", "-fpie", "-fPIC")))
             and not (f == "-no-pie" and any(x in flags for x in ("-pie",)))
@@ -131,6 +138,36 @@ def gen_case(name, rng, kinds):
             a_orig.append(f"&{v}o")
             a_dec.append(f"&{v}d")
             bufs.append((f"{v}o", f"{v}d", "P", 1))
+        elif k in ("a", "k"):                      # a: 0 이상 double(제곱근) · k: 작은 double
+            val = repr(round(rng.uniform(0, 50) if k == "a" else rng.uniform(-3, 3), 3))
+            decl.append(f"double {v} = {val};")
+            a_orig.append(v)
+            a_dec.append(v)
+        elif k == "E":
+            vals = ", ".join(repr(round(rng.uniform(-9, 9), 3)) for _ in range(16))
+            decl.append(f"double {v}o[16] = {{{vals}}}; double {v}d[16]; memcpy({v}d, {v}o, sizeof {v}o);")
+            a_orig.append(f"{v}o")
+            a_dec.append(f"{v}d")
+            bufs.append((f"{v}o", f"{v}d", "double", 16))
+        elif k == "G":
+            vals = ", ".join(f"{rng.randint(-80, 80) / 8}f" for _ in range(16))
+            decl.append(f"float {v}o[16] = {{{vals}}}; float {v}d[16]; memcpy({v}d, {v}o, sizeof {v}o);")
+            a_orig.append(f"{v}o")
+            a_dec.append(f"{v}d")
+            bufs.append((f"{v}o", f"{v}d", "float", 16))
+        elif k == "V":
+            decl.append(f"V {v}o = {{{round(rng.uniform(-9, 9), 3)}, {round(rng.uniform(-9, 9), 3)}, {rng.randint(-9, 9)}}}; V {v}d = {v}o;")
+            a_orig.append(f"&{v}o")
+            a_dec.append(f"&{v}d")
+            bufs.append((f"{v}o", f"{v}d", "V", 1))
+        elif k in ("d", "f"):
+            if k == "d":
+                val = repr(round(rng.uniform(-50, 50), 3))
+                decl.append(f"double {v} = {val};")
+            else:
+                decl.append(f"float {v} = {rng.randint(-400, 400) / 8}f;")
+            a_orig.append(v)
+            a_dec.append(v)
         elif k == "B":
             decl.append(f"Big {v}o = {{{{{', '.join(str(rng.randint(-99, 99)) for _ in range(16))}}}}}; Big {v}d = {v}o;")
             a_orig.append(f"&{v}o")
@@ -159,14 +196,18 @@ def make_driver(entries, seed, iterations=40):
                 pt = dparams[j] if j < len(dparams) else "int64_t"
                 if "*" in pt:
                     cast_args.append(f"({pt}){a}")
-                elif kinds[j] in ("P", "Q", "S", "T", "W", "B"):
+                elif kinds[j] in ("P", "Q", "S", "T", "W", "B", "E", "G", "V"):
                     cast_args.append(f"({pt})(intptr_t){a}")
                 else:
                     cast_args.append(f"({pt}){a}")
             out.append("  {")
             out.extend("    " + d for d in decl)
-            rt = {"i": "int", "u": "unsigned", "l": "long"}.get(ret)
-            if rt:
+            rt = {"i": "int", "u": "unsigned", "l": "long", "D": "double", "F": "float"}.get(ret)
+            if rt and ret in "DF":
+                out.append(f"    {rt} ro = {name}({', '.join(ao)});")
+                out.append(f"    {rt} rd = dec_{name}({', '.join(cast_args)});")
+                out.append(f'    if (memcmp(&ro, &rd, sizeof ro)) {{ bad++; if (bad < 3) printf("MISMATCH {name} it={it}: orig=%.17g dec=%.17g\\n", (double)ro, (double)rd); }}')
+            elif rt:
                 out.append(f"    {rt} ro = ({rt}){name}({', '.join(ao)});")
                 out.append(f"    {rt} rd = ({rt})dec_{name}({', '.join(cast_args)});")
                 out.append(f'    if (ro != rd) {{ bad++; if (bad < 3) printf("MISMATCH {name} it={it}: orig=%ld dec=%ld\\n", (long)ro, (long)rd); }}')
@@ -187,6 +228,10 @@ def make_driver(entries, seed, iterations=40):
 
 
 HELPERS = """#include <stdint.h>
+#include <math.h>
+#if !defined(__clang__)
+#define __builtin_bit_cast(T, x) ({ __typeof__(x) _bcs = (x); T _bcd; __builtin_memcpy(&_bcd, &_bcs, sizeof _bcd); _bcd; })
+#endif
 static inline int32_t __mulhs32(int32_t a, int32_t b) { return (int32_t)(((int64_t)a * b) >> 32); }
 static inline uint32_t __mulhu32(uint32_t a, uint32_t b) { return (uint32_t)(((uint64_t)a * b) >> 32); }
 static inline int64_t __mulhs64(int64_t a, int64_t b) { return (int64_t)(((__int128)a * b) >> 64); }
@@ -257,7 +302,7 @@ def run_level(opt, only=None, verbose=False, seed=1):
         fh.write(HELPERS + "\n" + "\n\n".join(t for _, t in ok_entries) + "\n")
     with open(os.path.join(WORK, "drv.c"), "w") as fh:
         fh.write(make_driver([e for e, _ in ok_entries], seed))
-    r = sh(["gcc", "-O1", "-fwrapv", "-w", "-fno-strict-aliasing", "-I", WORK, "-o", out_exe, os.path.join(WORK, "drv.c")])
+    r = sh(["gcc", "-O1", "-fwrapv", "-w", "-fno-strict-aliasing", "-I", WORK, "-o", out_exe, os.path.join(WORK, "drv.c"), "-lm"])
     if r.returncode:
         print(r.stderr[:2000])
         return results, stats
