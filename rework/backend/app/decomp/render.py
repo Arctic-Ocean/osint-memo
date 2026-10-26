@@ -968,6 +968,8 @@ class Renderer(FpRender):
                 ptxt.append(f"{itype(psz if psz in (1, 2, 4, 8) else fd.full, 's')} {self.names[('p', idx)]}")
             else:
                 ptxt.append(f"{self.decl_type(w)}{self.names[w]}")
+        if getattr(fd, "variadic", False):
+            ptxt.append("...")
         sig = f"{ret_t} {name}({', '.join(ptxt) if ptxt else 'void'})"
         self.emit(0, sig, "sig", fd.addr)
         self.emit(0, "{", "brace", fd.addr)

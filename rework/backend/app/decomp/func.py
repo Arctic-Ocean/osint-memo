@@ -818,6 +818,7 @@ class FuncDecomp:
                 continue
             keep.append(s)
         entry_blk.stmts = keep
+        self.variadic = self._strip_va_prologue(pw)
         used = set()
         for a in self.graph.rpo:
             for s in self.blocks[a].stmts + [self.blocks[a].term]:
@@ -831,6 +832,8 @@ class FuncDecomp:
         for x, kind in self.slots["escapes"]:
             if x >= base and (x - base) % self.full == 0:
                 self.mem_params.setdefault(len(abi.arg_regs) + (x - base) // self.full, (x, self.full))
+        if self.variadic:                                  # va_list 가 가리키는 스택 인자 영역은 매개변수가 아니다
+            self.mem_params = {}
         maxi = max(self.mem_params, default=-1)
         for i, w in pw.items():
             if w in used or webs[w].param is not None:
@@ -848,6 +851,32 @@ class FuncDecomp:
                 params.append((None, i))
         self.params = params
         self.infer_fp_params(used)
+
+    def _strip_va_prologue(self, pw) -> bool:
+        """가변 인자 함수의 프롤로그(`test al,al` 뒤에서 rdi·rsi·… 와 xmm0..7 을 레지스터 저장 영역에 쏟아 두는 저장문)를 지운다.
+        그 값들은 매개변수가 아니라 `va_arg` 가 나중에 꺼낼 자리이므로, 지우지 않으면 쓰이지 않는 인자 레지스터가 모두 매개변수로 잡힌다.
+        xmm 저장이 네 개 이상 보일 때만(가변 인자 프롤로그의 특징) 지우고 True 를 돌려준다."""
+        if self.arch != "x64" or self.abi.name != "sysv":
+            return False
+        entry_webs = set(pw.values())
+        flow = self.flow
+        xw = {flow.web_of_def[d.id] for n, d in flow.entry_def.items() if n.startswith("xmm")}
+        stores = []
+        nx = 0
+        for b in self.blocks.values():
+            for s in b.stmts:
+                if s.k == "asg" and s.dst.op == "mem" and s.dst.args[0].op == "stk" and s.src.op == "var":
+                    if s.src.aux in xw:
+                        nx += 1
+                        stores.append(s)
+                    elif s.src.aux in entry_webs:
+                        stores.append(s)
+        if nx < 8:                                        # xmm0..7 의 하위·상위 조각 저장(조각이 둘이므로 최소 8개 이상)
+            return False
+        dead = {id(s) for s in stores}
+        for b in self.blocks.values():
+            b.stmts = [s for s in b.stmts if id(s) not in dead]
+        return True
 
     def fp_operand_kinds(self) -> dict:
         """웹 → 그 웹이 부동소수점 연산의 피연산자로 쓰인 폭(4·8). 연산에 안 쓰이면 들어 있지 않다."""
@@ -880,7 +909,7 @@ class FuncDecomp:
         self.fp_param_kinds = {}
         self.fp_placeholders = {}
         self.fp_entries = []                     # 시그니처용 (웹 또는 None, 번호)
-        if self.arch != "x64":
+        if self.arch != "x64" or getattr(self, "variadic", False):
             return
         flow = self.flow
         kinds = self.fp_operand_kinds()

@@ -33,7 +33,10 @@ class X:
     def __hash__(self):
         h = self._h
         if h is None:
-            h = self._h = hash((self.op, self.sz, self.aux, self.args))
+            aux = self.aux
+            if isinstance(aux, dict):                       # 호출 식의 부가 정보(딕셔너리): 같은 값이면 같은 해시가 되는 필드만
+                aux = (aux.get("name"), aux.get("nargs"), aux.get("tail"))
+            h = self._h = hash((self.op, self.sz, aux, self.args))
         return h
 
     def __repr__(self):
