@@ -523,6 +523,10 @@ class Renderer(FpRender):
             s = "s" if op == "mulhs" else "u"
             ta, tb = self.fit(e.args[0], s), self.fit(e.args[1], s)
             return f"__{op}{8 * sz}({ta}, {tb})", s, PREC["prim"]
+        if op in ("rol", "ror"):
+            t, sg, p_ = self.P(e.args[0], "u")
+            n_, sn, pn = self.P(e.args[1], "u")
+            return f"__{op}{8 * sz}({t}, {n_})", "u", PREC["prim"]
         if op == "bi":
             t, sg, p_ = self.P(e.args[0], "u")
             if e.aux == "rev":
@@ -645,7 +649,8 @@ class Renderer(FpRender):
         return self._paren(t, p, PREC["unary"])
 
     # ---- 포인터 접근 ---------------------------------------------------------------------
-    def index_text(self, ix: X) -> str:
+    def index_text(self, ix: X, in_sum: bool = False) -> str:
+        """첨자(`p[…]`)나 포인터 덧셈(`p + …`)에 들어가는 인덱스 식. 덧셈 자리에서는 덧셈보다 약한 연산(비교·시프트·비트 연산)을 괄호로 감싼다."""
         if ix.op == "add" and ix.args[1].op == "c" and ix.args[0].op in ("sext", "zext") and ix.args[0].args[0].op == "var":
             inner = ix.args[0].args[0]
             c = to_signed(ix.args[1].aux, ix.sz)
@@ -658,7 +663,7 @@ class Renderer(FpRender):
         if ix.op == "zext" and ix.args[0].op == "var" and self.vsign.get(ix.args[0].aux) == "u" and ix.args[0].aux not in self.ptypes:
             return self.vname(ix.args[0].aux)
         t, s, p = self.P(ix, "s")
-        return t if p >= PREC["add"] else f"({t})" if False else t
+        return f"({t})" if in_sum and p < PREC["add"] else t
 
     def _split(self, addr: X):
         bases, idxs, off, rest = ptrtype.split_addr(addr, self.fd.full)
@@ -727,7 +732,7 @@ class Renderer(FpRender):
             if pt.kind == "arr" and off % pt.esz == 0 and (idx is None or idx[1] == pt.esz):
                 text = nm
                 if idx is not None:
-                    text += f" + {self.index_text(idx[0])}"
+                    text += f" + {self.index_text(idx[0], True)}"
                 if off:
                     text += f" + {off // pt.esz}" if off > 0 else f" - {-off // pt.esz}"
                 return text, PREC["add"], pt
@@ -914,6 +919,8 @@ class Renderer(FpRender):
             elif k == "fallthrough":
                 self.emit(indent, "/* fallthrough */", "comment")
             elif k == "comment":
+                if n[1] == "해석하지 못한 분기":
+                    self.incomplete.append("분기")
                 self.emit(indent, f"/* {n[1]} */", "comment")
             elif k == "switch":
                 self.emit_switch(n, indent)

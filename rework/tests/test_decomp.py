@@ -35,6 +35,8 @@ SPECS = {
     "calls": ("i", "ii"), "calls2": ("i", "ii"), "rec_fact": ("i", "n"), "rec_fib": ("i", "n"),
     "many_args": ("i", "iiiiiiii"), "use_many": ("i", "i"), "st_sum": ("i", "T"), "st_set": ("v", "Ti"), "st_local": ("i", "i"),
     "hash": ("u", "Sn"), "bsearch_": ("i", "QQi"), "isprime": ("i", "p"), "bubble": ("i", "Pn"), "lsum": ("l", "L"),
+    "rotr13": ("u", "uu"), "rotv": ("u", "uu"), "crc32_bits": ("u", "Sn"), "isort": ("v", "Pn"), "parse_int": ("i", "N"), "rotmix": ("u", "uuu"), "sat_add": ("i", "ii"),
+    "usub_sat": ("u", "uu"), "isqrt": ("i", "u"), "powmod": ("u", "uup"), "u16swap": ("u", "u"), "word_count": ("i", "N"),
     "neg_not": ("i", "i"), "goto_like": ("i", "n"), "while_true": ("i", "p"),
     "w_copy": ("v", "WW"), "w_zero": ("v", "W"), "w_sum": ("l", "W"), "w_fill": ("v", "Wl"), "w_rot": ("v", "W"), "w_local": ("l", "l"),
     "big_copy": ("v", "BB"), "big_zero": ("v", "B"),
@@ -129,6 +131,13 @@ def gen_case(name, rng, kinds):
             a_orig.append(f"{v}o")
             a_dec.append(f"{v}d")
             bufs.append((f"{v}o", f"{v}d", "char", 32))
+        elif k == "N":
+            n = rng.randint(0, 12)
+            s = "".join(rng.choice([" ", "\\t", "-", "+", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", " ", "a", "b"]) for _ in range(n))
+            decl.append(f'char {v}o[32] = "{s}"; char {v}d[32] = "{s}";')
+            a_orig.append(f"{v}o")
+            a_dec.append(f"{v}d")
+            bufs.append((f"{v}o", f"{v}d", "char", 32))
         elif k == "C":
             ch = rng.choice("abc")
             decl.append(f"char {v} = '{ch}';")
@@ -197,7 +206,7 @@ def make_driver(entries, seed, iterations=40):
                 pt = dparams[j] if j < len(dparams) else "int64_t"
                 if "*" in pt:
                     cast_args.append(f"({pt}){a}")
-                elif kinds[j] in ("P", "Q", "S", "T", "W", "B", "E", "G", "V"):
+                elif kinds[j] in ("P", "Q", "S", "N", "T", "W", "B", "E", "G", "V"):
                     cast_args.append(f"({pt})(intptr_t){a}")
                 else:
                     cast_args.append(f"({pt}){a}")
@@ -238,6 +247,14 @@ static inline uint32_t __mulhu32(uint32_t a, uint32_t b) { return (uint32_t)(((u
 static inline int64_t __mulhs64(int64_t a, int64_t b) { return (int64_t)(((__int128)a * b) >> 64); }
 static inline uint64_t __mulhu64(uint64_t a, uint64_t b) { return (uint64_t)(((unsigned __int128)a * b) >> 64); }
 static uint64_t __stack_chk_guard;
+static inline uint8_t __rol8(uint8_t x, unsigned k) { k &= 7; return (uint8_t)((x << k) | (x >> ((8 - k) & 7))); }
+static inline uint8_t __ror8(uint8_t x, unsigned k) { return __rol8(x, 8 - (k & 7)); }
+static inline uint16_t __rol16(uint16_t x, unsigned k) { k &= 15; return (uint16_t)((x << k) | (x >> ((16 - k) & 15))); }
+static inline uint16_t __ror16(uint16_t x, unsigned k) { return __rol16(x, 16 - (k & 15)); }
+static inline uint32_t __rol32(uint32_t x, unsigned k) { k &= 31; return (x << k) | (x >> ((32 - k) & 31)); }
+static inline uint32_t __ror32(uint32_t x, unsigned k) { return __rol32(x, 32 - (k & 31)); }
+static inline uint64_t __rol64(uint64_t x, unsigned k) { k &= 63; return (x << k) | (x >> ((64 - k) & 63)); }
+static inline uint64_t __ror64(uint64_t x, unsigned k) { return __rol64(x, 64 - (k & 63)); }
 """
 
 

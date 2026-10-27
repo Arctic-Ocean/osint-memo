@@ -60,7 +60,7 @@ def loc_size(name: str, abi: "Abi") -> int:
     return abi.full
 
 
-def abi_for(arch: str, bits: int, fmt: str) -> Abi:
+def abi_for(arch: str, bits: int, fmt: str, thumb: bool = False) -> Abi:
     if arch == "x64":
         common = dict(sp="rsp", fps=("rbp",), callee_saved=("rbx", "rbp", "r12", "r13", "r14", "r15", "rsp"),
                       ret_reads=("rax", "eax", "ax", "al", "ah"))
@@ -74,9 +74,9 @@ def abi_for(arch: str, bits: int, fmt: str) -> Abi:
                    "aapcs64", sp="sp", fps=("x29",), callee_saved={f"x{i}" for i in range(19, 30)} | {"sp"}, stack_arg_base=0,
                    ret_reads=("x0", "w0"), call_mn=("bl", "blr"), ret_mn=("ret",), branch_prefix=("b", "cb", "tb"), fpr="v", fp_nargs=8)
     if arch == "arm":
-        return Abi(["r0", "r1", "r2", "r3"], "r0", {"r0", "r1", "r2", "r3", "r12", "r14", FLAGS}, 4, "aapcs",
-                   sp="sp", fps=("r11",), callee_saved={f"r{i}" for i in range(4, 12)} | {"sp"}, stack_arg_base=0,
-                   ret_reads=("r0",), call_mn=("bl", "blx"), ret_mn=("bx", "pop"), branch_prefix=("b",))
+        return Abi(["r0", "r1", "r2", "r3"], "r0", {"r0", "r1", "r2", "r3", "r12", "lr", FLAGS}, 4, "aapcs",
+                   sp="sp", fps=("r7",) if thumb else ("r11",), callee_saved={f"r{i}" for i in range(4, 12)} | {"sp"}, stack_arg_base=0,
+                   ret_reads=("r0",), call_mn=("bl", "blx"), ret_mn=("bx", "pop", "ldm"), branch_prefix=("b",))
     return Abi([], "eax", {"eax", "ecx", "edx", FLAGS} | xmm_lanes(0, 8), 4, "cdecl", sp="esp", fps=("ebp",),
                callee_saved=("ebx", "ebp", "esi", "edi", "esp"), stack_arg_base=4, ret_reads=("eax", "ax", "al", "ah"))
 

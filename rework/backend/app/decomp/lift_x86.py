@@ -545,16 +545,22 @@ class X86Lifter:
 
         if m in ("bt", "bts", "btr", "btc") and n == 2 and (ops[0].type == CS_OP_REG or ops[1].type == CS_OP_IMM):
             sz = ops[0].size
-            ta = self.tmp(sz)
-            out.append(S("asg", a, ta, self.read_op(insn, ops[0])))
+            if m == "bt":                                              # 읽기만 하므로 임시 변수 없이 식으로(부분 레지스터 쓰기 분석이 복사본을 거치지 않게)
+                ta = self.read_op(insn, ops[0])
+            else:
+                ta = self.tmp(sz)
+                out.append(S("asg", a, ta, self.read_op(insn, ops[0])))
             if ops[1].type == CS_OP_IMM:
                 pos = C(ops[1].imm & (8 * sz - 1), sz)
             else:
                 idx = self.read_op(insn, ops[1], sz)
                 if idx.sz != sz:
                     idx = zext(idx, sz) if idx.sz < sz else trunc(idx, sz)
-                ti = self.tmp(sz)
-                out.append(S("asg", a, ti, idx))
+                if m == "bt":
+                    ti = idx
+                else:
+                    ti = self.tmp(sz)
+                    out.append(S("asg", a, ti, idx))
                 pos = binop("and", ti, C(8 * sz - 1, sz), sz)
             bit = binop("and", binop("shr", ta, pos, sz), C(1, sz), sz)
             if m != "bt":

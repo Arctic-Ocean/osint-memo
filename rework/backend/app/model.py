@@ -42,6 +42,7 @@ class Function:
     is_import: bool = False
     is_export: bool = False
     is_thunk: bool = False
+    thumb: bool = False  # ARM 32비트에서 Thumb 모드 함수(주소의 최하위 비트를 떼어 낸 뒤 이 표시를 둔다)
     # 분석으로 채워지는 값들
     xref_to: int = 0     # 이 함수를 참조하는 곳의 수
 
@@ -75,6 +76,8 @@ class BinaryModel:
     symbols: list = field(default_factory=list)       # list[Symbol]
     imports: list = field(default_factory=list)        # list[Symbol]
     exports: list = field(default_factory=list)        # list[Symbol]
+    thumb_ranges: list = field(default_factory=list)   # ARM 32비트의 Thumb 구역 [(시작, 끝)] (매핑 심볼 $t·함수 심볼 크기에서)
+    thumb_starts: set = field(default_factory=set)     # Thumb 함수가 시작하는 주소들(구역을 모를 때)
 
     def section_for(self, va: int) -> Optional[Section]:
         for s in self.sections:

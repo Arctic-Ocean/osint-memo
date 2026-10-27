@@ -187,6 +187,7 @@ class Structurer:
         self.ipdom = self._postdominators()
         self.headers = set(graph.loops)
         self.case_next: list = []
+        self.sw_depth: list = []                       # 열려 있는 switch 마다 그때의 루프 깊이(switch 안의 break 는 switch 만 빠져나가기 때문)
         self.check = lambda: None
         self._tick = 0
 
@@ -264,6 +265,12 @@ class Structurer:
             if t == L.cont:
                 return [("continue",)], None
             if t == L.exit:
+                if self.sw_depth and self.sw_depth[-1] == len(self.loops):          # switch 안에서 루프를 벗어나는 break 는 C 에서 switch 만 끝내므로 goto 로
+                    if t in self.blocks:
+                        self.goto_targets.add(t)
+                        if t not in self.visited:
+                            self.pending.append(t)
+                        return [("goto", t)], None
                 return [("break",)], None
             for outer in self.loops[:-1]:                          # 바깥 루프의 계속·탈출 목표로 가는 간선은 goto 로 둔다
                 if t == outer.cont or t == outer.exit:
@@ -448,6 +455,10 @@ class Structurer:
             seq.extend(self.region_of(t.t, None))
         elif t.k == "ij":
             seq.append(("ijump", t.src, t.addr))
+        elif t.k == "sw":                                         # switch 가 곧 루프 머리(`for (;;) switch (c) { … continue; }` 꼴)
+            nxt = self.emit_switch(blk, seq, None)
+            if nxt is not None:
+                seq.extend(self.emit(nxt, None))
         elif t.k == "cj":
             then_seq = self.region_of(t.t, None)
             else_seq = self.region_of(t.f, None)
@@ -488,9 +499,11 @@ class Structurer:
             m = None
         stop = m if m is not None else follow
         groups = {}
-        for v, tg in t.cases:
-            groups.setdefault(tg, []).append(v)
         dflt = t.t
+        for v, tg in t.cases:
+            if dflt is not None and tg == dflt:                    # 기본 갈래와 같은 곳으로 가는 값(표의 빈 칸)은 따로 적지 않는다
+                continue
+            groups.setdefault(tg, []).append(v)
         if dflt is not None and dflt != stop:
             groups.setdefault(dflt, []).append("default")
         order = sorted(groups, key=lambda x: (x not in self.blocks, x))
@@ -501,7 +514,9 @@ class Structurer:
                 body = []
             else:
                 self.case_next.append(nxt)
+                self.sw_depth.append(len(self.loops))
                 body = self.region_of(tg, stop)
+                self.sw_depth.pop()
                 self.case_next.pop()
             if not self._ends_flow(body) and not (body and body[-1][0] == "fallthrough") and (stop is not None or follow is not None
                                                                                           or nxt is not None):

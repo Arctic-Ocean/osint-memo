@@ -19,6 +19,7 @@ from . import tables as tables_mod
 from .render import Renderer
 
 
+import re
 import time
 
 CS_OP_REG_ = 1
@@ -99,7 +100,9 @@ class FuncDecomp:
         size = prog.function_size(f)
         code = prog.dis.read(f.vaddr, size)
         self.lo, self.hi = f.vaddr, f.vaddr + size
-        insns = list(prog.dis.cs.disasm(code, f.vaddr))
+        self.thumb = bool(getattr(f, "thumb", False)) and self.arch == "arm"
+        cs = prog.dis.cs_at(f.vaddr, self.thumb) if self.arch == "arm" else prog.dis.cs
+        insns = list(cs.disasm(code, f.vaddr))
         self.ninsns = len(insns)
         if self.ninsns > MAX_DECOMPILE_INSNS:
             raise TooLarge(self.ninsns)
@@ -108,12 +111,15 @@ class FuncDecomp:
         elif self.arch == "arm64":
             from .lift_arm64 import A64Lifter
             lifter = A64Lifter(prog.dis.cs, self.bits, prog.dis.read, self._const_data)
+        elif self.arch == "arm":
+            from .lift_arm import A32Lifter
+            lifter = A32Lifter(cs, self.thumb, prog.dis.read, self._const_data)
         else:
             raise Unsupported(self.arch)
         self.lifter = lifter
         lifted = []
         leaders = self._leader_addrs(insns)
-        for ins in insns:
+        for ins in (insns if self.arch != "arm" else ()):
             if ins.address in leaders:
                 lifter.div_state = None
             stmts = lifter.lift(ins)
@@ -129,9 +135,11 @@ class FuncDecomp:
                     prev = cut
                 parts.append((prev, ins.size - (prev - ins.address), [x for x in body if x.addr == prev]))
             lifted.extend(parts)
+        if self.arch == "arm":
+            lifted = lifter.lift_function(insns)
         from .switch import resolve_switches
         resolve_switches(lifted, insns, self.prog, self.lo, self.hi, self.full)
-        self.abi = abi_for(self.arch, self.bits, self.model.fmt)
+        self.abi = abi_for(self.arch, self.bits, self.model.fmt, getattr(self, "thumb", False))
         self.blocks, self.order = build_blocks(lifted, self.lo, self.hi, self.lo, self.full, self.abi.ret)
         self.entry = self.lo
         eb = self.blocks[self.entry]
@@ -258,7 +266,7 @@ class FuncDecomp:
     def written_regs(self):
         """이 함수(와 호출하는 함수들)가 실제로 건드리는 호출자 보존 대상 레지스터. 같은 단위의 gcc 는 호출 규약상 파괴되는 레지스터라도
         피호출 함수가 건드리지 않음을 알면 호출 너머로 살려 쓴다(IPA-RA) — 실제 동작을 따라야 값이 맞는다."""
-        abi = abi_for(self.arch, self.bits, self.model.fmt)
+        abi = abi_for(self.arch, self.bits, self.model.fmt, getattr(self, "thumb", False))
         w = set()
         for b in self.blocks.values():
             for s in b.stmts:
@@ -287,7 +295,7 @@ class FuncDecomp:
         self.load()
         self.stack_pass()
         self.noreturn_pass()
-        self.abi = abi_for(self.arch, self.bits, self.model.fmt)
+        self.abi = abi_for(self.arch, self.bits, self.model.fmt, getattr(self, "thumb", False))
         self.prebind_calls()
         written = self.written_regs()
         self.dataflow_pass()
@@ -654,18 +662,21 @@ class FuncDecomp:
         if not xs:
             return None
         prog = self.prog
-        cs = prog.dis.cs
         abi = self.abi
         names = abi.ret_reads
         strip = ("bnd ", "notrack ")
         for x in xs[:20]:
             site = x["from"]
             code = prog.dis.read(site, 96)
+            cs = prog.dis.cs_at(site) if self.arch == "arm" else prog.dis.cs
             insns = list(cs.disasm(code, site))[1:9]
             for ins in insns:
                 reads, writes = set(), set()
-                for rid in list(ins.regs_read):
-                    reads.add(cs.reg_name(rid))
+                try:
+                    for rid in list(ins.regs_read):
+                        reads.add(cs.reg_name(rid))
+                except Exception:                                # noqa: BLE001 — 코드가 아닌 바이트(SKIPDATA)
+                    break
                 for op in ins.operands:
                     if op.type == CS_OP_REG_:
                         n = cs.reg_name(op.reg)
@@ -685,15 +696,30 @@ class FuncDecomp:
                 for p_ in strip:
                     if mn.startswith(p_):
                         mn = mn[len(p_):]
-                if any(mn.startswith(c) for c in abi.call_mn):
+                if self._is_call_mn(mn):
                     break                                        # 다음 호출이 반환 레지스터를 덮어쓴다
-                if mn.endswith("ret") or any(mn.startswith(c) for c in abi.ret_mn) or mn.startswith(abi.branch_prefix):
+                if self._is_exit_mn(mn, ins):
                     return True                                  # 값이 그대로 위 호출자에게 넘어가거나 분기 뒤에서 쓰일 수 있다
         return False
 
+    _ARM_CC_RE = r"(eq|ne|hs|cs|lo|cc|mi|pl|vs|vc|hi|ls|ge|lt|gt|le)?(\.[wn])?"
+
+    def _is_call_mn(self, mn: str) -> bool:
+        if self.arch == "arm":                                    # 'blt' 는 bl 이 아니라 b + lt 이므로 접두사 비교로는 가를 수 없다
+            return re.fullmatch(r"blx?" + self._ARM_CC_RE, mn) is not None
+        return any(mn.startswith(c) for c in self.abi.call_mn)
+
+    def _is_exit_mn(self, mn: str, ins) -> bool:
+        """함수를 끝내거나 갈라지는 명령(반환 레지스터 값이 그대로 넘어가거나 분기 뒤에서 쓰일 수 있다)."""
+        if self.arch == "arm":
+            if re.fullmatch(r"(b|bx|cbz|cbnz)" + self._ARM_CC_RE, mn):
+                return True
+            return re.match(r"(pop|ldm)", mn) is not None and "pc" in ins.op_str
+        return mn.endswith("ret") or any(mn.startswith(c) for c in self.abi.ret_mn) or mn.startswith(self.abi.branch_prefix)
+
     # ---- 단계 4: 웹·전파 --------------------------------------------------------------
     def dataflow_pass(self):
-        self.abi = abi_for(self.arch, self.bits, self.model.fmt)
+        self.abi = abi_for(self.arch, self.bits, self.model.fmt, getattr(self, "thumb", False))
         self.prebind_calls()
         flow = Flow(self.blocks, self.graph, self.abi, self.out_slots)
         flow.run()
@@ -761,6 +787,8 @@ class FuncDecomp:
                         continue
                     if parent is not None and parent.op == "trunc" and parent.sz <= cand[i]:
                         continue
+                    if parent is not None and parent.op == "and" and any(o.op == "c" and o.aux <= ir.mask(cand[i]) for o in parent.args):
+                        continue                                  # `r & 63` 처럼 작은 마스크로 가린 사용은 아래쪽 바이트만 본다
                     if parent is not None and parent.op == "ins" and parent.args[0] is e and owner is not None:
                         deps.append((i, owner))
                         continue
@@ -1216,6 +1244,21 @@ class FuncDecomp:
         lines = r.build()
         return r, lines
 
+    WIDE_HELPERS = ("__aeabi_l", "__aeabi_ul", "__aeabi_d2l", "__aeabi_l2", "__ashldi3", "__lshrdi3", "__ashrdi3", "__muldi3", "__divdi3",
+                    "__udivdi3", "__moddi3", "__umoddi3", "__divmoddi4")
+
+    def _uses_wide(self) -> bool:
+        """32비트 구조에서 64비트 값(레지스터 쌍)을 다루는 흔적: adc·sbc 연쇄, 64비트 곱셈누적, 64비트 연산 도우미 호출."""
+        if getattr(self.lifter, "wide", False):
+            return True
+        for b in self.blocks.values():
+            for s in b.stmts:
+                if s.k == "call":
+                    name = self.callee_name(s.src.args[0])
+                    if name and name.startswith(self.WIDE_HELPERS):
+                        return True
+        return False
+
     def result(self, r, lines) -> dict:
         """API 응답 형식."""
         variables = []
@@ -1233,6 +1276,9 @@ class FuncDecomp:
         inc = list(dict.fromkeys(r.incomplete))
         if inc:
             note = f"일부 명령어를 해석하지 못해 이 의사코드는 부정확할 수 있습니다({', '.join(inc[:3])}{' 등' if len(inc) > 3 else ''}). " + note
+        if self._uses_wide():
+            note = "64비트 정수 연산(자리올림 연쇄·64비트 곱셈 도우미 호출)이 있어, 의사코드에는 하위 32비트만 나타날 수 있습니다. " + note
+            inc.append("64비트 연산")
         return {"addr": self.addr, "name": self.func_name, "signature": sig, "lines": lines, "variables": variables,
                 "params": pnames, "note": note, "incomplete": inc}
 

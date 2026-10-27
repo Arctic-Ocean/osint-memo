@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import hashlib
 import itertools
+import bisect
 import os
 
 import lief
@@ -239,10 +240,13 @@ def load(path: str) -> tuple[BinaryModel, bytes, object]:
         if e.vaddr and e.vaddr not in func_addrs:
             model.functions.append(Function(vaddr=e.vaddr, name=e.name, is_export=True))
             func_addrs.add(e.vaddr)
+    if arch == "arm" and bits == 32:
+        _arm_modes(model)
+        func_addrs = {f.vaddr for f in model.functions}
 
     # 엔트리포인트도 함수로
     if model.entrypoint and model.entrypoint not in func_addrs:
-        model.functions.append(Function(vaddr=model.entrypoint, name="entry", size=0))
+        model.functions.append(Function(vaddr=model.entrypoint, name="entry", size=0, thumb=model.entrypoint in model.thumb_starts))
 
     for f in model.functions:
         if f.vaddr in export_addrs:
@@ -252,6 +256,113 @@ def load(path: str) -> tuple[BinaryModel, bytes, object]:
     model.symbols.sort(key=lambda s: s.vaddr)
 
     return model, raw, b
+
+
+def _arm_modes(model: BinaryModel) -> None:
+    """ARM 32비트: 함수·심볼 주소의 최하위 비트(Thumb 표시)를 떼고, 매핑 심볼($a·$t·$d)과 함수 심볼 크기로 Thumb 구역을 만든다."""
+    marks = []
+    keep = []
+    for sym in model.symbols:
+        n = sym.name
+        if len(n) >= 2 and n[0] == "$" and n[1] in "atd" and (len(n) == 2 or n[2] == "."):
+            marks.append((sym.vaddr, n[1]))
+            continue                                                    # 매핑 심볼은 심볼 목록에 보이지 않게 한다
+        keep.append(sym)
+    model.symbols = keep
+    ranges = []
+    marks.sort()
+    for i, (a, m) in enumerate(marks):
+        if m != "t":
+            continue
+        end = marks[i + 1][0] if i + 1 < len(marks) else a + 0x10000
+        sec = model.section_for(a)
+        if sec is not None:
+            end = min(end, sec.vaddr + sec.size)
+        if end > a:
+            ranges.append((a, end))
+    thumb_starts = set()
+    for sym in model.symbols:
+        if sym.kind == "func" and sym.vaddr & 1:
+            sym.vaddr &= ~1
+            thumb_starts.add(sym.vaddr)
+            if sym.size:
+                ranges.append((sym.vaddr, sym.vaddr + sym.size))
+        elif sym.kind == "func" and any(lo <= sym.vaddr < hi for lo, hi in ranges):
+            thumb_starts.add(sym.vaddr)
+    for f in model.functions:
+        if f.vaddr & 1:
+            f.vaddr &= ~1
+            f.thumb = True
+        elif f.vaddr in thumb_starts or any(lo <= f.vaddr < hi for lo, hi in ranges):
+            f.thumb = True
+    if model.entrypoint & 1:
+        model.entrypoint &= ~1
+        thumb_starts.add(model.entrypoint)
+    model.thumb_ranges = sorted(set(ranges))
+    model.thumb_starts = thumb_starts
+    merged: dict = {}                                                   # 최하위 비트를 떼고 나면 같은 주소가 겹치므로 이름·크기가 있는 쪽으로 합친다
+    for f in model.functions:
+        g = merged.get(f.vaddr)
+        if g is None:
+            merged[f.vaddr] = f
+            continue
+        if not g.name and f.name:
+            g.name = f.name
+        g.size = g.size or f.size
+        g.is_export = g.is_export or f.is_export
+        g.thumb = g.thumb or f.thumb
+    model.functions = sorted(merged.values(), key=lambda f: f.vaddr)
+    if not marks and not any(sym.kind == "func" for sym in model.symbols):          # 심볼이 하나도 없는 스트립 파일: 모드를 코드 모양에서 짐작한다
+        _guess_arm_modes(model)
+
+
+def _guess_arm_modes(model: BinaryModel) -> None:
+    """심볼(Thumb 표시·매핑 심볼)이 없을 때 함수마다 ARM/Thumb 를 짐작한다. 함수 자신의 범위(다음 함수 시작까지, 최대 256바이트)에서:
+      1. 크기가 4바이트 배수가 아니거나 4바이트 미만이면 Thumb (ARM 명령은 4바이트씩이다).
+      2. ARM 의 반환 꼴(`bx lr`·`ldm … pc`·`ldr pc, [sp], #4`) 단어가 있으면 ARM.
+      3. 아니면 4바이트 단어의 최상위 니블(ARM 의 조건 필드)이 AL(0xE)인 비율로 가른다. ARM 코드는 대부분 AL 이고 Thumb 코드를 4바이트씩
+         읽으면 니블이 흩어진다. 0 으로 시작하는 단어(채움·함수 안에 박힌 작은 정수 표)는 판단에서 뺀다."""
+    try:
+        with open(model.path, "rb") as fh:
+            raw = fh.read()
+    except OSError:
+        return
+    big = model.endian == "big"
+    order = "big" if big else "little"
+    addrs = sorted(g.vaddr for g in model.functions)
+    for f in model.functions:
+        if f.thumb:
+            continue
+        if f.vaddr & 3:
+            f.thumb = True
+            continue
+        sec = model.section_for(f.vaddr)
+        if sec is None or not sec.offset or not sec.size:
+            continue
+        k_ = bisect.bisect_right(addrs, f.vaddr)
+        nxt = addrs[k_] if k_ < len(addrs) else sec.vaddr + sec.size
+        size = min(sec.vaddr + sec.size, nxt, f.vaddr + 256) - f.vaddr
+        if size < 4 or size % 4:
+            f.thumb = True
+            continue
+        chunk = raw[sec.offset + (f.vaddr - sec.vaddr):sec.offset + (f.vaddr - sec.vaddr) + size]
+        n = al = 0
+        arm_ret = False
+        for k in range(0, size, 4):
+            w = int.from_bytes(chunk[k:k + 4], order)
+            if (w & 0x0FFFFFFF) in (0x012FFF1E, 0x049DF004) or (w & 0x0FFF8000) == 0x08BD8000:
+                arm_ret = True
+            top = w >> 28
+            if top == 0:
+                continue
+            n += 1
+            al += top == 0xE
+        if n == 0:
+            continue
+        # ARM 반환 꼴이 있으면 문턱을 낮춘다(작은 함수는 조건 실행 때문에 AL 비율이 낮을 수 있다). Thumb-2 의 `pop.w {…, pc}` 가 어긋난 정렬에서
+        # 우연히 같은 모양이 될 수 있으므로 반환 꼴 하나만으로 ARM 이라 하지는 않는다.
+        if not (al * 2 >= n if arm_ret else (al * 10 >= n * 7 or (al * 2 >= n and n >= 6))):
+            f.thumb = True
 
 
 def _iter_symbols(b, fmt: str):

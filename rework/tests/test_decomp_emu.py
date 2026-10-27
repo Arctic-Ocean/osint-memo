@@ -4,7 +4,7 @@
 2) 그 파일의 각 함수를 디컴파일해 C 로 되돌리고, 원본 + 의사코드(dec_*) 를 한 이미지로 다시 컴파일한다.
 3) Unicorn 에뮬레이터로 같은 입력에서 원본과 의사코드 함수를 각각 실행해 반환값과 메모리 결과를 비교한다.
 
-실행:  .venv/bin/python tests/test_decomp_emu.py [i386 arm64 arm win64 x64] [-O0 -O1 -O2] [-k 함수,...] [-v]
+실행:  .venv/bin/python tests/test_decomp_emu.py [i386 arm64 arm thumb win64 x64] [-O0 -O1 -O2] [-k 함수,...] [-v]
 필요: clang · ld.lld · unicorn(pip install unicorn)
 """
 import os, struct, random, re, subprocess, sys, tempfile
@@ -17,7 +17,7 @@ WORK = tempfile.mkdtemp(prefix="rework-decomp-emu-")
 os.environ["REWORK_DATA"] = os.path.join(WORK, "data")
 
 import lief                                         # noqa: E402
-from unicorn import (Uc, UC_ARCH_X86, UC_ARCH_ARM64, UC_ARCH_ARM, UC_MODE_32, UC_MODE_64, UC_MODE_ARM, UcError,   # noqa: E402
+from unicorn import (Uc, UC_ARCH_X86, UC_ARCH_ARM64, UC_ARCH_ARM, UC_MODE_32, UC_MODE_64, UC_MODE_ARM, UC_MODE_THUMB, UcError,   # noqa: E402
                      UC_PROT_ALL)
 from unicorn import x86_const as X, arm64_const as A64, arm_const as A32      # noqa: E402
 
@@ -56,6 +56,17 @@ static inline uint64_t __mulhu64(uint64_t a, uint64_t b) { return (uint64_t)(((u
 static inline int32_t __mulhs32(int32_t a, int32_t b) { return (int32_t)(((int64_t)a * b) >> 32); }
 static inline uint32_t __mulhu32(uint32_t a, uint32_t b) { return (uint32_t)(((uint64_t)a * b) >> 32); }
 static uint64_t __stack_chk_guard;
+static inline uint8_t __rol8(uint8_t x, unsigned k) { k &= 7; return (uint8_t)((x << k) | (x >> ((8 - k) & 7))); }
+static inline uint8_t __ror8(uint8_t x, unsigned k) { return __rol8(x, 8 - (k & 7)); }
+static inline uint16_t __rol16(uint16_t x, unsigned k) { k &= 15; return (uint16_t)((x << k) | (x >> ((16 - k) & 15))); }
+static inline uint16_t __ror16(uint16_t x, unsigned k) { return __rol16(x, 16 - (k & 15)); }
+static inline uint32_t __rol32(uint32_t x, unsigned k) { k &= 31; return (x << k) | (x >> ((32 - k) & 31)); }
+static inline uint32_t __ror32(uint32_t x, unsigned k) { return __rol32(x, 32 - (k & 31)); }
+static inline uint64_t __rol64(uint64_t x, unsigned k) { k &= 63; return (x << k) | (x >> ((64 - k) & 63)); }
+static inline uint64_t __ror64(uint64_t x, unsigned k) { return __rol64(x, 64 - (k & 63)); }
+static inline uint32_t __clz32(uint32_t x) { return x ? __builtin_clz(x) : 32; }
+static inline uint32_t __rbit32(uint32_t x) { uint32_t r = 0; for (int i = 0; i < 32; i++) r |= ((x >> i) & 1u) << (31 - i); return r; }
+static inline uint32_t __rev1632(uint32_t x) { return ((x & 0x00ff00ffu) << 8) | ((x >> 8) & 0x00ff00ffu); }
 """
 
 SUPPORT = """
@@ -66,8 +77,10 @@ void *memset(void *d, int c, unsigned long n) { char *a = d; while (n--) *a++ = 
 ARCH = {
     "i386": dict(target="i386-linux-gnu", cflags=[], uc=(UC_ARCH_X86, UC_MODE_32), ptr=4, long=4, abi="cdecl"),
     "arm64": dict(target="aarch64-linux-gnu", cflags=[], uc=(UC_ARCH_ARM64, UC_MODE_ARM), ptr=8, long=8, abi="aapcs64"),
-    "arm": dict(target="armv7-linux-gnueabihf", cflags=["-mcpu=cortex-a15", "-marm", "-mfloat-abi=soft"],
+    "arm": dict(target="armv7-linux-gnueabi", cflags=["-mcpu=cortex-a15", "-marm", "-mfloat-abi=soft", "-DNO_FP"],
                 uc=(UC_ARCH_ARM, UC_MODE_ARM), ptr=4, long=4, abi="aapcs"),
+    "thumb": dict(target="thumbv7-linux-gnueabi", cflags=["-mcpu=cortex-a15", "-mthumb", "-mfloat-abi=soft", "-DNO_FP"],
+                  uc=(UC_ARCH_ARM, UC_MODE_THUMB), ptr=4, long=4, abi="aapcs", thumb=True),
     "x64": dict(target="x86_64-linux-gnu", cflags=[], uc=(UC_ARCH_X86, UC_MODE_64), ptr=8, long=8, abi="sysv"),
     "win64": dict(target="x86_64-linux-gnu", cflags=["-DMS_ABI"], uc=(UC_ARCH_X86, UC_MODE_64), ptr=8, long=8, abi="win64"),
 }
@@ -197,8 +210,9 @@ class Machine:
             for i, (v, n) in enumerate(stack_args):
                 uc.mem_write(base + 4 * i, mask_(v, 4).to_bytes(4, "little"))
             uc.reg_write(A32.UC_ARM_REG_SP, base)
-            uc.reg_write(A32.UC_ARM_REG_LR, SENTINEL)
-            uc.emu_start(addr, SENTINEL, count=3_000_000)
+            th = 1 if a.get("thumb") else 0                      # Thumb 는 진입·복귀 주소의 최하위 비트로 모드를 알린다
+            uc.reg_write(A32.UC_ARM_REG_LR, SENTINEL | th)
+            uc.emu_start(addr | th, SENTINEL, count=3_000_000)
             r = uc.reg_read(A32.UC_ARM_REG_R0)
         else:
             raise SystemExit("알 수 없는 ABI")
@@ -232,6 +246,9 @@ def make_case(rng, name, kinds, a):
         elif k == "S":
             n = rng.randint(0, 10)
             out.append((k, "".join(rng.choice("abcab") for _ in range(n))))
+        elif k == "N":
+            n = rng.randint(0, 12)
+            out.append((k, "".join(rng.choice(" \t-+0123456789  ab") for _ in range(n))))
         elif k == "C":
             out.append((k, ord(rng.choice("abc"))))
         elif k == "T":
@@ -280,7 +297,7 @@ def run_one(m, addr, kinds_vals, ret, a, buf_slots):
             base = DATA_BASE + buf_slots[idx]
             if k in ("P", "Q"):
                 data = b"".join((x & 0xFFFFFFFF).to_bytes(4, "little") for x in v)
-            elif k == "S":
+            elif k in ("S", "N"):
                 data = v.encode() + b"\x00" * (32 - len(v))
             elif k == "E":
                 data = b"".join(struct.pack("<d", x) for x in v)
@@ -424,7 +441,7 @@ def main():
         elif x in ARCH:
             archs.append(x)
         i += 1
-    archs = archs or ["i386", "arm64", "arm", "x64", "win64"]
+    archs = archs or ["i386", "arm64", "arm", "thumb", "x64", "win64"]
     levels = levels or ["-O0", "-O1", "-O2"]
     fails = 0
     for arch in archs:

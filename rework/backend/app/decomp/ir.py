@@ -215,6 +215,12 @@ def binop(op: str, a: X, b: X, sz: int | None = None) -> X:
         if b.op == "c" and a.op == "neg" and a.args[0].op == "zext" and a.args[0].args[0].op in BOOL_OPS and a.sz == sz:   # (비교 마스크) & c
             cond = a.args[0].args[0]
             return zext(cond, sz) if b.aux == 1 else ite(cond, b, C(0, sz))
+        if b.op == "c" and a.op == "ins" and a.aux and b.aux <= mask(a.aux):             # (old 의 아래 w 바이트를 val 로 바꾼 값) & 작은 마스크 → val & 마스크
+            return binop("and", zext(a.args[1], sz), b, sz)
+        if b.op == "c" and a.op == "or":                                                  # (x & m1) | y 를 m2 로 가릴 때 m1 과 m2 가 겹치지 않으면 앞쪽이 사라진다
+            for keep, drop in ((a.args[1], a.args[0]), (a.args[0], a.args[1])):
+                if drop.op == "and" and drop.args[1].op == "c" and drop.args[1].aux & b.aux == 0:
+                    return binop("and", keep, b, sz)
         # 한쪽이 좁은 값의 0 확장이면 다른 쪽도 그 폭만 보면 된다(위쪽 쓰레기 비트가 결과에 영향을 못 준다)
         if a.op == "zext" and a.args[0].sz < sz:
             k = a.args[0].sz
@@ -250,6 +256,8 @@ def binop(op: str, a: X, b: X, sz: int | None = None) -> X:
                 return C(0, sz)
             if op == "shr" and b.aux >= 8 * sz:
                 return C(0, sz)
+            if op == "shr" and a.op == "bi" and a.aux == "clz" and a.args[0].sz == sz and b.aux == (8 * sz).bit_length() - 1:
+                return zext(cmp("eq", a.args[0], C(0, sz)), sz)                  # clz(x) >> log2(폭) 는 x == 0
         if a.op == "c" and a.aux == 0 and op in ("shl", "shr"):
             return C(0, sz)
     elif op in ("udiv", "sdiv"):

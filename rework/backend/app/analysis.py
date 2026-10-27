@@ -27,6 +27,8 @@ class Program:
         self.lief = lief_bin
         self.project = project
         self.dis = Disassembler(model.arch, model.bits, model.endian, lief_bin)
+        if model.arch == "arm":
+            self.dis.set_thumb(model.thumb_ranges, model.thumb_starts | {f.vaddr for f in model.functions if f.thumb})
 
         # 인덱스
         self._func_by_addr = {f.vaddr: f for f in model.functions}
@@ -54,7 +56,7 @@ class Program:
     def _build_plt(self):
         """GOT 슬롯 주소 → 심볼 이름을 구하고, 그 슬롯으로 점프하는
         작은 스텁(=.plt 엔트리)을 해당 임포트 이름으로 매핑한다."""
-        if self.model.arch not in ("x86", "x64"):
+        if self.model.arch not in ("x86", "x64", "arm", "arm64"):
             return
         got_to_name: dict[int, str] = {}
         try:
@@ -67,6 +69,9 @@ class Program:
         except Exception:
             return
         if not got_to_name:
+            return
+        if self.model.arch in ("arm", "arm64"):
+            self._build_plt_arm(got_to_name)
             return
         # .plt / .plt.sec / .plt.got 구역을 직접 훑어, 각 스텁이 GOT 의 어느 심볼로 점프하는지로 이름을 붙인다
         for sec in self.model.sections:
@@ -97,6 +102,74 @@ class Program:
                 if f.vaddr in self.plt_names:
                     break
 
+    def _build_plt_arm(self, got_to_name: dict) -> None:
+        """ARM/ARM64 의 PLT 스텁은 `주소를 레지스터에 만든 뒤 GOT 슬롯에서 읽어 점프` 하는 몇 줄이다. 레지스터 값을 따라가며 슬롯 주소를 구한다.
+        ARM32: add ip, pc, #…; add ip, ip, #…; ldr pc, [ip, #…]!  ·  ARM64: adrp x16, …; ldr x17, [x16, #…]; add x16, x16, #…; br x17"""
+        cs = self.dis.cs
+        a64 = self.model.arch == "arm64"
+        mask = (1 << 64) - 1 if a64 else 0xFFFFFFFF
+        for sec in self.model.sections:
+            if sec.name not in (".plt", ".plt.sec", ".plt.got", ".iplt") or not sec.vaddr or not sec.size:
+                continue
+            code = self.dis.read(sec.vaddr, min(sec.size, 0x20000))
+            regs: dict = {}
+            start = None
+            for ins in cs.disasm(code, sec.vaddr):
+                try:
+                    ops = ins.operands
+                    mn = ins.mnemonic
+                except Exception:                           # noqa: BLE001 — 코드가 아닌 바이트(SKIPDATA)
+                    start, regs = None, {}
+                    continue
+                end, slot = False, None
+                try:
+                    if a64:
+                        if mn == "adrp" and len(ops) == 2:
+                            start, regs = ins.address, {}                     # 스텁은 주소를 만드는 첫 명령에서 시작한다(앞의 nop·채움 바이트는 제외)
+                            regs[cs.reg_name(ops[0].reg)] = ops[1].imm & mask
+                        elif mn == "add" and len(ops) == 3 and ops[2].type == 2:
+                            b = regs.get(cs.reg_name(ops[1].reg))
+                            if b is not None:
+                                regs[cs.reg_name(ops[0].reg)] = (b + ops[2].imm) & mask
+                        elif mn == "ldr" and len(ops) == 2 and ops[1].type == 3:
+                            b = regs.get(cs.reg_name(ops[1].mem.base))
+                            if b is not None:
+                                regs[cs.reg_name(ops[0].reg)] = ("slot", (b + ops[1].mem.disp) & mask)
+                        elif mn in ("br", "braa", "brab", "bra"):
+                            end = True
+                            v = regs.get(cs.reg_name(ops[0].reg))
+                            slot = v[1] if isinstance(v, tuple) else None
+                        elif mn in ("ret", "b"):
+                            end = True
+                    else:
+                        if mn in ("add", "sub") and len(ops) >= 3 and ops[0].type == 1:
+                            rn = cs.reg_name(ops[1].reg)
+                            if rn == "pc":
+                                start, regs = ins.address, {}
+                            b = ins.address + 8 if rn == "pc" else regs.get(rn)
+                            if b is not None and ops[2].type == 2:
+                                imm = ops[2].imm & 0xFF
+                                if len(ops) >= 4 and ops[3].type == 2:                      # #imm8, #회전
+                                    r = ops[3].imm & 31
+                                    imm = ((imm >> r) | (imm << (32 - r))) & 0xFFFFFFFF if r else imm
+                                else:
+                                    imm = ops[2].imm & 0xFFFFFFFF
+                                regs[cs.reg_name(ops[0].reg)] = (b + (imm if mn == "add" else -imm)) & mask
+                        elif mn == "ldr" and ops[0].type == 1 and cs.reg_name(ops[0].reg) == "pc" and len(ops) >= 2 and ops[1].type == 3:
+                            end = True
+                            b = ins.address + 8 if cs.reg_name(ops[1].mem.base) == "pc" else regs.get(cs.reg_name(ops[1].mem.base))
+                            if b is not None and not ops[1].mem.index:
+                                slot = (b + ops[1].mem.disp) & mask
+                        elif mn in ("bx", "b"):
+                            end = True
+                except Exception:                           # noqa: BLE001
+                    pass
+                if end:
+                    nm = got_to_name.get(slot) if slot is not None and start is not None else None
+                    if nm and start not in self.plt_names:
+                        self.plt_names[start] = nm
+                    start, regs = None, {}
+
     # ---- 함수 경계 ------------------------------------------------------
 
     def _next_func_addr(self, addr: int) -> int:
@@ -114,7 +187,7 @@ class Program:
         cap = _MAX_FUNC_SCAN
         if nxt and 0 < nxt - f.vaddr < cap:
             cap = nxt - f.vaddr
-        insns = self.dis.disasm(f.vaddr, cap)
+        insns = self.dis.disasm(f.vaddr, cap, thumb=f.thumb)
         size = 0
         for ins in insns:
             size = ins["addr"] + ins["size"] - f.vaddr
@@ -142,7 +215,7 @@ class Program:
             if f.is_import:
                 continue
             size = self.function_size(f)
-            insns = self.dis.disasm(f.vaddr, size)
+            insns = self.dis.disasm(f.vaddr, size, thumb=f.thumb)
             total += len(insns)
             for ins in insns:
                 for r in ins["refs"]:
@@ -211,7 +284,7 @@ class Program:
             # 함수로 등록되지 않은 주소 → 임시 함수 취급
             f = Function(vaddr=addr, name="", size=0)
         size = self.function_size(f)
-        raw_insns = self.dis.disasm(f.vaddr, size)
+        raw_insns = self.dis.disasm(f.vaddr, size, thumb=f.thumb or None)
         self.build_xrefs()
 
         insns = []

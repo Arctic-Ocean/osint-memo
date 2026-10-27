@@ -112,6 +112,7 @@ FN unsigned bit_set(unsigned x, unsigned i) { return x | (1u << (i & 31)); }
 FN unsigned bswap32(unsigned x) { return __builtin_bswap32(x * 2654435761u); }
 FN unsigned long bswap64(unsigned long x) { return __builtin_bswap64(x * 11400714819323198485ul); }
 
+#ifndef NO_FP                                   /* 소프트 플로트 런타임이 없는 독립 실행 ARM32 시험에서는 부동소수점 구역을 뺀다 */
 FN double d_add(double a, double b) { return a + b; }
 FN double d_mix(double a, double b, double c) { return a * b - c / 2.0; }
 FN double d_abs(double x) { return x < 0 ? -x : x; }
@@ -145,6 +146,7 @@ FN void d_store(double *out, double x) { *out = x * 2.0 + 1.0; }
 typedef struct { double x, y; int k; } V;
 FN double v_len2(const V *v) { return v->x * v->x + v->y * v->y; }
 FN void v_set(V *v, double a) { v->x = a; v->y = a * 2; v->k = 3; }
+#endif
 
 #if defined(__i386__)
 #define STD __attribute__((stdcall))
@@ -183,5 +185,59 @@ done:
     return s;
 }
 FN int while_true(int n) { int c = 0; while (1) { c += 3; if (c > n) break; } return c; }
+
+/* 실전 꼴: 비트 연산·정렬·파싱·회전·오버플로 검사·상태 기계 */
+static inline __attribute__((always_inline)) unsigned rotl(unsigned x, int k) { return (x << k) | (x >> (32 - k)); }      /* -O0 에서도 인라인: 호출 규약이 다른 정적 함수가 끼지 않게 */
+FN unsigned rotr13(unsigned x, unsigned k) { return (x >> 13) | (x << 19) | (k << (k & 7)) >> 11; }
+FN unsigned rotv(unsigned x, unsigned k) { k &= 31; return k ? (x << k) | (x >> (32 - k)) : x; }
+FN unsigned crc32_bits(const unsigned char *s, int n) {
+    unsigned c = 0xFFFFFFFFu;
+    for (int i = 0; i < n; i++) { c ^= s[i]; for (int k = 0; k < 8; k++) c = (c >> 1) ^ (0xEDB88320u & -(c & 1)); }
+    return ~c;
+}
+FN void isort(int *a, int n) {
+    for (int i = 1; i < n; i++) { int v = a[i], j = i - 1; while (j >= 0 && a[j] > v) { a[j + 1] = a[j]; j--; } a[j + 1] = v; }
+}
+FN int parse_int(const char *s) {
+    int sign = 1, v = 0;
+    while (*s == ' ' || *s == '\t') s++;
+    if (*s == '-') { sign = -1; s++; } else if (*s == '+') s++;
+    while (*s >= '0' && *s <= '9') { v = v * 10 + (*s - '0'); s++; }
+    return sign * v;
+}
+FN unsigned rotmix(unsigned a, unsigned b, unsigned c) {
+    for (int i = 0; i < 5; i++) { a = rotl(a + (b ^ c) + 0x9e3779b9u, 5) + b; c = rotl(c, 11) ^ a; b += c; }
+    return a ^ b ^ c;
+}
+FN int sat_add(int a, int b) {
+    int r;
+    if (__builtin_add_overflow(a * 40000000, b * 40000000, &r)) return a < 0 ? -2147483647 - 1 : 2147483647;
+    return r;
+}
+FN unsigned usub_sat(unsigned a, unsigned b) { unsigned r; return __builtin_sub_overflow(a * 3000000u, b * 3000000u, &r) ? 0 : r; }
+FN int isqrt(unsigned n) {
+    unsigned r = 0, bit = 1u << 30;
+    n *= 1234567u;
+    while (bit > n) bit >>= 2;
+    while (bit) { if (n >= r + bit) { n -= r + bit; r = (r >> 1) + bit; } else r >>= 1; bit >>= 2; }
+    return (int)r;
+}
+FN unsigned powmod(unsigned b, unsigned e, unsigned m) {
+    unsigned r = 1;
+    b %= m;
+    while (e) { if (e & 1) r = r * b % m; b = b * b % m; e >>= 1; }
+    return r;
+}
+FN unsigned u16swap(unsigned x) { x *= 2654435761u; return ((x & 0xff) << 8) | ((x >> 8) & 0xff); }
+FN int word_count(const char *s) {
+    int n = 0, in = 0;
+    for (; *s; s++) {
+        switch (*s) {
+        case ' ': case '\t': case '-': in = 0; break;
+        default: if (!in) { in = 1; n++; }
+        }
+    }
+    return n;
+}
 
 int main(int argc, char **argv) { (void)argv; return add(argc, 1) + fib(3) + (int)sum_to(2); }

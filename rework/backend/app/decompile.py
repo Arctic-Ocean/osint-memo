@@ -501,7 +501,7 @@ class Decompiler:
 
     def decompile(self, addr: int) -> dict:
         prog = self.prog
-        if prog.model.arch in ("x86", "x64", "arm64"):
+        if prog.model.arch in ("x86", "x64", "arm64", "arm"):
             from .decomp.func import FuncDecomp, TooLarge, TooComplex, Thunk
             try:
                 varmap = prog.project.get_varnames(addr) if prog.project else {}

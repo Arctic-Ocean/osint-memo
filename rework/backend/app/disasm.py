@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from capstone import (
     Cs, CS_ARCH_X86, CS_ARCH_ARM, CS_ARCH_ARM64, CS_ARCH_MIPS, CS_ARCH_PPC,
-    CS_MODE_32, CS_MODE_64, CS_MODE_ARM, CS_MODE_LITTLE_ENDIAN,
+    CS_MODE_32, CS_MODE_64, CS_MODE_ARM, CS_MODE_THUMB, CS_MODE_LITTLE_ENDIAN,
     CS_MODE_BIG_ENDIAN, CS_MODE_MIPS32, CS_MODE_MIPS64,
     CS_GRP_JUMP, CS_GRP_CALL, CS_GRP_RET, CS_GRP_INT, CS_GRP_IRET,
     CS_OP_IMM, CS_OP_MEM,
@@ -37,7 +37,33 @@ class Disassembler:
         self.cs = Cs(cs_arch, cs_mode)
         self.cs.detail = True
         self.cs.skipdata = True
+        self.cs_thumb = None
+        self.thumb_ranges: list = []
+        self.thumb_starts: set = set()
+        if arch == "arm":                                    # ARM 32비트는 Thumb 모드 해석기를 따로 둔다
+            self.cs_thumb = Cs(CS_ARCH_ARM, CS_MODE_THUMB | (CS_MODE_BIG_ENDIAN if endian == "big" else CS_MODE_LITTLE_ENDIAN))
+            self.cs_thumb.detail = True
+            self.cs_thumb.skipdata = True
         self._bin = lief_bin
+
+    def set_thumb(self, ranges, starts):
+        self.thumb_ranges = sorted(ranges)
+        self.thumb_starts = set(starts)
+
+    def is_thumb(self, va: int) -> bool:
+        if self.cs_thumb is None:
+            return False
+        if va in self.thumb_starts:
+            return True
+        import bisect
+        i = bisect.bisect_right(self.thumb_ranges, (va, 1 << 64)) - 1
+        return i >= 0 and self.thumb_ranges[i][0] <= va < self.thumb_ranges[i][1]
+
+    def cs_at(self, va: int, thumb=None):
+        """주소 va 를 해석할 Capstone 객체(ARM 32비트는 Thumb 여부에 따라)."""
+        if thumb is None:
+            thumb = self.is_thumb(va)
+        return self.cs_thumb if (thumb and self.cs_thumb is not None) else self.cs
 
     # VA의 바이트 읽기 (lief가 섹션/세그먼트 매핑 처리)
     def read(self, va: int, size: int) -> bytes:
@@ -47,13 +73,16 @@ class Disassembler:
         except Exception:
             return b""
 
-    def disasm(self, va: int, size: int, max_insns: int = 0):
-        """va부터 size 바이트를 디스어셈블. 명령어 dict의 리스트를 돌려준다."""
+    def disasm(self, va: int, size: int, max_insns: int = 0, thumb=None):
+        """va부터 size 바이트를 디스어셈블. 명령어 dict의 리스트를 돌려준다. ARM 32비트에서 홀수 주소는 Thumb 표시다."""
+        if self.cs_thumb is not None and va & 1:
+            va &= ~1
+            thumb = True
         code = self.read(va, size)
         if not code:
             return []
         out = []
-        for insn in self.cs.disasm(code, va):
+        for insn in self.cs_at(va, thumb).disasm(code, va):
             out.append(self._describe(insn))
             if max_insns and len(out) >= max_insns:
                 break

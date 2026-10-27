@@ -70,13 +70,27 @@ def _match_table(E: X, A: X, full: int):
     """점프 대상식 E 가 `base + step * ext(mem[table + idx * esz])` 꼴(표를 읽어 기준 주소에 더하는 모양)이면 읽는 방법을 돌려준다.
     base=0·step=1·확장 없음 이면 절대 주소 표, 4바이트 부호 확장이면 위치 독립 상대 표, 1바이트 오프셋이면 ARM64 의 짧은 표다."""
     sA = _strip(A)
+    aX, aK = _addr_parts(sA)                  # 비교한 값이 `x + K` 이면 상수가 접힌 주소식에서는 인덱스가 x 로, 표 주소에 K*원소크기 가 섞여 나온다
 
-    def is_index(x: X, scale: int) -> bool:
+    def plain(x: X):
+        inner = _strip(x)
+        if inner == sA:
+            return 0
+        if aK and inner == aX:
+            return aK
+        return None
+
+    def is_index(x: X, scale: int):
+        """인덱스 식이면 표 주소에 더해 줄 보정값(0 또는 K*scale), 아니면 None."""
         if x.op == "mul" and x.args[1].op == "c" and x.args[1].aux == scale:
-            return _strip(x.args[0]) == sA
-        if x.op == "shl" and x.args[1].op == "c" and (1 << x.args[1].aux) == scale:
-            return _strip(x.args[0]) == sA
-        return scale == 1 and _strip(x) == sA
+            k = plain(x.args[0])
+        elif x.op == "shl" and x.args[1].op == "c" and (1 << x.args[1].aux) == scale:
+            k = plain(x.args[0])
+        elif scale == 1:
+            k = plain(x)
+        else:
+            return None
+        return None if k is None else k * scale
 
     base, step, inner = 0, 1, E
     if E.op == "add":
@@ -95,7 +109,10 @@ def _match_table(E: X, A: X, full: int):
     if inner.op in ("sext", "zext"):
         signed, inner = inner.op == "sext", inner.args[0]
     if inner.op != "mem":
-        return None
+        k = plain(inner) if E.op == "add" and signed is None else None      # 표 없이 `기준 + 인덱스 * 폭` 으로 뛰는 분기표(ARM 의 add pc, pc, r0, lsl #2)
+        if k is None or step not in (4, 8):
+            return None
+        return {"kind": "branch", "base": (base - k * step) & mask(full), "step": step}
     esz, addr = inner.sz, inner.args[0]
     if addr.op != "add":
         return None
@@ -106,9 +123,22 @@ def _match_table(E: X, A: X, full: int):
         table, idxt = l.aux, r
     else:
         return None
-    if not is_index(idxt, esz):
+    adj = is_index(idxt, esz)
+    if adj is None:
         return None
-    return {"base": base, "step": step, "esz": esz, "signed": bool(signed), "table": table}
+    return {"kind": "table", "base": base, "step": step, "esz": esz, "signed": bool(signed), "table": (table - adj) & mask(full)}
+
+
+def _branch_target(prog, ea: int):
+    """ARM 모드 주소 ea 의 명령이 무조건 `b 대상` 이면 대상 주소, 아니면 None."""
+    code = prog.dis.read(ea, 4)
+    if len(code) < 4:
+        return None
+    for ins in prog.dis.cs_at(ea, False).disasm(code, ea):
+        if ins.mnemonic == "b" and ins.cc in (0, 15) and ins.operands and ins.operands[0].type == 2:
+            return ins.operands[0].imm & 0xFFFFFFFF
+        return None
+    return None
 
 
 def resolve_switches(lifted: list, insns: list, prog, lo: int, hi: int, full: int) -> int:
@@ -130,7 +160,10 @@ def resolve_switches(lifted: list, insns: list, prog, lo: int, hi: int, full: in
         if cj_i is None:
             continue
         cj = lifted[cj_i][2][-1]
-        if not (cj.src.op == "cc" and cj.src.aux in ("a", "ae", "nbe", "nb", "hi", "hs")):
+        if not (cj.src.op == "cc" and cj.src.aux in ("a", "ae", "nbe", "nb", "hi", "hs", "ls", "lo")):
+            continue
+        inside = cj.src.aux in ("ls", "lo")                    # ARM 의 `ldrls pc, [...]`: 간접 점프가 조건이 참인 쪽(인덱스 범위 안)에 있다
+        if inside and lifted[i][0] != cj.t:
             continue
         # 플래그 대입 문장(cj 앞쪽에서 가장 가까운 F := fl)
         fpos = None
@@ -149,7 +182,7 @@ def resolve_switches(lifted: list, insns: list, prog, lo: int, hi: int, full: in
         if fl.op != "fl" or fl.aux != "sub" or len(fl.args) < 2 or fl.args[1].op != "c":
             continue
         A, N = fl.args[0], fl.args[1].aux
-        n_cases = N + 1 if cj.src.aux in ("a", "nbe", "hi") else N
+        n_cases = N + 1 if cj.src.aux in ("a", "nbe", "hi", "ls") else N
         if n_cases <= 0 or n_cases > SWITCH_MAX:
             continue
         # 조건 분기보다 앞쪽(같은 직선 구간)부터 기호 실행해 인덱스가 스택을 거쳐 오더라도 되찾는다
@@ -189,21 +222,35 @@ def resolve_switches(lifted: list, insns: list, prog, lo: int, hi: int, full: in
         m = _match_table(E, A_eq, full) or _match_table(E, A, full)
         if m is None:
             continue
-        esz = m["esz"]
-        raw = prog.dis.read(m["table"], esz * n_cases)
-        if len(raw) < esz * n_cases:
-            continue
         cases = []
-        ok = True
-        for idx in range(n_cases):
-            v = int.from_bytes(raw[idx * esz:(idx + 1) * esz], "little", signed=m["signed"])
-            tgt = (m["base"] + v * m["step"]) & mask(full)
-            if not (lo <= tgt < hi):
-                ok = False
-                break
-            cases.append((idx, tgt))
-        if not ok:
-            continue
+        if m["kind"] == "branch":                                 # 표 자리에 `b 대상` 명령이 줄지어 있다
+            if prog.model.arch != "arm":
+                continue
+            ok = True
+            for idx in range(n_cases):
+                ea = (m["base"] + m["step"] * idx) & mask(full)
+                tgt = _branch_target(prog, ea)
+                if tgt is None or not (lo <= tgt < hi):
+                    ok = False
+                    break
+                cases.append((idx, tgt))
+            if not ok:
+                continue
+        else:
+            esz = m["esz"]
+            raw = prog.dis.read(m["table"], esz * n_cases)
+            if len(raw) < esz * n_cases:
+                continue
+            ok = True
+            for idx in range(n_cases):
+                v = int.from_bytes(raw[idx * esz:(idx + 1) * esz], "little", signed=m["signed"])
+                tgt = (m["base"] + v * m["step"]) & mask(full)
+                if not (lo <= tgt < hi):
+                    ok = False
+                    break
+                cases.append((idx, tgt))
+            if not ok:
+                continue
         # 인덱스를 담을 임시 위치를 F 대입 바로 뒤에 둔다. A 가 `x - K` 이면 x 로 스위치하고 케이스 값에 K 를 더한다.
         base_x, K = A, 0
         if A.op == "add" and A.args[1].op == "c" and A.sz >= 4:
@@ -211,6 +258,6 @@ def resolve_switches(lifted: list, insns: list, prog, lo: int, hi: int, full: in
         tmp = loc(f"sw{addr:x}", base_x.sz)
         lifted[fpos[0]][2].insert(fpos[1] + 1, S("asg", fs.addr, tmp, base_x))
         sw_cases = [(to_signed((v + K) & mask(base_x.sz), base_x.sz), tg) for v, tg in cases]
-        stmts[-1] = S("sw", ij.addr, src=tmp, cases=sw_cases, t=cj.t)
+        stmts[-1] = S("sw", ij.addr, src=tmp, cases=sw_cases, t=cj.f if inside else cj.t)
         count += 1
     return count
