@@ -104,7 +104,7 @@ class FuncDecomp:
         if self.ninsns > MAX_DECOMPILE_INSNS:
             raise TooLarge(self.ninsns)
         if self.arch in ("x86", "x64"):
-            lifter = X86Lifter(prog.dis.cs, self.bits, prog.dis.read, self._const_data)
+            lifter = X86Lifter(prog.dis.cs, self.bits, prog.dis.read, self._const_data, {i.vaddr for i in self.model.imports if i.vaddr})
         elif self.arch == "arm64":
             from .lift_arm64 import A64Lifter
             lifter = A64Lifter(prog.dis.cs, self.bits, prog.dis.read, self._const_data)
@@ -151,8 +151,24 @@ class FuncDecomp:
                         s.add(op.imm & ((1 << 64) - 1))
         return s
 
+    def _call_pop(self, s) -> int:
+        """x86-32 에서 호출된 함수가 스택 인자를 치우는 바이트 수(stdcall). WinAPI 는 원형 표의 인자 폭, 같은 파일 함수는 그 함수의 `ret N`."""
+        if self.arch != "x86" or self.bits != 32:
+            return 0
+        tgt = s.src.args[0]
+        if tgt.op != "c":
+            return 0
+        name = self.callee_name(tgt)
+        pr = protos.proto(name) if name else None
+        if pr is not None:
+            if self.model.fmt == "PE" and not pr[2]:
+                return sum(8 if t in ("double", "long long", "unsigned long long", "int64_t", "uint64_t") else 4 for t in pr[1])
+            return 0
+        ci = self.callee_info(tgt)
+        return (ci or {}).get("pop", 0) or 0
+
     def stack_pass(self):
-        tr = stk_mod.StackTracker(self.blocks, self.graph, self.entry, self.abi)
+        tr = stk_mod.StackTracker(self.blocks, self.graph, self.entry, self.abi, self._call_pop)
         self.frame = tr.run()
         stk_mod.drop_dead_bookkeeping(self.blocks, self.abi)
         self.slots = stk_mod.promote_slots(self.blocks, self.abi, self.frame if self.frame is not None else 0, self.frame is not None, self.entry)
@@ -278,7 +294,9 @@ class FuncDecomp:
         self.infer_params()
         has_ret = any(b.term.k == "ret" for b in self.blocks.values())
         has_noret = any(b.term.k == "noret" for b in self.blocks.values())
-        return {"nparams": len(self.params), "returns": self.returns_value and not self.ret_fp, "noreturn": has_noret and not has_ret,
+        pop = max((b.term.extra.get("pop", 0) for b in self.blocks.values() if b.term.k == "ret" and isinstance(b.term.extra, dict)), default=0)
+        nparams = max(len(self.params), pop // self.full) if pop else len(self.params)
+        return {"nparams": nparams, "pop": pop, "returns": self.returns_value and not self.ret_fp, "noreturn": has_noret and not has_ret,
                 "clobbers": sorted(written), "fp_params": [(k, kind) for _w, k, kind in self.fp_params], "ret_fp": self.ret_fp}
 
     def _real(self, defs) -> bool:

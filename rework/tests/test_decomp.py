@@ -44,6 +44,7 @@ SPECS = {
     "d_sum": ("D", "En"), "d_dot": ("D", "EEn"), "d_scale": ("v", "Enk"), "d_loop": ("D", "n"), "f_sum": ("F", "Gn"), "d_sqrt": ("D", "a"),
     "d_hyp": ("D", "aa"), "d_clamp": ("i", "d"), "d2u": ("u", "d"), "u2d": ("D", "u"), "d_calls": ("D", "dd"), "d_ifp": ("D", "id"),
     "d_store": ("v", "Ed"), "v_len2": ("D", "V"), "v_set": ("v", "Vd"),
+    "std_add": ("i", "ii"), "std_three": ("i", "iii"), "std_calls": ("i", "ii"),
     "bit_test": ("i", "un"), "bit_flag": ("i", "Ln"), "bit_set": ("u", "un"), "bswap32": ("u", "u"), "bswap64": ("l", "L"),
 }
 # 인자 이름이 겹치는 특수 처리: bsearch_(const int *a, int n, int key) → Q(정렬 배열), n(<=16), i(키)

@@ -146,6 +146,15 @@ typedef struct { double x, y; int k; } V;
 FN double v_len2(const V *v) { return v->x * v->x + v->y * v->y; }
 FN void v_set(V *v, double a) { v->x = a; v->y = a * 2; v->k = 3; }
 
+#if defined(__i386__)
+#define STD __attribute__((stdcall))
+#else
+#define STD
+#endif
+FN STD int std_add(int a, int b) { return a * 2 + b; }
+FN STD int std_three(int a, int b, int c) { return a - b + c * 3; }
+FN int std_calls(int a, int b) { int x = std_add(a, b); int y = std_three(x, a, b); return x + y + std_add(y, x); }
+
 FN unsigned hash(const unsigned char *s, int n) { unsigned h = 5381; for (int i = 0; i < n; i++) h = h * 33 + s[i]; return h; }
 FN int bsearch_(const int *a, int n, int key) {
     int lo = 0, hi = n - 1;

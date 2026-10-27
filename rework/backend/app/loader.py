@@ -283,9 +283,12 @@ def _collect_imports_exports(b, fmt: str, model: BinaryModel) -> None:
             for imp in b.imports:
                 lib = _s(imp.name)
                 for e in imp.entries:
+                    iat = int(getattr(e, "iat_address", 0) or 0)
+                    if iat and iat < model.image_base:                      # lief 는 RVA 를 주므로 기준 주소를 더해 호출이 읽는 절대 주소와 맞춘다
+                        iat += model.image_base
                     model.imports.append(Symbol(
                         name=_s(e.name) or f"ordinal_{getattr(e,'ordinal','?')}",
-                        vaddr=int(getattr(e, "iat_address", 0) or 0),
+                        vaddr=iat,
                         kind="func", is_import=True, library=lib))
         except Exception:
             pass

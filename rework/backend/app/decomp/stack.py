@@ -52,13 +52,14 @@ def _aeval(e: X, env: dict):
 
 
 class StackTracker:
-    def __init__(self, blocks: dict, graph, entry: int, abi):
+    def __init__(self, blocks: dict, graph, entry: int, abi, call_pop=None):
         self.blocks = blocks
         self.graph = graph
         self.entry = entry
         self.abi = abi
         self.sp = abi.sp
         self.outs: dict = {}
+        self.call_pop = call_pop            # 호출문 → 피호출자가 치우는 인자 바이트(stdcall). 모르면 0
 
     def _transfer(self, b, env: dict, rewrite: bool):
         def sub_loc(e):
@@ -79,9 +80,12 @@ class StackTracker:
                 else:
                     env[s.dst.aux] = v
             elif s.k == "call":
+                pop = self.call_pop(s) if self.call_pop is not None and self.sp in env else 0
                 for r in list(env):
                     if r not in self.abi.callee_saved:
                         env.pop(r, None)
+                if pop and self.sp in env:
+                    env[self.sp] += pop
             elif s.k == "unk":
                 for r in s.extra["defs"]:
                     env.pop(r, None)

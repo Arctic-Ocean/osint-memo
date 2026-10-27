@@ -65,8 +65,9 @@ def cc_of(mnem: str, prefix: str) -> str | None:
 
 
 class X86Lifter:
-    def __init__(self, cs, bits: int, read=None, is_const=None):
+    def __init__(self, cs, bits: int, read=None, is_const=None, imports=None):
         self.cs = cs
+        self.imports = imports or ()     # 임포트 주소 표(IAT 칸): `call [IAT]` 를 이름 있는 호출로 본다
         self.read = read                 # (va, size) → bytes: 읽기 전용 데이터(부호 마스크 등)를 들여다볼 때 쓴다
         self.is_const = is_const         # va → 읽기 전용 데이터 구역인가(상수 주소의 읽기를 값으로 접는다)
         self.bits = bits
@@ -702,6 +703,8 @@ class X86Lifter:
         if m == "call":
             return [self._call(insn, ops[0])]
         if m == "ret" or m == "retf":
+            if n == 1 and ops[0].type == CS_OP_IMM and ops[0].imm:                  # ret N: 호출된 쪽이 인자 N 바이트를 치운다(stdcall·thiscall)
+                return [S("ret", a, extra={"pop": ops[0].imm})]
             return [S("ret", a)]
         if m == "jmp":
             if ops[0].type == CS_OP_IMM:
@@ -786,6 +789,8 @@ class X86Lifter:
             tgt = C(op.imm & ir.mask(self.full), self.full)
         else:
             tgt = self.read_op(insn, op, self.full)
+            if tgt.op == "mem" and tgt.args[0].op == "c" and tgt.args[0].aux in self.imports:
+                tgt = C(tgt.args[0].aux, self.full)
         return S("call", a, dst=loc("rax" if self.bits == 64 else "eax", self.full), src=X("call", (tgt,), self.full, {"args": None}))
 
     def _widening_mul(self, insn, op, signed):
