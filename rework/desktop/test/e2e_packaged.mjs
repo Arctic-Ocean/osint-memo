@@ -16,7 +16,7 @@ const { chromium } = pw.default || pw;
 const bin = path.resolve(process.argv[2] || path.join(desktop, 'dist', 'linux-unpacked', 'rework'));
 
 const results = [];
-const check = (name, ok, detail = '') => results.push([name, !!ok, String(detail)]);
+const check = (name, ok, detail = '') => { results.push([name, !!ok, String(detail)]); console.log((ok ? 'PASS ' : 'FAIL ') + name + '  ' + String(detail).slice(0, 300)); };   // 멈춰도 어디까지 갔는지 남도록 바로 출력
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 async function waitFor(fn, ms = 30000, step = 200) { const t0 = Date.now(); while (Date.now() - t0 < ms) { const v = await fn(); if (v) return v; await sleep(step); } return null; }
 function get(port, p, headers = {}) {
@@ -33,6 +33,20 @@ function pidsOf(pattern) {
   return out;
 }
 const backendPids = () => pidsOf('rework-backend --desktop');
+// AppImage 런타임은 Electron 을 자식으로 띄우고 기다리는 래퍼라, 래퍼에 보낸 SIGTERM·SIGKILL 은 래퍼만 죽이고 앱(Electron)은 그대로 둔다.
+// 앱의 종료 처리를 시험하려면 신호를 실제 Electron 메인 프로세스(--type= 없는 `.../appimage_extracted_*/rework`)에 보내야 한다.
+function electronMainPids(bin) {
+  const out = [];
+  for (const d of fs.readdirSync('/proc').filter((x) => /^\d+$/.test(x))) {
+    try {
+      const a = fs.readFileSync(`/proc/${d}/cmdline`, 'utf8').split('\0');
+      const isMain = bin.endsWith('.AppImage') ? /\/appimage_extracted_[^/]+\/rework$/.test(a[0]) : a[0] === bin;
+      if (isMain && !a.some((x) => x.startsWith('--type='))) out.push(Number(d));
+    } catch { /* gone */ }
+  }
+  return out;
+}
+const mainTarget = (launcher) => (bin.endsWith('.AppImage') ? electronMainPids(bin)[0] || launcher.pid : launcher.pid);
 
 check('0. 설치본 실행 파일이 있다', fs.existsSync(bin), bin);
 
@@ -155,11 +169,25 @@ try {
     try { const j = JSON.parse(fs.readFileSync(path.join(work, 'nb.ipynb'), 'utf8')); return j.cells[0].execution_count === 1 && j.cells[0].outputs.length >= 2 ? j : null; } catch { return null; }
   }, 10000);
   check('4. 설치본에서 노트북 Ctrl+S 가 출력과 함께 nbformat 4 로 저장된다', !!nbSaved && nbSaved.nbformat === 4, nbSaved ? nbSaved.cells[0].outputs.map((o) => o.output_type).join(',') : '저장 안 됨');
+
+  // ---- 백엔드가 죽으면 오류 화면 → 다시 시작 (패키지된 앱에서 file:// 이 막혀 빈 Chromium 오류창이 뜨던 결함의 회귀 방지) ----
+  const killed = backendPids();
+  process.kill(killed[0], 'SIGKILL');
+  const errShown = await waitFor(async () => (page.url().startsWith('rework-shell://') && (await page.$('#msg')) ? true : null), 20000);
+  const msgTxt = errShown ? await page.$eval('#msg', (e) => e.textContent) : `url=${page.url()}`;
+  check('4. 설치본: 백엔드가 죽으면 오류 화면(사유 표시)이 뜬다', errShown && /예기치 않게 종료/.test(msgTxt), msgTxt.slice(0, 100));
+  if (errShown) {
+    await page.click('#restart');
+    const back = await waitFor(async () => (page.url().startsWith('http://127.0.0.1:') ? page.url() : null), 60000);
+    await page.waitForSelector('#titlebar', { timeout: 30000 });
+    const again = backendPids();
+    check('4. 설치본: 다시 시작하면 새 백엔드로 복구', !!back && again.length === 1 && again[0] !== killed[0] && (await page.evaluate(() => fetch('/api/about').then((r) => r.status))) === 200, `${killed[0]} → ${again}`);
+  }
   check('5. JS·CSP 오류 없음', errs.length === 0, errs.slice(0, 2).join(' / '));
 
   // ---- 종료: 앱을 닫으면 백엔드도 ----
   const before = backendPids();
-  process.kill(app.pid, 'SIGTERM');
+  process.kill(mainTarget(app), 'SIGTERM');
   const gone = await waitFor(async () => (backendPids().length === 0 && app.exitCode !== null ? true : null), 20000);
   check('6. 앱 종료(SIGTERM) 시 백엔드도 정리됨', !!gone && before.length === 1, `before=${before} after=${backendPids()} exit=${app.exitCode}`);
 } catch (e) {
@@ -173,15 +201,20 @@ await sleep(500);
   const app2 = spawn(bin, ['--no-sandbox'], { env: { ...env, XDG_CONFIG_HOME: path.join(tmp, 'cfg2') }, stdio: 'ignore' });
   const up = await waitFor(async () => (backendPids().length === 1 ? true : null), 60000);
   const bp2 = backendPids();
-  try { process.kill(app2.pid, 'SIGKILL'); } catch { /* ignore */ }
+  try { process.kill(mainTarget(app2), 'SIGKILL'); } catch { /* ignore */ }
   const orphanGone = await waitFor(async () => (backendPids().length === 0 ? true : null), 25000);
   check('7. 셸이 SIGKILL 로 죽어도 번들 백엔드가 고아로 남지 않음', !!up && !!orphanGone, `백엔드 ${bp2} → 남음 ${backendPids()}`);
   // 정리용: electron 자식 프로세스(zygote 등)가 남아 있으면 종료
-  for (const pid of pidsOf(bin)) { try { process.kill(pid, 'SIGKILL'); } catch { /* ignore */ } }
+  // (명령줄 어디에든 경로가 들어 있는 프로세스를 죽이면, 절대 경로를 인자로 준 이 시험 자신과 셸 래퍼까지 죽는다 — argv[0] 이 그 실행 파일인 것만)
+  for (const d of fs.readdirSync('/proc').filter((x) => /^\d+$/.test(x))) {
+    try { if (Number(d) === process.pid) continue;
+      const argv0 = fs.readFileSync(`/proc/${d}/cmdline`, 'utf8').split('\0')[0];
+      if (argv0 === bin || (isAppImage && /\/appimage_extracted_[^/]+\//.test(argv0))) process.kill(Number(d), 'SIGKILL'); } catch { /* gone */ }
+  }
 }
 
 let bad = 0;
-for (const [n, ok, d] of results) { console.log((ok ? 'PASS ' : 'FAIL ') + n + '  ' + d.slice(0, 300)); bad += !ok; }
+for (const [, ok] of results) bad += !ok;
 console.log(`\n== ${results.length - bad}/${results.length} 통과 ==`);
 fs.rmSync(tmp, { recursive: true, force: true });
 process.exit(bad ? 1 : 0);

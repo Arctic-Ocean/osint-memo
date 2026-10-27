@@ -282,10 +282,12 @@ python3 -m venv .venv
 메뉴 **실행 환경 > WSL2** 를 고르면 같은 앱이 **WSL2 안의 리눅스 백엔드**를 띄워 디버거·격리 실행까지 씁니다(WSL2 와 배포판 필요, `C:\` 는
 `/mnt/c/` 로 자동 변환, 데이터는 WSL 홈의 `~/.rework/data`). 앱 종료·백엔드 사망 처리는 동일합니다.
 
-> ⚠ **검증 범위**: Linux(Kali·Ubuntu) 설치본(`.deb`·AppImage)은 이 저장소 환경에서 빌드해 실제로 띄워 시험했습니다(`desktop/test/e2e_packaged.mjs`).
+> ⚠ **검증 범위**: Linux(Kali·Ubuntu) 설치본(`.deb`·AppImage)은 이 저장소 환경에서 빌드해 실제로 띄워 시험했습니다(`desktop/test/e2e_packaged.mjs` — `dist/linux-unpacked`·AppImage·`.deb`(시스템에 설치하지 않고 `dpkg-deb -x` 로 풀어서)에 같은 시험).
+> 시험은 퓨즈·토큰·분석·격리 디버깅과 디버거 심화(메모리 맵·스택 덤프·로그포인트), 격리 러너(gcc 빌드·결과물 되가져오기), 노트북 셀 실행·저장, 백엔드가 죽었을 때의 오류 화면과 다시 시작, 종료 정리를 설치본의 동결 백엔드에서 확인합니다.
 > **Windows 설치본은 이 환경에서 빌드·실행하지 못했습니다**(PyInstaller·electron-builder 는 크로스 빌드가 안 됨). Windows 용 코드(경로 변환·WSL2 실행·
 > 드라이브 목록·POSIX 모듈 없이 임포트)는 단위·시뮬레이션 테스트만 거쳤고, 빌드는 `.github/workflows/desktop.yml`(수동 실행)이 Windows 러너에서 합니다. 첫 Windows
 > 빌드·실행에서 문제가 나올 수 있으니 결과를 알려 주세요. 코드 서명이 없어 SmartScreen 경고가 뜹니다. 자동 업데이트는 없습니다(새 설치본으로 교체).
+> AppImage 실행기(래퍼)는 앱(Electron)을 자식으로 띄우고 기다리는 프로세스라, **래퍼만 `kill` 하면 앱이 남습니다**(창을 닫거나 앱을 종료하면 백엔드까지 정리됩니다). 앱을 신호로 끝내려면 `rework` 본 프로세스에 보내세요.
 > AppImage 는 사용자 네임스페이스를 쓸 수 없는 시스템(예: Ubuntu 24.04 기본 설정)에서 Chromium 샌드박스 없이(`--no-sandbox`) 시작합니다 — 그런 곳에서는 `.deb` 를 쓰세요.
 
 릴리스 빌드는 `backend/requirements.lock`(테스트를 통과한 고정 버전)과 `desktop/package-lock.json` 으로 의존성을 고정합니다.

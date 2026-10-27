@@ -144,7 +144,7 @@ try {
   const pids = backendPids();
   check('7. 백엔드는 정확히 하나', pids.length === 1, pids.join(','));
   process.kill(pids[0], 'SIGKILL');
-  const errShown = await waitFor(async () => (page.url().startsWith('file://') && (await page.$('#msg')) ? true : null), 20000);
+  const errShown = await waitFor(async () => (page.url().startsWith('rework-shell://') && (await page.$('#msg')) ? true : null), 20000);
   const msgTxt = errShown ? await page.$eval('#msg', (e) => e.textContent) : '';
   check('7. 백엔드가 죽으면 오류 화면(사유 표시)', errShown && /예기치 않게 종료/.test(msgTxt), msgTxt);
   const logTxt = errShown ? await page.$eval('#log', (e) => e.textContent) : '';

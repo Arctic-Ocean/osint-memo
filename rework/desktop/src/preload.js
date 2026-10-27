@@ -2,12 +2,12 @@
 /**
  * 렌더러에 노출하는 최소 API. 컨텍스트 격리·샌드박스 상태에서 contextBridge 로만 연결한다.
  *  - 분석 UI(http://127.0.0.1:포트): 끌어다 놓은 파일의 실제 경로, 네이티브 ‘열기’ 대화상자의 결과 수신
- *  - 셸이 만든 오류 화면(file://): 다시 시작·종료·로그 폴더 열기
+ *  - 셸이 만든 오류 화면(rework-shell://): 다시 시작·종료·로그 폴더 열기
  * 어느 쪽이든 Node/Electron 객체를 그대로 넘기지 않고, 받는 값은 문자열만 허용한다.
  */
 const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
-if (location.protocol === 'file:') {
+if (location.protocol === 'rework-shell:') {
   contextBridge.exposeInMainWorld('reworkShell', {
     info: () => ipcRenderer.invoke('rework:error-info'),
     restart: () => ipcRenderer.send('rework:restart'),

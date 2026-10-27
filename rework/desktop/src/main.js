@@ -7,7 +7,7 @@
  * 백엔드 API 는 셸이 만든 무작위 토큰(요청 헤더로만 전달, 쿠키·주소에 남지 않음)이 있어야 응답한다. 따라서 같은 컴퓨터의 다른 사용자·
  * 프로세스는 포트를 알아도 API(스크립트 실행·격리 끄기 포함)를 부를 수 없다.
  */
-const { app, BrowserWindow, Menu, dialog, ipcMain, screen, session, shell } = require('electron');
+const { app, BrowserWindow, Menu, dialog, ipcMain, protocol, screen, session, shell } = require('electron');
 const fs = require('node:fs');
 const path = require('node:path');
 
@@ -21,7 +21,14 @@ app.commandLine.appendSwitch('no-proxy-server');
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..');                // 개발 중: rework/
 const PAGES = path.join(__dirname, 'pages');
-const ERROR_URL_PREFIX = require('node:url').pathToFileURL(PAGES).href;
+// 셸이 직접 만든 화면(시작 중 안내·오류 화면)은 file:// 이 아니라 전용 스킴으로 연다. 패키지된 앱은 Electron 퓨즈(grantFileProtocolExtraPrivileges 꺼짐)
+// 때문에 file:// 로 asar 안의 파일을 읽지 못해 이 화면들이 ERR_FILE_NOT_FOUND 로 뜨지 않았고, 백엔드가 죽으면 오류 화면 대신 빈 Chromium 오류창이 보였다.
+// 퓨즈를 풀어 강화를 낮추는 대신, 아래 두 파일만 이 스킴으로 내준다.
+const SHELL_SCHEME = 'rework-shell';
+const SHELL_PAGES = new Set(['splash.html', 'error.html']);
+const shellUrl = (name) => `${SHELL_SCHEME}://pages/${name}`;
+const ERROR_URL_PREFIX = shellUrl('error.html');
+protocol.registerSchemesAsPrivileged([{ scheme: SHELL_SCHEME, privileges: { standard: true, secure: true } }]);
 const IS_DEV = !app.isPackaged;
 
 let win = null;
@@ -177,11 +184,11 @@ function hookToken(origin, token) {
 }
 
 // ---- 화면 전환 ------------------------------------------------------------------------
-function showSplash() { if (win) win.loadFile(path.join(PAGES, 'splash.html')); }
+function showSplash() { if (win) win.loadURL(shellUrl('splash.html')); }
 
 function showError(message, hint) {
   lastError = { message, log: backend ? backend.tail(60) : '', hint: hint || '' };
-  if (win) win.loadFile(path.join(PAGES, 'error.html'));
+  if (win) win.loadURL(shellUrl('error.html'));
 }
 
 let booting = null;
@@ -259,7 +266,7 @@ function showAbout() {
 // ---- IPC(보낸 프레임을 검증한다) -----------------------------------------------------------------
 function fromErrorPage(e) {
   const u = e.senderFrame && e.senderFrame.url;
-  return typeof u === 'string' && u.startsWith(ERROR_URL_PREFIX);
+  return typeof u === 'string' && u === ERROR_URL_PREFIX;
 }
 function fromUi(e) {
   const u = e.senderFrame && e.senderFrame.url;
@@ -293,6 +300,13 @@ for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => { forceQuit = tru
 
 app.whenReady().then(async () => {
   if (!app.hasSingleInstanceLock()) return;
+  protocol.handle(SHELL_SCHEME, (req) => {                // 시작 중 안내·오류 화면: 허용 목록의 두 파일만, 그 밖의 경로는 404
+    let name = '';
+    try { const u = new URL(req.url); name = u.host === 'pages' ? u.pathname.replace(/^\//, '') : ''; } catch { /* 올바르지 않은 주소 */ }
+    if (!SHELL_PAGES.has(name)) return new Response('not found', { status: 404 });
+    try { return new Response(fs.readFileSync(path.join(PAGES, name)), { headers: { 'content-type': 'text/html; charset=utf-8' } }); }
+    catch { return new Response('not found', { status: 404 }); }
+  });
   const userData = app.getPath('userData');
   try {                                                   // 설정·로그·데이터가 든 사용자 폴더는 본인만(다른 로컬 사용자가 AI 키·분석 내용을 못 읽게)
     fs.mkdirSync(userData, { recursive: true, mode: 0o700 });
