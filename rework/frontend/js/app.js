@@ -2,6 +2,8 @@
 import { api } from "/js/api.js";
 import * as WS from "/js/workspace.js";
 import * as DX from "/js/dbgx.js";
+import * as RN from "/js/runner.js";
+import * as NB from "/js/notebook.js";
 
 // ---- 상태 ---------------------------------------------------------------
 const S = {
@@ -234,7 +236,7 @@ async function openPath(path) {
 }
 async function onOpened(info) {
   S.info = info;
-  S.tabs = S.tabs.filter((t) => t.kind === "file");     // 분석 탭은 새 바이너리에 맞게 비우되, 편집 중인 파일 탭(저장 안 한 변경 포함)은 둔다
+  S.tabs = S.tabs.filter((t) => t.kind === "file" || t.kind === "notebook");     // 분석 탭은 새 바이너리에 맞게 비우되, 편집 중인 파일 탭(저장 안 한 변경 포함)은 둔다
   S.active = S.tabs.length ? 0 : -1;
   dbgReset();   // 서버는 바이너리를 열 때 디버그 세션을 종료하므로 프론트 상태도 맞춘다
   $("#file-name").textContent = info.name;
@@ -422,6 +424,7 @@ function openFunc(addr, mode) {
 function closeTab(addr) {
   const i = tabIndex(addr); if (i < 0) return;
   if (S.tabs[i].kind === "file") { WS.closeFileTab(S.tabs[i].path); return; }     // 저장 안 한 변경이 있으면 확인
+  if (S.tabs[i].kind === "notebook") { NB.closeTab(S.tabs[i].path); return; }
   S.tabs.splice(i, 1);
   if (S.active >= S.tabs.length) S.active = S.tabs.length - 1;
   renderTabs(); renderEditor();
@@ -430,9 +433,9 @@ function renderTabs() {
   const bar = $("#tabs"); bar.innerHTML = "";
   S.tabs.forEach((t, i) => {
     const f = S.funcByAddr.get(t.addr);
-    const dirty = WS.isFileTabDirty(t);
-    const name = t.kind === "debug" ? "⬤ 디버거" : t.kind === "file" ? t.path.split("/").pop() : (f && f.name) || hx(t.addr);
-    const tab = el("div", { class: "tab" + (i === S.active ? " active" : "") + (dirty ? " dirty" : ""), title: t.kind === "file" ? t.path : "" },
+    const dirty = WS.isFileTabDirty(t) || NB.isDirty(t);
+    const name = t.kind === "debug" ? "⬤ 디버거" : t.kind === "file" || t.kind === "notebook" ? t.path.split("/").pop() : (f && f.name) || hx(t.addr);
+    const tab = el("div", { class: "tab" + (i === S.active ? " active" : "") + (dirty ? " dirty" : ""), title: t.kind === "file" || t.kind === "notebook" ? t.path : "" },
       el("span", { class: "tab-name" }, (dirty ? "● " : "") + name),
       el("button", { class: "tab-x", title: "닫기", onclick: (e) => { e.stopPropagation(); closeTab(t.addr); } }, "×"));
     tab.onclick = () => { S.active = i; renderTabs(); renderEditor(); };
@@ -452,8 +455,9 @@ async function renderEditor() {
     return;
   }
   ed.innerHTML = "";
-  ed.style.overflow = "";
+  ed.style.overflow = ""; ed.style.display = ""; ed.style.flexDirection = "";
   if (tab.kind === "file") { await WS.renderFileTab(ed, tab); return; }
+  if (tab.kind === "notebook") { await NB.renderTab(ed, tab); return; }
   if (tab.kind === "debug") {
     const tb = el("div", { class: "view-toolbar" });
     const st = S.dbg.state || {};
@@ -724,6 +728,9 @@ const COMMANDS = [
   { id: "debug", icon: "⬤", title: "디버깅 시작 (F5)", run: () => { setSideView("debug"); if (!S.dbg.active) dbgStart(); } },
   { id: "debug-stop", icon: "⏹", title: "디버깅 정지", run: () => dbgStop() },
   { id: "strings", icon: "❝", title: "문자열 보기", run: () => setSideView("strings") },
+  { id: "build", icon: "⚙", title: "빌드·테스트 패널 열기", run: () => RN.openPanel() },
+  { id: "build-run", icon: "▶", title: "빌드 실행 (Ctrl+Shift+B)", run: () => RN.runDefault() },
+  { id: "notebook-new", icon: "📓", title: "새 노트북(.ipynb) 만들기…", run: () => WS.newNotebook("") },
   { id: "goto", icon: "⌖", title: "주소로 이동…", run: async () => {
       const v = await prompt1("주소로 이동", "예: 0x1189"); if (v) navigate(parseInt(v, v.startsWith("0x") ? 16 : 16)); } },
 ];
@@ -1466,6 +1473,7 @@ function showPanel(name) {
   $$("#bottom .ptab").forEach((b) => b.classList.toggle("active", b.dataset.panel === name));
   $$("#bottom .panel").forEach((p) => p.classList.toggle("active", p.dataset.panel === name));
   $("#bottom").classList.remove("collapsed");
+  if (name === "run") RN.onShow();
   if (name === "debugcon") {
     const dc = $("#panel-debugcon");
     // 이미 그려져 있으면 출력만 갱신한다(다시 그리면 입력 중이던 내용·기록 위치가 사라진다)
@@ -1493,10 +1501,12 @@ function keybind(e) {
     if (mod && !e.shiftKey && (e.key === "s" || e.key === "S")) { e.preventDefault(); WS.saveCurrent(); return; }
     if (mod && e.shiftKey && (e.key === "A" || e.key === "a")) { e.preventDefault(); toggleAI(); return; }
     if (mod && e.shiftKey && (e.key === "E" || e.key === "e")) { e.preventDefault(); setSideView("explorer"); return; }
+    if (mod && e.shiftKey && (e.key === "B" || e.key === "b")) { e.preventDefault(); RN.runDefault(); return; }
     if (S.dbg.active && (e.key === "F5" || e.key === "F10" || e.key === "F11")) { /* 아래 디버거 처리로 */ } else return;
   }
-  if (mod && !e.shiftKey && (e.key === "s" || e.key === "S") && curTab() && curTab().kind === "file") { e.preventDefault(); WS.saveCurrent(); return; }
+  if (mod && !e.shiftKey && (e.key === "s" || e.key === "S") && curTab() && (curTab().kind === "file" || curTab().kind === "notebook")) { e.preventDefault(); WS.saveCurrent(); return; }
   if (mod && e.shiftKey && (e.key === "E" || e.key === "e")) { e.preventDefault(); setSideView("explorer"); return; }
+  if (mod && e.shiftKey && (e.key === "B" || e.key === "b")) { e.preventDefault(); RN.runDefault(); return; }
   // 디버거 단축키(세션 활성 시)
   if (S.dbg.active) {
     if (e.key === "F5" && e.shiftKey) { e.preventDefault(); dbgStop(); return; }
@@ -1564,6 +1574,8 @@ function boot() {
   document.addEventListener("keydown", keybind);
   WS.initWorkspace({ S, $, $$, el, toast, setMsg, prompt1, renderTabs, renderEditor, setSideView, openFunc, openPath, showPanel });
   DX.initDbgx({ S, $, el, esc, toast, modal, dbgRefresh, dbgDo, openDebuggerTab });
+  RN.initRunner({ S, $, el, toast, showPanel, WS });
+  NB.initNotebook({ S, $, $$, el, toast, prompt1, renderTabs, renderEditor });
   initFileDrop();
   // 초기 화면
   setSideView("open");

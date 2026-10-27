@@ -796,7 +796,8 @@ def _bwrap_argv(policy: SandboxPolicy, bwrap: str, *, command: list, fds: _FdBag
                 target_src: str | None = None, target_fd: int | None = None, target_name: str = "target",
                 tty_src: str | None = None, seccomp_fd: int | None = None,
                 block_fd: int | None = None, probing: bool = False,
-                disable_userns: bool = False, as_pid1: bool = False, extra: list = ()) -> list:
+                disable_userns: bool = False, as_pid1: bool = False, extra: list = (),
+                rw_binds: list = (), chdir: str = "/tmp", expose_include: bool = False, setenv: dict | None = None) -> list:
     # --unshare-all 의 user ns 는 "가능하면"(try)이라 --uid·--disable-userns 와 어울리지 않는다 → 명시적으로 요구
     a = [bwrap, "--die-with-parent", "--new-session", "--unshare-all", "--unshare-user"]
     if as_pid1:
@@ -808,13 +809,14 @@ def _bwrap_argv(policy: SandboxPolicy, bwrap: str, *, command: list, fds: _FdBag
     if disable_userns:
         a.append("--disable-userns")      # 중첩 user namespace 를 커널 수준에서 금지(seccomp 이 없는 환경 대비)
     a.append("--clearenv")
-    for k, v in (("PATH", "/usr/bin:/bin"), ("HOME", "/tmp"), ("TERM", "dumb"),
-                 ("LANG", "C.UTF-8"), ("USER", "sandbox")):
+    env = {"PATH": "/usr/bin:/bin", "HOME": "/tmp", "TERM": "dumb", "LANG": "C.UTF-8", "USER": "sandbox"}
+    env.update(setenv or {})
+    for k, v in env.items():
         a += ["--setenv", k, v]
 
     # 읽기 전용 최소 루트: 허용 목록(/usr/local·홈·/var·/run 등은 보이지 않는다)
     merged = all(os.path.islink(f"/{n}") for n in ("bin", "lib"))
-    for d in _EXPOSED_USR:
+    for d in _EXPOSED_USR + (("include",) if expose_include else ()):
         p = f"/usr/{d}"
         if os.path.isdir(p):
             a += ["--ro-bind", p, p]
@@ -835,13 +837,16 @@ def _bwrap_argv(policy: SandboxPolicy, bwrap: str, *, command: list, fds: _FdBag
         a += ["--ro-bind-data", str(fds.data(text.encode())), dst]
     a += ["--proc", "/proc", "--dev", "/dev",
           "--size", str(min(policy.tmp_mb, 64) * 1024 * 1024), "--tmpfs", "/dev/shm",
-          "--size", str(policy.tmp_mb * 1024 * 1024), "--tmpfs", "/tmp", "--chdir", "/tmp"]
+          "--size", str(policy.tmp_mb * 1024 * 1024), "--tmpfs", "/tmp"]
     if tty_src:
         a += ["--dev-bind", tty_src, SB_TTY]          # 호스트 pty 하나만 노출
     if target_fd is not None:                # 임시 폴더가 noexec 일 때: 샌드박스 tmpfs 안에 내용을 복사해 둔다
         a += ["--perms", "0555", "--file", str(target_fd), f"{SB_TARGET_DIR}/{target_name}"]
     elif target_src:
         a += ["--ro-bind", target_src, f"{SB_TARGET_DIR}/{target_name}"]
+    for src, dst in rw_binds:                # 작업 실행: 작업 폴더 복사본 하나만 쓰기 가능으로 붙인다
+        a += ["--bind", src, dst]
+    a += ["--chdir", chdir]
     for real, dest, fd in extra:             # 검증하며 붙들어 둔 fd 로 bind — 이후에 경로가 바뀌어도 검증한 대상이 붙는다
         a += ["--ro-bind", f"/proc/self/fd/{fd}", dest]
     # bwrap 의 루트와 /dev 는 쓰기 가능한 tmpfs(크기 제한 없음) — 잠가야 RAM 을 무제한으로 쓰지 못한다.
@@ -1149,7 +1154,7 @@ class ResourceWatch(threading.Thread):
     def _tick(self, cpu_limit, mem_limit_kb, proc_limit):
         root = self.launch.root_pid
         pids = [root] + descendants(root)
-        if self.launch.gdb_host_pid is None and not self.launch.as_pid1:      # init 모드: gdb 는 init 의 첫 자식(ns pid 2)
+        if self.launch.gdb_host_pid is None and not self.launch.as_pid1 and not self.launch.job:      # init 모드: gdb 는 init 의 첫 자식(ns pid 2)
             for p in pids:
                 ns = _nspid(p)
                 if len(ns) >= 2 and ns[-1] == 2:
@@ -1220,6 +1225,8 @@ class Launch:
     cpu_backstop: int = 0              # 모든 프로세스(gdb 포함)에 거는 CPU 시간 받침 한도(초)
     cg_ok: bool = False                # gdb·대상이 실제로 cgroup 에 담겼음을 확인했는가
     watch: "ResourceWatch | None" = None
+    job: bool = False                  # 디버거가 아니라 작업 실행(빌드·테스트)용 — gdb 몫을 따로 빼지 않는다
+    job_dir: str | None = None         # 작업 실행: 샌드박스의 /work 로 붙는 호스트 폴더(작업 폴더 복사본)
     _policy: "SandboxPolicy | None" = None
     _proc: object = None
     _fds: _FdBag | None = None
@@ -1533,6 +1540,90 @@ def prepare(policy: SandboxPolicy, target_path: str, tty_src: str, gdb_args: lis
         launch = Launch(argv=argv, pass_fds=tuple(fds.fds), popen_kwargs=kw, tty_target=SB_TTY,
                         target_path=f"{SB_TARGET_DIR}/{name}", workdir=workdir, uid=uid, info=info,
                         cgroup=cg, block_w=block_w, as_pid1=status.as_pid1, _fds=fds)
+        launch._policy = policy
+        launch.cpu_backstop = max(policy.cpu_total_seconds, policy.cpu_seconds)
+        return launch
+    except BaseException:
+        if block_w is not None:
+            try:
+                os.close(block_w)
+            except OSError:
+                pass
+        if cg:
+            cg.cleanup()
+        fds.close()
+        if workdir:
+            shutil.rmtree(workdir, ignore_errors=True)
+        raise
+
+
+def prepare_job(policy: SandboxPolicy, command: list) -> Launch:
+    """작업 실행(빌드·테스트)용 격리를 준비한다. `launch.job_dir` 는 호스트의 빈 폴더이고, 샌드박스 안에서는 `/work`(쓰기 가능, 시작 폴더)다.
+    호출자가 시작 전에 그 폴더에 작업 폴더 복사본을 채우고, 끝난 뒤 검증해서 되가져온다. 그 밖의 파일시스템은 디버거와 같은 읽기 전용 최소 루트
+    (+ 컴파일용 /usr/include)이고 네트워크는 정책(기본 차단), 자원 한도·seccomp·cgroup 도 같다. 디버거 보호(gdb)는 해당 없다."""
+    status = probe()
+    if not status.available:
+        raise SandboxError(status.reason + (" " + status.hint if status.hint else ""))
+    kw = _drop_kwargs(policy) if status.drop_ok else {}
+    uid = kw.get("user")
+    gid = kw.get("group", uid)
+    fds = _FdBag()
+    try:
+        extra = resolve_extra_ro(policy.extra_ro)
+    except ValueError as e:
+        raise SandboxError(str(e))
+    fds.fds.extend(fd for _, _, fd in extra)
+    workdir = None
+    cg = None
+    block_r = block_w = None
+    try:
+        if uid is not None:
+            for real, dest, _fd in extra:
+                bad = _accessible_as(uid, gid, real)
+                if bad:
+                    raise SandboxError(f"추가 노출 경로 {dest} 를 격리 사용자(uid {uid})가 읽을 수 없습니다({bad} 의 권한).")
+        try:
+            _sweep_stale()
+        except Exception:                                      # noqa: BLE001
+            pass
+        workdir = tempfile.mkdtemp(prefix=WORKDIR_PREFIX)
+        with open(os.path.join(workdir, ".owner"), "w") as fh:
+            fh.write(f"{os.getpid()} {_own_ns()}")
+        job_dir = os.path.join(workdir, "work")
+        os.mkdir(job_dir)
+        if uid is not None:
+            os.chown(job_dir, uid, gid)
+            os.chmod(workdir, 0o711)
+        os.chmod(job_dir, 0o700)
+        seccomp_fd = None
+        if policy.seccomp and seccomp_supported():
+            bpf = build_seccomp_bpf()
+            if bpf:
+                seccomp_fd = fds.data(bpf)
+        cg = CgroupLimit.create(f"rework-sbx-{_own_ns()}-{os.getpid()}-{os.path.basename(workdir)[len(WORKDIR_PREFIX):]}",
+                                (policy.memory_mb * 2 + GDB_AS_MARGIN_MB) * 1024 * 1024, policy.max_processes + 8)
+        if cg:
+            block_r, block_w = os.pipe()
+            os.set_inheritable(block_r, True)
+            fds.fds.append(block_r)
+        argv = _bwrap_argv(policy, status.bwrap, fds=fds, seccomp_fd=seccomp_fd, block_fd=block_r,
+                           disable_userns=status.disable_userns, as_pid1=False, extra=extra,
+                           rw_binds=[(job_dir, "/work")], chdir="/work", expose_include=True,
+                           setenv={"PYTHONDONTWRITEBYTECODE": "1", "TMPDIR": "/tmp"}, command=list(command))
+        host_uid = uid if uid is not None else os.geteuid()
+        kw = dict(kw)
+        kw["preexec_fn"], allowance = _make_preexec(policy, host_uid)
+        info = describe(policy, status, seccomp=seccomp_fd is not None, cgroup=cg, uid=uid,
+                        proc_allowance=allowance, extra_count=len(extra))
+        info["layers"] = [l for l in info.get("layers", []) if l["id"] != "gdbguard"]
+        for l in info["layers"]:
+            if l["id"] == "copy":
+                l["label"], l["detail"] = "작업 폴더 복사본에서 실행", "원본 폴더는 건드리지 않고, 끝난 뒤 새로 생기거나 바뀐 파일만 검증해서 되가져옵니다"
+            elif l["id"] == "fs":
+                l["detail"] = l["detail"].replace("/usr 일부만 읽기 전용", "/usr 일부(헤더 포함)만 읽기 전용") + ", 쓸 수 있는 곳은 /work(복사본)와 /tmp 뿐"
+        launch = Launch(argv=argv, pass_fds=tuple(fds.fds), popen_kwargs=kw, tty_target="", target_path="/work",
+                        workdir=workdir, uid=uid, info=info, cgroup=cg, block_w=block_w, as_pid1=False, _fds=fds,
+                        job=True, job_dir=job_dir)
         launch._policy = policy
         launch.cpu_backstop = max(policy.cpu_total_seconds, policy.cpu_seconds)
         return launch

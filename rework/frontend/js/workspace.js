@@ -1,6 +1,7 @@
 // rework — 작업 폴더(탐색기) · 소스 편집기(Monaco)
 // app.js 가 initWorkspace(ctx) 로 필요한 도우미를 넘겨 준다. Monaco 는 첫 파일을 열 때 비로소 불러온다(시작 속도에 영향 없음).
 import { api } from "/js/api.js";
+import * as NB from "/js/notebook.js";
 
 let C = null;                       // app.js 가 넘겨 준 도우미({S,$,$$,el,toast,setMsg,prompt1,renderTabs,renderEditor,setSideView,openFunc,openPath,showPanel})
 const W = {
@@ -39,7 +40,7 @@ const joinRel = (dir, name) => (dir ? dir + "/" + name : name);
 
 export function anyDirty() {
   for (const f of W.files.values()) if (isDirty(f)) return true;
-  return false;
+  return NB.anyDirty();
 }
 function isDirty(f) { return !!f && f.model.getAlternativeVersionId() !== f.savedAlt; }
 
@@ -56,6 +57,7 @@ export async function openFolder(path) {
 async function closeFolder() {
   if (anyDirty() && !confirm("저장하지 않은 변경이 있는 파일이 있습니다. 그래도 작업 폴더를 닫을까요?")) return;
   for (const rel of [...W.files.keys()]) closeFileTab(rel, true);
+  NB.closeUnder("");
   const s = await api.wsClose();
   W.root = s.root; W.cache.clear(); W.expanded.clear(); W.search = null;
   renderExplorer();
@@ -209,7 +211,7 @@ function showMenu(ev, rel, isDir) {
   closeMenu();
   const items = [];
   const base = isDir ? rel : dirName(rel);
-  items.push(["새 파일", () => newEntry(base, "file")], ["새 폴더", () => newEntry(base, "dir")]);
+  items.push(["새 파일", () => newEntry(base, "file")], ["새 노트북", () => newNotebook(base)], ["새 폴더", () => newEntry(base, "dir")]);
   if (rel) items.push(["이름 바꾸기", () => renameEntry(rel)], ["삭제", () => deleteEntry(rel, isDir)], ["상대 경로 복사", () => copyText(rel)], ["전체 경로 복사", () => copyText(absPath(rel))]);
   menuEl = C.el("div", { class: "ctx-menu", style: `left:${Math.min(ev.clientX, window.innerWidth - 180)}px;top:${Math.min(ev.clientY, window.innerHeight - 40 - items.length * 28)}px` });
   for (const [label, fn] of items) menuEl.append(C.el("div", { class: "ctx-item", onclick: (e) => { e.stopPropagation(); closeMenu(); fn(); } }, label));
@@ -229,6 +231,15 @@ async function newEntry(dir, kind) {
     if (kind === "file") await openFile(rel);
   } catch (err) { C.toast("만들지 못했습니다: " + err.message, "err"); }
 }
+/** 작업 폴더에 빈 노트북(.ipynb)을 만들어 연다. */
+export async function newNotebook(dir = "") {
+  if (!W.root) { C.toast("먼저 작업 폴더를 여세요.", "err"); return; }
+  const rel = await NB.newNotebookFlow(dir);
+  if (!rel) return;
+  if (dir) W.expanded.add(dir);
+  await refreshTree([dir]);
+  await NB.openNotebook(rel);
+}
 async function renameEntry(rel) {
   const name = await C.prompt1("이름 바꾸기", "새 이름(같은 폴더 안)", baseName(rel));
   if (!name || name.trim() === baseName(rel)) return;
@@ -245,6 +256,7 @@ async function renameEntry(rel) {
         if (W.shown === old) W.shown = nrel;
       }
     }
+    NB.renameDocs(rel, to);
     if (W.expanded.delete(rel)) W.expanded.add(to);
     await refreshTree([dirName(rel), dirName(to)]);
     C.renderTabs();
@@ -260,6 +272,7 @@ async function deleteEntry(rel, isDir) {
       await api.wsOp({ op: "delete", path: rel, recursive: true });
     }
     for (const old of [...W.files.keys()]) if (old === rel || old.startsWith(rel + "/")) closeFileTab(old, true);
+    NB.closeUnder(rel);
     W.expanded.delete(rel);
     await refreshTree([dirName(rel)]);
   } catch (err) { C.toast("삭제하지 못했습니다: " + err.message, "err"); }
@@ -402,6 +415,7 @@ const LANG_LABEL = { x86asm: "어셈블리(x86)", plaintext: "일반 텍스트",
 // ---- 파일 탭 --------------------------------------------------------------------------------
 export async function openFile(rel, pos) {
   const S = C.S;
+  if (NB.isNotebookPath(rel)) { await NB.openNotebook(rel); return; }          // .ipynb 는 셀 편집기로 연다
   const tabAddr = "file:" + rel;
   let idx = S.tabs.findIndex((t) => t.addr === tabAddr);
   if (idx < 0) {
@@ -513,8 +527,30 @@ export function closeFileTab(rel, force = false) {
 }
 
 // ---- 저장·충돌·인코딩·외부 변경 ----------------------------------------------------------------
+/** 빌드 전에: 저장하지 않은 파일을 모두 저장한다(충돌이면 저장 함수가 확인을 묻는다). */
+export async function saveAll() {
+  for (const [rel, f] of W.files) if (isDirty(f) && !f.readonly) await saveFile(rel);
+  await NB.saveAll();
+}
+/** 빌드·시험이 파일을 만들거나 바꾼 뒤: 탐색기를 새로 고치고, 열려 있는 파일 중 디스크에서 바뀐 것(내가 안 고친 것)은 새 내용으로 바꾼다. */
+export async function refreshAfterRun() {
+  if (W.root) await refreshTree().catch(() => {});
+  for (const [rel, f] of W.files) {
+    let st;
+    try { st = await api.wsStat(rel); } catch { continue; }
+    if (st.mtime_ns === f.mtime_ns || isDirty(f)) continue;
+    try {
+      const r = await api.wsFile(rel);
+      f.model.setValue(r.text); f.encoding = r.encoding; f.mtime_ns = r.mtime_ns; f.savedAlt = f.model.getAlternativeVersionId(); f.lastDirty = false;
+      updateDirtyDot(rel);
+    } catch { /* 지워졌거나 바이너리가 된 파일은 그대로 둔다 */ }
+  }
+  C.renderTabs();
+}
+
 export async function saveCurrent() {
   const t = C.S.tabs[C.S.active];
+  if (t && t.kind === "notebook") return NB.saveCurrent();
   if (!t || t.kind !== "file") return false;
   return saveFile(t.path);
 }

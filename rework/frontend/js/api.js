@@ -65,8 +65,21 @@ export const api = {
   wsOp:       (body) => j("POST", "/api/ws/op", body),
   wsSearch:   (q, caseSensitive = false) => j("GET", `/api/ws/search?q=${encodeURIComponent(q)}&case=${caseSensitive}`),
 
+  // 빌드·테스트 러너
+  runTasks:   () => j("GET", "/api/run/tasks"),
+  runStart:   (payload) => j("POST", "/api/run/start", payload),
+  runState:   (since = 0) => j("GET", `/api/run/state?since=${since}`),
+  runStop:    () => j("POST", "/api/run/stop"),
+
+  // 노트북 커널
+  nbExec:      (code) => j("POST", "/api/nb/exec", { code }),
+  nbPoll:      (since = 0) => j("GET", `/api/nb/poll?since=${since}`),
+  nbInterrupt: () => j("POST", "/api/nb/interrupt"),
+  nbRestart:   () => j("POST", "/api/nb/restart"),
+  nbInfo:      () => j("GET", "/api/nb/info"),
+
   // 디버거 (GDB/MI)
-  dbgStart:   (breakpoints = [], sandbox, remote) =>
+  dbgStart:  (breakpoints = [], sandbox, remote) =>
                 j("POST", "/api/debug/start", { breakpoints, ...(sandbox ? { sandbox } : {}), ...(remote ? { remote } : {}) }),
   sandboxStatus:  () => j("GET", "/api/sandbox/status"),
   sandboxRecheck: () => j("POST", "/api/sandbox/recheck"),

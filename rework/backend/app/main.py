@@ -31,6 +31,8 @@ from .ai import AIConfig, chat as ai_chat
 from .debug import DebugSession, DebugError, LOG_TAIL_CHARS, HAVE_POSIX_DEBUGGER
 from .workspace import Workspace, WorkspaceError
 from . import sandbox as sbx
+from .runner import Runner, RunError, detect_tasks
+from .notebook import Kernel, KernelError
 from . import __version__
 
 # ---- 경로 ---------------------------------------------------------------
@@ -85,6 +87,10 @@ async def lifespan(_app):
         yield
     finally:
         _teardown_debug()
+        try:
+            RUNNER.shutdown()
+        except Exception:                                  # noqa: BLE001
+            pass
 
 
 # 자동 문서(/api/docs·/redoc)는 외부 CDN 의 스크립트를 앱 출처에서 실행하므로 끈다
@@ -619,7 +625,96 @@ def _script_api(prog: Program):
         def xrefs(addr):
             return prog.xrefs_to(parse_addr(addr))
 
+        @staticmethod
+        def decompile(addr):
+            """함수의 의사코드를 문자열로(print 하면 읽기 좋다)."""
+            d = Decompiler(prog).decompile(parse_addr(addr))
+            return "\n".join("    " * l["indent"] + l["text"] for l in d["lines"])
+
+        @staticmethod
+        def table(rows, cols=None, limit=200):
+            """딕셔너리·튜플 목록을 열 맞춰 찍는다."""
+            rows = list(rows)[:limit]
+            if rows and isinstance(rows[0], dict):
+                cols = cols or list(rows[0].keys())
+                data = [[str(r.get(c, "")) for c in cols] for r in rows]
+            else:
+                data = [[str(x) for x in (r if isinstance(r, (list, tuple)) else (r,))] for r in rows]
+                cols = cols or [str(i) for i in range(len(data[0]))] if data else []
+            widths = [max([len(str(c))] + [len(r[i]) for r in data if i < len(r)]) for i, c in enumerate(cols)]
+            print("  ".join(str(c).ljust(widths[i]) for i, c in enumerate(cols)))
+            print("  ".join("-" * w for w in widths))
+            for r in data:
+                print("  ".join(r[i].ljust(widths[i]) if i < len(r) else "" for i in range(len(cols))))
+
     return RK()
+
+
+class _LiveRK:
+    """노트북 셀의 `rk`: 쓸 때마다 '지금 열린' 바이너리에 연결한다(바이너리를 바꿔도 커널의 변수는 그대로 남는다)."""
+
+    def _api(self):
+        try:
+            return _script_api(STATE.prog())
+        except HTTPException:
+            raise RuntimeError("열린 바이너리가 없습니다. 먼저 파일을 여세요.") from None
+
+    def __getattr__(self, name):
+        if name.startswith("__"):
+            raise AttributeError(name)
+        return getattr(self._api(), name)
+
+    def __repr__(self):
+        try:
+            m = STATE.prog().model
+            return f"<rk {m.name} {m.arch}/{m.bits}bit 함수 {len(m.functions)}개>"
+        except HTTPException:
+            return "<rk (열린 바이너리 없음)>"
+
+
+# ---- 노트북 커널 ---------------------------------------------------------
+_KERNEL: Kernel | None = None
+_KERNEL_LOCK = threading.Lock()
+
+
+def _kernel() -> Kernel:
+    global _KERNEL
+    with _KERNEL_LOCK:
+        if _KERNEL is None:
+            _KERNEL = Kernel(lambda: {"__name__": "__main__", "rk": _LiveRK()})
+        return _KERNEL
+
+
+@app.post("/api/nb/exec")
+def api_nb_exec(payload: dict = Body(...)):
+    code = payload.get("code")
+    if not isinstance(code, str):
+        raise HTTPException(400, "code 문자열이 필요합니다.")
+    try:
+        return _kernel().start(code)
+    except KernelError as e:
+        raise HTTPException(409 if "이미 실행" in str(e) else 400, str(e))
+
+
+@app.get("/api/nb/poll")
+async def api_nb_poll(since: int = 0):
+    return _kernel().poll(since)
+
+
+@app.post("/api/nb/interrupt")
+def api_nb_interrupt():
+    return {"interrupted": _kernel().interrupt()}
+
+
+@app.post("/api/nb/restart")
+def api_nb_restart():
+    _kernel().restart()
+    return _kernel().info()
+
+
+@app.get("/api/nb/info")
+def api_nb_info():
+    return _kernel().info()
 
 
 # ---- AI 채팅 -----------------------------------------------------------
@@ -771,6 +866,65 @@ def api_ws_op(payload: dict = Body(...)):
 @app.get("/api/ws/search")
 def api_ws_search(q: str, case: bool = False, glob: str = ""):
     return WS.search(q, case, glob)
+
+
+# ---- 빌드·테스트 러너 ----------------------------------------------------
+RUNNER = Runner()
+
+
+def _need_ws_root() -> str:
+    if not WS.root:
+        raise HTTPException(400, "먼저 작업 폴더를 여세요(탐색기에서 폴더 열기).")
+    return WS.root
+
+
+@app.get("/api/run/tasks")
+def api_run_tasks():
+    root = _need_ws_root()
+    st = sbx.probe()
+    return {"root": root, "tasks": detect_tasks(root),
+            "sandbox": {"available": st.available, "reason": None if st.available else st.reason, "hint": st.hint,
+                        "mode": SANDBOX_CFG.policy.mode, "network": SANDBOX_CFG.policy.network}}
+
+
+@app.post("/api/run/start")
+def api_run_start(payload: dict = Body(...)):
+    root = _need_ws_root()
+    command = payload.get("command")
+    if not isinstance(command, str):
+        raise HTTPException(400, "command 문자열이 필요합니다.")
+    timeout = payload.get("timeout", 300)
+    if isinstance(timeout, bool) or not isinstance(timeout, int):
+        raise HTTPException(400, "timeout 은 정수(초)여야 합니다.")
+    use_sandbox = payload.get("sandbox", True)
+    if not isinstance(use_sandbox, bool):
+        raise HTTPException(400, "sandbox 는 true/false 여야 합니다.")
+    try:
+        override = {"network": payload["network"]} if "network" in payload else None
+        policy = SANDBOX_CFG.effective(override)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    if use_sandbox and policy.enabled and policy.network == "host" and not AUTH_TOKEN:
+        raise HTTPException(400, "호스트 네트워크 공유는 토큰 인증이 켜져 있을 때만 쓸 수 있습니다. 서버를 `run.py --require-token` 으로 다시 실행하세요.")
+    if use_sandbox and not policy.enabled:
+        raise HTTPException(400, "저장된 설정에서 격리가 꺼져 있습니다. 디버그 사이드바의 격리 카드에서 켜거나 ‘격리 없이 실행’을 선택하세요.")
+    try:
+        job = RUNNER.start(root, command, policy, WS._protected(), timeout=timeout, sandbox=use_sandbox,
+                           sync_deletes=bool(payload.get("sync_deletes")))
+    except RunError as e:
+        raise HTTPException(400, str(e))
+    return job.snapshot(0)
+
+
+@app.get("/api/run/state")
+async def api_run_state(since: int = 0):
+    # 폴링이 막히지 않게 이벤트 루프에서 바로 돌려준다(메모리 조회뿐)
+    return RUNNER.state(max(0, since))
+
+
+@app.post("/api/run/stop")
+def api_run_stop():
+    return {"stopped": RUNNER.stop()}
 
 
 # ---- 디버거 (GDB/MI) ---------------------------------------------------
