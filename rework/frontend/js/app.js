@@ -1,6 +1,7 @@
 // rework — 프론트엔드 메인 로직
 import { api } from "/js/api.js";
 import * as WS from "/js/workspace.js";
+import * as DX from "/js/dbgx.js";
 
 // ---- 상태 ---------------------------------------------------------------
 const S = {
@@ -467,12 +468,15 @@ async function renderEditor() {
       mk("» 명령", "stepi", "stepi", run || dead),
       mk("⤴ 함수끝", "Shift+F11", "finish", run || dead),
       mk("⏸ 멈춤", "실행 중 멈춤", "interrupt", !run),
+      ...DX.reverseButtons(st, mk),
       el("span", { class: "vt-title" }, "디버거"),
       el("span", { class: "vt-spacer" }),
-      el("span", { class: "dbg-badge " + (st.status || "") }, statusText +
+      el("span", { class: "dbg-badge " + (st.status || "") }, statusText + (st.remote ? ` · 원격 ${st.remote}` : "") +
         (st.frame ? ` · ${st.frame.func || ""} @ ${st.frame.addr || ""}` : "")),
       el("button", { class: "vt-btn", onclick: () => dbgStop() }, "⏹ 정지"));
     ed.append(tb);
+    const why = DX.stopSummary(st);
+    if (why) ed.append(el("div", { class: "dbg-stopbar " + why.kind }, why.text));
     const view = el("div", { style: "flex:1 1 auto;min-height:0;overflow:hidden;display:flex" });
     ed.append(view);
     renderDebuggerWorkspace(view);
@@ -1000,6 +1004,16 @@ function renderDebugSidebar() {
     wrap.append(el("button", { class: "primary", style: "margin-top:8px;width:100%",
       ...((unavailable || unknown) && !S.sbxOff ? { disabled: "" } : {}),
       onclick: () => dbgStart() }, S.sbxOff ? "⚠ 격리 없이 시작" : "▶ 디버깅 시작"));
+    const rcb = el("input", { type: "checkbox", ...(S.dbgRemoteOn ? { checked: "" } : {}),
+      onchange: (e) => { S.dbgRemoteOn = e.target.checked; renderDebugSidebar(); } });
+    wrap.append(el("label", { class: "dbg-remote-opt", title: "프로그램을 이 컴퓨터가 아니라 gdbserver 가 도는 원격(임베디드 보드·VM 등)에서 실행합니다" },
+      rcb, " 원격 gdbserver 에 연결"));
+    if (S.dbgRemoteOn) {
+      wrap.append(el("input", { id: "dbg-remote", type: "text", spellcheck: "false", placeholder: "host:port — 예: 192.168.0.5:1234",
+        value: S.dbgRemote || "", oninput: (e) => { S.dbgRemote = e.target.value; } }));
+      wrap.append(el("div", { class: "dbg-hint" },
+        "원격에서 `gdbserver :1234 ./program` 을 먼저 실행해 두세요. 여기서 연 바이너리는 같은 파일이어야 심볼이 맞습니다. 이 모드는 서버가 토큰 인증(`--require-token`)일 때만 쓸 수 있고, 로컬에서는 프로그램이 실행되지 않습니다."));
+    }
     wrap.append(el("div", { class: "dbg-hint" },
       "시작하면 main에 중단점이 설정됩니다. 입력이 필요한 프로그램은 하단 ‘디버그 콘솔’의 입력창으로 보내거나, 실행 인자에 `< 파일`을 쓰세요(격리에서는 그 파일의 폴더를 ‘추가 경로’에 넣어야 합니다)."));
     body.append(wrap);
@@ -1012,6 +1026,7 @@ function renderDebugSidebar() {
     el("b", {}, statusText),
     st.stop_reason ? el("span", {}, " · " + st.stop_reason) : null,
     st.frame ? el("span", { class: "dbg-frame" }, ` · ${st.frame.func || ""} @ ${st.frame.addr || ""}`) : null,
+    st.remote ? el("span", { class: "dbg-badge", title: "원격 gdbserver — 프로그램은 원격에서 실행 중입니다" }, "원격 " + st.remote) : null,
     st.status === "exited" && st.exit_code != null ? el("span", {}, ` · 종료코드 ${st.exit_code}`) : null,
     st.sandbox ? el("span", {}, " ") : null, sandboxBadge(st.sandbox));
   body.append(sline);
@@ -1042,28 +1057,17 @@ function renderDebugSidebar() {
   // 콜 스택
   body.append(el("div", { class: "side-head", style: "border-top:none" }, "콜 스택"));
   if (!d.stack.length) body.append(el("div", { class: "empty-list", style: "padding:8px 12px" }, "—"));
+  const selLevel = (d.state && d.state.selected_frame) || 0;
   for (const f of d.stack) {
-    body.append(el("div", { class: "list-item", onclick: () => f.addr && openDebuggerTab() },
+    body.append(el("div", { class: "list-item" + (Number(f.level) === selLevel ? " sel-frame" : ""), title: "클릭: 이 프레임의 지역변수·레지스터 보기",
+      onclick: async () => { try { await api.dbgFrame(Number(f.level)); await dbgRefresh(); openDebuggerTab(); } catch (err) { toast("프레임 선택 실패: " + err.message, "err"); } } },
       el("span", { class: "li-addr" }, f.level), el("span", { class: "li-name" }, f.func || f.addr),
       f.line ? el("span", { class: "li-sub" }, `:${f.line}`) : null));
   }
   if (d.stackTruncated) body.append(el("div", { class: "empty-list", style: "padding:4px 12px" },
     `… 위쪽 ${d.stack.length}개 프레임만 표시합니다(스택이 매우 깊습니다 — 무한 재귀일 수 있습니다).`));
-  // 중단점
-  const bhead = el("div", { class: "side-head" }, "중단점",
-    el("button", { class: "mini-btn", title: "함수/위치로 추가", onclick: dbgAddBreakPrompt }, "+"));
-  body.append(bhead);
-  if (!d.breaks.length) body.append(el("div", { class: "empty-list", style: "padding:8px 12px" }, "없음"));
-  for (const b of d.breaks) {
-    const row = el("div", { class: "bp-item" },
-      el("input", { type: "checkbox", ...(b.enabled ? { checked: "" } : {}),
-        onchange: () => api.dbgBreak({ op: "toggle", number: b.number, enable: !b.enabled }).then(dbgRefresh) }),
-      el("span", { class: "li-addr" }, b.addr ? b.addr.slice(-8) : ""),
-      el("span", { class: "li-name", onclick: () => openDebuggerTab() }, b.func || b.what || b.line || "?"),
-      el("button", { class: "bp-del", title: "삭제",
-        onclick: () => api.dbgBreak({ op: "delete", number: b.number }).then(dbgRefresh) }, "×"));
-    body.append(row);
-  }
+  // 중단점 · 로그포인트 · 워치포인트
+  DX.renderBreakpoints(body);
 }
 
 let dbgStarting = false;
@@ -1083,7 +1087,9 @@ async function dbgStart() {
   }
   setMsg("디버거 시작 중…");
   try {
-    const started = await api.dbgStart(["main"], sandbox);
+    const remote = S.dbgRemoteOn ? (S.dbgRemote || "").trim() : "";
+    if (S.dbgRemoteOn && !remote) { toast("원격 주소(host:port)를 입력하세요.", "err"); dbgStarting = false; setMsg(""); return; }
+    const started = await api.dbgStart(["main"], sandbox, remote || undefined);
     S.dbg.active = true;
     S.dbg.argsCache = args;
     const missed = started.failed_breakpoints || [];
@@ -1235,6 +1241,7 @@ async function dbgRefresh() {
       try { S.dbg.breaks = await api.dbgBreaks(); } catch {}
     }
   } catch (err) { /* 세션 종료됨 */ }
+  try { await DX.evalWatches(); } catch {}
   if (S.sideView === "debug") renderDebugSidebar();
   if (curTab() && curTab().addr === DBG_TAB) renderEditor();
   await dbgRefreshOutput();
@@ -1257,12 +1264,6 @@ async function dbgRefreshOutput() {
   } catch {}
 }
 
-async function dbgAddBreakPrompt() {
-  const v = await prompt1("중단점 추가", "함수 이름 또는 위치 (예: main, check, *0x1189, file.c:42)");
-  if (!v) return;
-  try { await api.dbgBreak({ op: "add", location: v }); await dbgRefresh(); }
-  catch (err) { toast("중단점 실패: " + err.message, "err"); }
-}
 async function dbgToggleBreakAt(addr) {
   // 라이브 디스어셈블리에서 런타임 주소에 중단점 토글
   const existing = S.dbg.breaks.find((b) => b.addr && parseInt(b.addr, 16) === parseInt(addr, 16));
@@ -1283,19 +1284,22 @@ function renderDebuggerWorkspace(ed) {
   ed.innerHTML = "";
   const d = S.dbg;
   const st = d.state || {};
+  const selLevel = st.selected_frame || 0;
+  const selFrame = d.stack.find((f) => Number(f.level) === selLevel);
   const wrap = el("div", { class: "dbgws" });
   // 좌: 라이브 디스어셈블리
   const left = el("div", { class: "dbgws-disasm" });
-  left.append(el("div", { class: "dbgws-head" }, "라이브 디스어셈블리 (현재 $pc)"));
-  const curAddr = st.frame && st.frame.addr ? parseInt(st.frame.addr, 16) : null;
+  left.append(el("div", { class: "dbgws-head" }, selLevel ? `라이브 디스어셈블리 (프레임 #${selLevel}의 pc)` : "라이브 디스어셈블리 (현재 $pc)",
+    el("span", { class: "dbgws-sub" }, "클릭: 중단점 · Alt+클릭: 여기까지 실행")));
+  const curAddr = selFrame && selFrame.addr ? parseInt(selFrame.addr, 16) : (st.frame && st.frame.addr ? parseInt(st.frame.addr, 16) : null);
   const bpAddrs = new Set(d.breaks.filter((b) => b.addr).map((b) => parseInt(b.addr, 16)));
   if (!d.disasm.length) left.append(el("div", { class: "empty-list" }, st.status === "exited" ? "프로그램이 종료되었습니다." : "중단 상태가 아닙니다."));
   for (const ins of d.disasm) {
     const a = parseInt(ins.addr, 16);
     const isCur = curAddr != null && a === curAddr;
     const hasBp = bpAddrs.has(a);
-    const row = el("div", { class: "dbg-ins" + (isCur ? " cur" : ""), title: "클릭: 중단점 토글",
-      onclick: () => dbgToggleBreakAt(ins.addr) });
+    const row = el("div", { class: "dbg-ins" + (isCur ? " cur" : ""), title: "클릭: 중단점 토글 · Alt+클릭: 여기까지 실행",
+      onclick: (e) => (e.altKey ? DX.runTo(ins.addr) : dbgToggleBreakAt(ins.addr)) });
     row.innerHTML =
       `<span class="dbg-bp ${hasBp ? "on" : ""}">●</span>` +
       `<span class="dbg-arrow">${isCur ? "▶" : ""}</span>` +
@@ -1304,32 +1308,37 @@ function renderDebuggerWorkspace(ed) {
       (ins.func ? `<span class="dbg-fn">${esc(ins.func)}${ins.offset ? "+" + ins.offset : ""}</span>` : "");
     left.append(row);
   }
-  // 우: 레지스터 / 스택 / 지역변수
+  // 우: 탭(상태 · 스택 · 메모리 · 감시식)
   const right = el("div", { class: "dbgws-side" });
-  // 레지스터
-  right.append(el("div", { class: "dbgws-head" }, "레지스터 (더블클릭 수정)"));
-  const regGrid = el("div", { class: "reg-grid" });
-  const showRegs = d.regs.filter((r) => /^(rax|rbx|rcx|rdx|rsi|rdi|rbp|rsp|r8|r9|r10|r11|r12|r13|r14|r15|rip|eflags|pc|sp|lr|x\d+|w\d+)$/i.test(r.name)).slice(0, 40);
-  for (const r of (showRegs.length ? showRegs : d.regs.slice(0, 32))) {
-    const changed = d.prevRegs[r.name] !== undefined && d.prevRegs[r.name] !== r.value;
-    const cell = el("div", { class: "reg" + (changed ? " changed" : ""), title: "더블클릭: 값 수정",
-      ondblclick: () => editReg(r.name, r.value) },
-      el("span", { class: "reg-n" }, r.name),
-      el("span", { class: "reg-v" }, r.value));
-    regGrid.append(cell);
-  }
-  right.append(regGrid);
-  // 지역변수/인자
-  right.append(el("div", { class: "dbgws-head" }, "지역변수 · 인자 (더블클릭 수정)"));
-  const locWrap = el("div", { class: "loc-list" });
-  if (!d.locals.length) locWrap.append(el("div", { class: "empty-list" }, "—"));
-  for (const v of d.locals) {
-    locWrap.append(el("div", { class: "loc" + (v.arg ? " arg" : ""), title: "더블클릭: 값 수정",
-      ondblclick: () => editVar(v.name, v.value) },
-      el("span", { class: "loc-n" }, (v.arg ? "arg " : "") + v.name),
-      el("span", { class: "loc-v" }, String(v.value ?? ""))));
-  }
-  right.append(locWrap);
+  DX.mountSide(right, () => {
+    const pane = document.createDocumentFragment();
+    // 레지스터
+    pane.append(el("div", { class: "dbgws-head" }, selLevel ? `레지스터 (프레임 #${selLevel})` : "레지스터 (더블클릭 수정)"));
+    const regGrid = el("div", { class: "reg-grid" });
+    const showRegs = d.regs.filter((r) => /^(rax|rbx|rcx|rdx|rsi|rdi|rbp|rsp|r8|r9|r10|r11|r12|r13|r14|r15|rip|eflags|pc|sp|lr|x\d+|w\d+)$/i.test(r.name)).slice(0, 40);
+    for (const r of (showRegs.length ? showRegs : d.regs.slice(0, 32))) {
+      const changed = d.prevRegs[r.name] !== undefined && d.prevRegs[r.name] !== r.value;
+      const cell = el("div", { class: "reg" + (changed ? " changed" : ""), title: "더블클릭: 값 수정 · Alt+클릭: 이 값을 메모리 탭에서 보기",
+        ondblclick: () => editReg(r.name, r.value),
+        onclick: (e) => { if (e.altKey && /^0x[0-9a-f]+$/i.test(r.value || "")) DX.gotoMemory(r.value); } },
+        el("span", { class: "reg-n" }, r.name),
+        el("span", { class: "reg-v" }, r.value));
+      regGrid.append(cell);
+    }
+    pane.append(regGrid);
+    // 지역변수/인자
+    pane.append(el("div", { class: "dbgws-head" }, "지역변수 · 인자 (더블클릭 수정)"));
+    const locWrap = el("div", { class: "loc-list" });
+    if (!d.locals.length) locWrap.append(el("div", { class: "empty-list" }, "—"));
+    for (const v of d.locals) {
+      locWrap.append(el("div", { class: "loc" + (v.arg ? " arg" : ""), title: "더블클릭: 값 수정",
+        ondblclick: () => editVar(v.name, v.value) },
+        el("span", { class: "loc-n" }, (v.arg ? "arg " : "") + v.name),
+        el("span", { class: "loc-v" }, String(v.value ?? ""))));
+    }
+    pane.append(locWrap);
+    return pane;
+  });
   wrap.append(left, right);
   ed.append(wrap);
 }
@@ -1554,6 +1563,7 @@ function boot() {
   // 키
   document.addEventListener("keydown", keybind);
   WS.initWorkspace({ S, $, $$, el, toast, setMsg, prompt1, renderTabs, renderEditor, setSideView, openFunc, openPath, showPanel });
+  DX.initDbgx({ S, $, el, esc, toast, modal, dbgRefresh, dbgDo, openDebuggerTab });
   initFileDrop();
   // 초기 화면
   setSideView("open");

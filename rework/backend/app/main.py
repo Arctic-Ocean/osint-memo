@@ -800,14 +800,36 @@ def api_debug_start(payload: dict = Body(...)):
         # 호스트 네트워크를 공유하면 대상이 127.0.0.1 의 이 서버 API 에 닿아 격리를 끄고 다시 시작하는 것까지 할 수 있다
         raise HTTPException(400, "호스트 네트워크 공유는 토큰 인증이 켜져 있을 때만 쓸 수 있습니다. "
                                  "서버를 `run.py --require-token` 으로 다시 실행하세요.")
+    remote = str(payload.get("remote") or "").strip()
+    if remote:
+        if not DebugSession.REMOTE_RE.match(remote):
+            raise HTTPException(400, "원격 주소는 host:port 형식이어야 합니다(예: 192.168.0.5:1234).")
+        if not AUTH_TOKEN:
+            # 이 서버가 임의의 호스트로 연결을 여는 기능이라 토큰 인증이 켜져 있을 때만 허용한다
+            raise HTTPException(400, "원격 gdbserver 연결은 토큰 인증이 켜져 있을 때만 쓸 수 있습니다. 서버를 `run.py --require-token` 으로 다시 실행하세요.")
+        if policy.enabled:
+            # 프로그램은 원격에서 실행되므로 로컬에서 도는 것은 gdb 뿐이다: 격리는 유지하되 gdb 가 네트워크에 닿게 한다
+            policy = SANDBOX_CFG.effective({**(payload.get("sandbox") or {}), "network": "host"})
     with STATE.dbg_lock:           # 동시 시작·정지가 세션을 새거나 교차 종료하지 않도록 직렬화
         _teardown_debug()
         try:
             sess = DebugSession(prog.model.path, program=prog, sandbox=policy)
             state = sess.start()
+            if remote:
+                state = sess.connect_remote(remote, extended=bool(payload.get("extended")))
         except DebugError as e:
+            if 'sess' in locals():
+                try:
+                    sess.stop()
+                except Exception:
+                    pass
             raise HTTPException(400, str(e))
         except Exception as e:
+            if 'sess' in locals():
+                try:
+                    sess.stop()
+                except Exception:
+                    pass
             raise HTTPException(500, f"디버거 시작 실패: {e}")
         STATE.debug = sess
         # 요청된 중단점(함수명 등) 설치. 실패한 것은 응답에 실어 사용자에게 알린다
@@ -843,7 +865,9 @@ def api_debug_exec(payload: dict = Body(...)):
     fns = {"run": lambda: sess.run(payload.get("args", "")),
            "continue": sess.cont, "step": sess.step, "next": sess.next,
            "stepi": sess.stepi, "nexti": sess.nexti, "finish": sess.finish,
-           "interrupt": sess.interrupt}
+           "interrupt": sess.interrupt, "until": lambda: sess.run_to(str(payload.get("location") or ""))}
+    for rev in DebugSession.REVERSE_CMDS:
+        fns[rev] = (lambda r=rev: sess.reverse(r))
     if action not in fns:
         raise HTTPException(400, f"알 수 없는 동작: {action}")
     return {"state": _dbg_guard(fns[action])}
@@ -855,7 +879,21 @@ def api_debug_break(payload: dict = Body(...)):
     op = payload.get("op", "add")
     if op == "add":
         loc = payload.get("location") or payload.get("addr")
-        return _dbg_guard(lambda: sess.break_insert(str(loc)))
+        return _dbg_guard(lambda: sess.break_insert(str(loc), condition=payload.get("condition"), ignore=payload.get("ignore"),
+                                                    temporary=bool(payload.get("temporary")), hardware=bool(payload.get("hardware"))))
+    if op == "log":
+        args = payload.get("args") or []
+        if not isinstance(args, list):
+            raise HTTPException(400, "args 는 목록이어야 합니다.")
+        return _dbg_guard(lambda: sess.logpoint_insert(str(payload.get("location") or ""), str(payload.get("template") or ""),
+                                                       [str(a) for a in args], payload.get("condition")))
+    if op == "watch":
+        return _dbg_guard(lambda: sess.watch_insert(str(_need(payload, "expr")), mode=str(payload.get("mode") or "write"),
+                                                    condition=payload.get("condition"), location=bool(payload.get("at_address")),
+                                                    software=bool(payload.get("software"))))
+    if op == "edit":
+        return _dbg_guard(lambda: sess.break_edit(_need(payload, "number"), condition=payload.get("condition"), ignore=payload.get("ignore"),
+                                                  has_condition="condition" in payload, has_ignore="ignore" in payload))
     if op == "delete":
         return _dbg_guard(lambda: sess.break_delete(_need(payload, "number")))
     if op == "toggle":
@@ -905,6 +943,33 @@ def api_debug_setvar(payload: dict = Body(...)):
 def api_debug_setreg(payload: dict = Body(...)):
     sess = STATE.dbg()
     return _dbg_guard(lambda: sess.set_register(_need(payload, "name"), _need(payload, "value")))
+
+
+@app.post("/api/debug/frame")
+def api_debug_frame(payload: dict = Body(...)):
+    sess = STATE.dbg()
+    return {"state": _dbg_guard(lambda: sess.select_frame(_need(payload, "level")))}
+
+
+@app.get("/api/debug/stackdump")
+def api_debug_stackdump(count: int = 48):
+    return _dbg_guard(lambda: STATE.dbg().stack_dump(count))
+
+
+@app.get("/api/debug/maps")
+def api_debug_maps():
+    return {"regions": _dbg_guard(lambda: STATE.dbg().memory_map_view())}
+
+
+@app.post("/api/debug/record")
+def api_debug_record(payload: dict = Body(...)):
+    sess = STATE.dbg()
+    op = payload.get("op")
+    if op == "start":
+        return {"state": _dbg_guard(sess.record_start)}
+    if op == "stop":
+        return {"state": _dbg_guard(sess.record_stop)}
+    raise HTTPException(400, f"알 수 없는 op: {op}")
 
 
 @app.get("/api/debug/mem")

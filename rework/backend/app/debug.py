@@ -409,6 +409,14 @@ class DebugSession:
         self._diag: list = []           # gdb·bwrap 이 MI 가 아닌 형식으로 낸 줄(시작 실패 원인 진단용, 최대 20줄)
         self.end_reason = None          # 세션이 '우리 의지와 무관하게' 끝난 이유(총량 한도·실행 시간·디버거 사망). 화면에 남겨 보여 준다
         self._stack_truncated = False
+        self._logpoints = {}            # 중단점 번호 -> {template, args} (gdb 의 MI 출력에서는 되읽기 어려워 우리가 기억한다)
+        self._silent = None             # 내부 질의 중이면 그 출력을 모으는 목록
+        self._qlock = threading.Lock()
+        self._maps = None               # 메모리 지도 캐시(멈출 때마다 비운다)
+        self._word = None               # 포인터 폭(바이트)
+        self.recording = False          # gdb 실행 기록(record full) 중인가
+        self.remote = None              # 원격 gdbserver 주소(host:port). 로컬 실행이면 None
+        self.sel_frame = 0              # 선택된 스택 프레임(0 = 가장 안쪽). 멈춤·재개 때마다 0 으로 돌아간다
         self._inferior_exited = False   # 대상이 끝났다는 *stopped,exited 를 gdb 로부터 받았는가
         self._logl = threading.Lock()
         self.events = []                # 최근 비동기 이벤트 로그
@@ -786,6 +794,8 @@ class DebugSession:
                 self._log_merged(val)
             elif self._launch is not None and "opening /proc/self/mem file failed" in val:
                 return        # 격리에서 gdb 를 덤프 불가로 만든 결과로 매번 나오는 무해한 경고(ptrace 로 메모리를 읽는다) — 콘솔에 싣지 않는다
+            elif kind == "~" and self._silent is not None:
+                self._silent.append(val)         # 내부 질의(info symbol·info proc mappings 등)의 출력: 콘솔에 싣지 않고 호출자에게만 준다
             else:
                 self._push("console", self.console, val)
                 self._console_abs += len(val)
@@ -796,11 +806,16 @@ class DebugSession:
             self._inferior_exited = False
             self.status = "running"
             self.last_stop = None
+            self.sel_frame = 0
+            self._maps = None
         elif cls == "stopped":
             reason = results.get("reason", "")
             self.last_stop = results
+            self.sel_frame = 0
+            self._maps = None
             if reason.startswith("exited"):
                 self._inferior_exited = True
+                self.recording = False
                 self.status = "exited"
                 self.exit_code = _decode_exit_code(
                     results.get("exit-code", "0" if reason == "exited-normally" else None))
@@ -825,6 +840,7 @@ class DebugSession:
                     pass
         elif cls == "thread-group-exited":
             self.inferior_pid = None
+            self.recording = False
             self.status = "exited"
             self.exit_code = _decode_exit_code(results.get("exit-code"))
             self._stopped_ev.set()
@@ -843,7 +859,10 @@ class DebugSession:
             return
         st = self.program._func_name_to_addr(func) if hasattr(self.program, "_func_name_to_addr") else None
         if st:
-            self.load_bias = rt - st
+            # 로드 바이어스는 페이지 배수다. 멈춘 곳은 함수 시작이 아니라 그 안쪽이므로 (런타임 - 정적) 에서 함수 안 오프셋을 페이지 단위로 버린다.
+            # (큰 함수라서 4KiB 를 넘으면 틀릴 수 있어, stack() 이 gdb 의 `info symbol` 로 정확히 다시 맞춘다.)
+            self.load_bias = (rt - st) & ~0xFFF if (rt - st) > 0 else rt - st
+            self._bias_func = (func, st)
 
     # ---- 명령 전송 -----------------------------------------------------
     def _not_active(self) -> "DebugError":
@@ -909,10 +928,22 @@ class DebugSession:
 
     def console_cmd(self, text: str) -> dict:
         """사용자가 입력한 원시 gdb 명령(MI로 래핑)."""
-        before = self._console_abs
-        self._send(f'-interpreter-exec console {mi_quote(text)}', timeout=20)
-        gained = self._console_abs - before
+        with self._qlock:                                    # 내부 질의와 출력이 뒤섞이지 않게 직렬화
+            before = self._console_abs
+            self._send(f'-interpreter-exec console {mi_quote(text)}', timeout=20)
+            gained = self._console_abs - before
         return {"output": "".join(self.console)[-gained:] if gained > 0 else ""}
+
+    def _query(self, text: str, timeout: float = 20.0) -> str:
+        """gdb 콘솔 명령을 조용히 실행하고 출력만 돌려준다(사용자에게 보이는 콘솔·로그에는 남기지 않는다). 사용자 명령과 겹치지 않게 직렬화한다."""
+        with self._qlock:
+            self._silent = []
+            try:
+                self._send(f'-interpreter-exec console {mi_quote(text)}', timeout=timeout)
+                time.sleep(0.01)                      # 마지막 스트림 줄이 리더 스레드에서 처리되도록 한 박자
+                return "".join(self._silent)
+            finally:
+                self._silent = None
 
     # ---- 실행 제어 -----------------------------------------------------
     # 멈출 때까지 요청을 오래 붙들지 않는다: 시간 안에 안 멈추면 status=running 으로
@@ -930,6 +961,8 @@ class DebugSession:
         return self.snapshot()
 
     def run(self, args: str = "") -> dict:
+        if self.remote:                                   # 원격 대상은 이미 시작되어 멈춰 있다
+            return self.cont()
         if args:
             self._send(f"-exec-arguments {args}")
         self.exit_code = None   # 종료 뒤 다시 실행할 때 이전 종료코드가 남지 않게
@@ -971,30 +1004,381 @@ class DebugSession:
         return self.snapshot()
 
     # ---- 중단점 --------------------------------------------------------
-    def break_insert(self, location: str) -> dict:
-        res = self._send(f"-break-insert {location}")
-        return res.get("results", {}).get("bkpt", {})
+    # 종류 표기: break(일반) · log(dprintf) · watch(쓰기) · rwatch(읽기) · awatch(접근)
+    _BP_KIND = {"dprintf": "log", "hw watchpoint": "watch", "watchpoint": "watch", "read watchpoint": "rwatch", "acc watchpoint": "awatch"}
+
+    def _bp_dict(self, b: dict) -> dict:
+        typ = b.get("type") or "breakpoint"
+        num = b.get("number")
+        out = {"number": num, "type": typ, "kind": self._BP_KIND.get(typ, "break"),
+               "addr": b.get("addr"), "func": b.get("func"), "file": b.get("file"), "line": b.get("line"),
+               "enabled": b.get("enabled") == "y", "what": b.get("what") or b.get("exp"), "times": b.get("times"),
+               "cond": b.get("cond"), "ignore": b.get("ignore"), "temporary": b.get("disp") == "del"}
+        log = self._logpoints.get(str(num))
+        if log:
+            out["log"] = log
+        return out
+
+    @staticmethod
+    def _bp_location(location) -> str:
+        loc = str(location if location is not None else "").strip()
+        if not loc:
+            raise DebugError("중단점 위치가 비어 있습니다.")
+        return loc
+
+    @staticmethod
+    def _bp_count(v, what: str) -> int:
+        try:
+            n = int(v)
+        except (TypeError, ValueError):
+            raise DebugError(f"{what}는 정수여야 합니다.")
+        if n < 0 or n > 1_000_000_000:
+            raise DebugError(f"{what}가 범위를 벗어났습니다.")
+        return n
+
+    def break_insert(self, location: str, condition: str | None = None, ignore=None, temporary: bool = False,
+                     hardware: bool = False, disabled: bool = False) -> dict:
+        """중단점을 단다. condition: 참일 때만 멈춘다 · ignore: 처음 N 번은 건너뛴다 · temporary: 한 번 멈추면 지운다."""
+        args = []
+        if temporary:
+            args.append("-t")
+        if hardware:
+            args.append("-h")
+        if disabled:
+            args.append("-d")
+        if condition and str(condition).strip():
+            args += ["-c", mi_quote(str(condition).strip())]
+        if ignore not in (None, "", 0, "0"):
+            args += ["-i", str(self._bp_count(ignore, "무시 횟수"))]
+        res = self._send("-break-insert " + " ".join(args + ["--", self._bp_location(location)]))
+        return self._bp_dict(res.get("results", {}).get("bkpt", {}))
+
+    def logpoint_insert(self, location: str, template: str, args: list | None = None, condition: str | None = None) -> dict:
+        """멈추지 않고 메시지만 찍는 로그포인트(gdb dprintf). template 은 printf 형식(`i=%d total=%d`), args 는 인자 식 목록."""
+        tpl = str(template)
+        if not tpl:
+            raise DebugError("로그 메시지가 비어 있습니다.")
+        if not tpl.endswith("\\n"):                          # 끝에 \n(역슬래시+n) 이 없으면 붙인다: 출력이 한 줄로 뭉치지 않게
+            tpl += "\\n"
+        extra = [mi_quote(str(a)) for a in (args or []) if str(a).strip()]
+        cmd = ["-dprintf-insert"]
+        if condition and str(condition).strip():
+            cmd += ["-c", mi_quote(str(condition).strip())]
+        cmd += [self._bp_location(location), mi_quote(tpl)] + extra
+        res = self._send(" ".join(cmd))
+        bp = res.get("results", {}).get("bkpt", {})
+        self._logpoints[str(bp.get("number"))] = {"template": tpl, "args": [str(a) for a in (args or []) if str(a).strip()]}
+        return self._bp_dict(bp)
+
+    def watch_insert(self, expr: str, mode: str = "write", condition: str | None = None, location: bool = False,
+                     software: bool = False) -> dict:
+        """워치포인트: 식의 값이 바뀌거나(write) 읽히거나(read) 접근될 때(access) 멈춘다.
+        location=True 면 식이 가리키는 *주소*를 감시한다(지역 변수가 사라져도 유지). software=True 면 하드웨어 레지스터 대신 한 명령씩 실행하며 비교한다(느림)."""
+        e = str(expr).strip()
+        if not e:
+            raise DebugError("감시할 식이 비어 있습니다.")
+        if e.startswith("-"):
+            raise DebugError("감시식은 '-' 로 시작할 수 없습니다.")
+        flag = {"write": "", "read": "-r ", "access": "-a "}.get(mode)
+        if flag is None:
+            raise DebugError(f"알 수 없는 감시 방식: {mode}")
+        if location:
+            flag = "-l " + flag
+        if software:
+            if mode != "write":
+                raise DebugError("소프트웨어 감시는 쓰기(값 변경) 방식만 가능합니다.")
+            self._send("-gdb-set can-use-hw-watchpoints 0")
+        try:
+            res = self._send("-break-watch " + flag + e)
+        finally:
+            if software:
+                try:
+                    self._send("-gdb-set can-use-hw-watchpoints 1")
+                except DebugError:
+                    pass
+        r = res.get("results", {})
+        wpt = r.get("wpt") or r.get("hw-wpt") or r.get("hw-rwpt") or r.get("hw-awpt") or {}
+        num = wpt.get("number")
+        if condition and str(condition).strip() and num is not None:
+            try:
+                self._send(f"-break-condition {int(num)} {str(condition).strip()}")
+            except DebugError:
+                self._send(f"-break-delete {int(num)}")        # 조건이 잘못됐으면 감시도 남기지 않는다
+                raise
+        for b in self.breakpoints():
+            if str(b.get("number")) == str(num):
+                return b
+        return {"number": num, "what": wpt.get("exp"), "kind": {"": "watch"}.get("", "watch")}
 
     def break_delete(self, number) -> dict:
-        self._send(f"-break-delete {number}")
-        return {"deleted": number}
+        n = self._bp_count(number, "중단점 번호")
+        self._send(f"-break-delete {n}")
+        self._logpoints.pop(str(n), None)
+        return {"deleted": n}
 
     def break_toggle(self, number, enable: bool) -> dict:
-        self._send(f"-break-{'enable' if enable else 'disable'} {number}")
-        return {"number": number, "enabled": enable}
+        n = self._bp_count(number, "중단점 번호")
+        self._send(f"-break-{'enable' if enable else 'disable'} {n}")
+        return {"number": n, "enabled": enable}
+
+    def break_edit(self, number, condition=None, ignore=None, has_condition: bool = False, has_ignore: bool = False) -> dict:
+        """조건·무시 횟수를 바꾼다. 조건을 빈 문자열로 주면 지운다."""
+        n = self._bp_count(number, "중단점 번호")
+        if has_condition:
+            self._send(f"-break-condition {n} {str(condition or '').strip()}".rstrip())
+        if has_ignore:
+            self._send(f"-break-after {n} {self._bp_count(ignore or 0, '무시 횟수')}")
+        for b in self.breakpoints():
+            if str(b.get("number")) == str(n):
+                return b
+        return {"number": n}
 
     def breakpoints(self) -> list:
         res = self._send("-break-list")
         table = res.get("results", {}).get("BreakpointTable", {})
         body = table.get("body", []) if isinstance(table, dict) else []
+        live = set()
         out = []
         for b in body:
             if isinstance(b, dict):
-                out.append({"number": b.get("number"), "addr": b.get("addr"),
-                            "func": b.get("func"), "file": b.get("file"),
-                            "line": b.get("line"), "enabled": b.get("enabled") == "y",
-                            "what": b.get("what"), "times": b.get("times")})
+                d = self._bp_dict(b)
+                live.add(str(d["number"]))
+                out.append(d)
+        for k in list(self._logpoints):                  # 자동으로 사라진(임시) 로그포인트의 기록을 치운다
+            if k not in live:
+                self._logpoints.pop(k, None)
         return out
+
+    def run_to(self, location: str) -> dict:
+        """위치까지 실행(임시 중단점을 달고 계속). 그 전에 다른 중단점이 먼저 걸리면 거기서 멈춘다."""
+        self._send("-break-insert -t -- " + self._bp_location(location))
+        return self._exec("-exec-continue", wait_stop=True)
+
+    # ---- 스택 프레임·메모리 --------------------------------------------
+    def select_frame(self, level) -> dict:
+        """스택 프레임을 고른다. 이후 레지스터·지역변수·디스어셈블이 그 프레임 기준으로 나온다."""
+        n = self._bp_count(level, "프레임 번호")
+        self._send(f"-stack-select-frame {n}")
+        # gdb 는 없는 프레임 번호를 오류 없이 무시하기도 한다: 실제로 골라졌는지 확인한다
+        now = self._send("-stack-info-frame").get("results", {}).get("frame", {}).get("level")
+        self.sel_frame = int(now) if str(now).isdigit() else 0
+        if self.sel_frame != n:
+            raise DebugError(f"프레임 {n} 이(가) 없습니다.")
+        return self.snapshot()
+
+    def _word_size(self) -> int:
+        if self._word:
+            return self._word
+        w = None
+        if self.program is not None:
+            try:
+                w = int(self.program.model.bits) // 8
+            except Exception:
+                w = None
+        if w not in (2, 4, 8):
+            try:
+                w = int(self.evaluate("sizeof(void*)").get("value"))
+            except Exception:
+                w = 8
+        self._word = w
+        return w
+
+    _MAP_RE = re.compile(r"^\s*(0x[0-9a-fA-F]+)\s+(0x[0-9a-fA-F]+)\s+(0x[0-9a-fA-F]+)\s+(0x[0-9a-fA-F]+)\s*(.*)$")
+    _PERM_RE = re.compile(r"^[r-][w-][x-][ps-]$")
+
+    def memory_map(self, refresh: bool = False) -> list:
+        """대상 프로세스의 메모리 영역(gdb `info proc mappings`). 얻지 못하면 빈 목록."""
+        if self._maps is not None and not refresh:
+            return self._maps
+        regions = []
+        try:
+            out = self._query("info proc mappings")
+        except DebugError:
+            out = ""
+        for line in out.splitlines():
+            m = self._MAP_RE.match(line)
+            if not m:
+                continue
+            start, end, size, off, rest = m.groups()
+            rest = rest.strip()
+            perms, name = "", rest
+            parts = rest.split(None, 1)
+            if parts and self._PERM_RE.match(parts[0]):
+                perms, name = parts[0], (parts[1] if len(parts) > 1 else "")
+            regions.append({"start": int(start, 16), "end": int(end, 16), "offset": int(off, 16), "perms": perms, "name": name.strip()})
+        regions.sort(key=lambda r: r["start"])
+        self._maps = regions
+        return regions
+
+    def memory_map_view(self) -> list:
+        return [{"start": hex(r["start"]), "end": hex(r["end"]), "size": r["end"] - r["start"], "perms": r["perms"], "name": r["name"]}
+                for r in self.memory_map(refresh=True)]
+
+    @staticmethod
+    def _region_of(regions: list, val: int):
+        lo, hi = 0, len(regions)
+        while lo < hi:
+            mid = (lo + hi) // 2
+            r = regions[mid]
+            if val < r["start"]:
+                hi = mid
+            elif val >= r["end"]:
+                lo = mid + 1
+            else:
+                return r
+        return None
+
+    _SYM_RE = re.compile(r"^(\S+?)(?: \+ (\d+))? in section (\S+)(?: of (.+))?$")
+
+    def _symbol_at(self, val: int):
+        """gdb `info symbol` — 주소가 어느 심볼의 몇 바이트째인가. 없으면 None."""
+        try:
+            out = self._query(f"info symbol {val:#x}").strip()
+        except DebugError:
+            return None
+        m = self._SYM_RE.match(out.splitlines()[0]) if out else None
+        if not m:
+            return None
+        name, off, sec, obj = m.groups()
+        return f"{name}+{off}" if off else name
+
+    def _c_string_preview(self, val: int, limit: int = 24):
+        try:
+            data = bytes.fromhex(self.read_memory(f"{val:#x}", limit).get("bytes") or "")
+        except (DebugError, ValueError):
+            return None
+        run = bytearray()
+        for b in data:
+            if 32 <= b < 127:
+                run.append(b)
+            else:
+                break
+        return run.decode("ascii") if len(run) >= 3 else None
+
+    def stack_dump(self, count: int = 48) -> dict:
+        """선택한 프레임의 $sp 부터 count 워드. 각 워드가 코드·스택·힙·데이터 포인터인지, 반환 주소인지, 가리키는 문자열은 무엇인지 덧붙인다."""
+        count = max(1, min(int(count), 512))
+        word = self._word_size()
+        sp_s = self.evaluate("$sp").get("value") or ""
+        m = re.search(r"0x[0-9a-fA-F]+", sp_s)
+        if not m:
+            raise DebugError("스택 포인터를 읽을 수 없습니다.")
+        sp = int(m.group(0), 16)
+        fp = None
+        try:
+            fm = re.search(r"0x[0-9a-fA-F]+", self.evaluate("$fp").get("value") or "")
+            fp = int(fm.group(0), 16) if fm else None
+        except DebugError:
+            pass
+        mem = self.read_memory(f"{sp:#x}", count * word)
+        raw = bytes.fromhex(mem.get("bytes") or "")
+        big = False
+        if self.program is not None:
+            big = getattr(self.program.model, "endian", "little") == "big"
+        frames = []
+        try:
+            frames = self.stack()
+        except DebugError:
+            pass
+        rets = {}
+        for f in frames:
+            try:
+                rets.setdefault(int(f["addr"], 16), (f.get("level"), f.get("func")))
+            except (TypeError, ValueError):
+                pass
+        regions = self.memory_map()
+        rows, lookups, previews = [], 0, 0
+        for i in range(len(raw) // word):
+            val = int.from_bytes(raw[i * word:(i + 1) * word], "big" if big else "little")
+            ea = sp + i * word
+            row = {"addr": hex(ea), "offset": i * word, "value": hex(val), "kind": "int", "marks": []}
+            if ea == sp:
+                row["marks"].append("sp")
+            if fp is not None and ea == fp:
+                row["marks"].append("fp")
+            r = self._region_of(regions, val) if val > 0xFFFF else None
+            if val in rets and r is not None:
+                lvl, fn = rets[val]
+                row["ret_to"] = {"level": lvl, "func": fn}
+            if r is not None:
+                nm = r["name"]
+                if nm.startswith("[stack"):
+                    row["kind"] = "stack"
+                elif nm.startswith("[heap"):
+                    row["kind"] = "heap"
+                elif "x" in r["perms"]:
+                    row["kind"] = "code"
+                else:
+                    row["kind"] = "data"
+                row["region"] = nm or None
+                if row["kind"] == "code" and lookups < 96:
+                    lookups += 1
+                    sym = self._symbol_at(val)
+                    if sym:
+                        row["symbol"] = sym
+                elif row["kind"] != "code" and "r" in r["perms"] and previews < 64:
+                    previews += 1
+                    st = self._c_string_preview(val)
+                    if st:
+                        row["string"] = st
+            rows.append(row)
+        return {"sp": hex(sp), "fp": hex(fp) if fp is not None else None, "word": word, "rows": rows,
+                "frame": self.sel_frame, "have_map": bool(regions)}
+
+    # ---- 실행 기록·역방향 실행 -------------------------------------------
+    REVERSE_CMDS = {"reverse-continue": "-exec-continue --reverse", "reverse-step": "-exec-step --reverse",
+                    "reverse-next": "-exec-next --reverse", "reverse-stepi": "-exec-step-instruction --reverse",
+                    "reverse-nexti": "-exec-next-instruction --reverse", "reverse-finish": "-exec-finish --reverse"}
+
+    def record_start(self) -> dict:
+        """이후 실행을 gdb 가 기록한다(record full). 기록을 시작한 시점부터 거꾸로 되돌아갈 수 있다. 느려지고 일부 명령(AVX 등)은 기록하지 못할 수 있다."""
+        if self.status != "stopped":
+            raise DebugError("프로그램이 멈춰 있을 때만 기록을 시작할 수 있습니다(중단점에서 멈춘 뒤 시작하세요).")
+        if self.remote:
+            raise DebugError("원격 대상에서는 실행 기록을 지원하지 않습니다.")
+        self._send(f"-interpreter-exec console {mi_quote('record full')}", timeout=20)
+        self.recording = True
+        return self.snapshot()
+
+    def record_stop(self) -> dict:
+        try:
+            self._send(f"-interpreter-exec console {mi_quote('record stop')}", timeout=20)
+        finally:
+            self.recording = False
+        return self.snapshot()
+
+    def reverse(self, action: str) -> dict:
+        cmd = self.REVERSE_CMDS.get(action)
+        if cmd is None:
+            raise DebugError(f"알 수 없는 역방향 동작: {action}")
+        if not self.recording:
+            raise DebugError("먼저 ‘기록 시작’으로 실행 기록을 켜야 거꾸로 실행할 수 있습니다.")
+        return self._exec(cmd, wait_stop=True)
+
+    # ---- 원격 gdbserver ------------------------------------------------
+    REMOTE_RE = re.compile(r"^(?:[A-Za-z0-9._-]{1,253}|\[[0-9A-Fa-f:.]{2,45}\]):([0-9]{1,5})$")
+
+    def connect_remote(self, target: str, extended: bool = False) -> dict:
+        """원격 gdbserver 에 붙는다(`target remote host:port`). 프로그램은 원격에서 실행되고, 이 컴퓨터의 바이너리는 심볼 해석에만 쓴다.
+        `| 명령` 같은 파이프 형식과 직렬 장치 경로는 받지 않는다(명령 실행이 되므로)."""
+        t = str(target or "").strip()
+        m = self.REMOTE_RE.match(t)
+        if not m or not (1 <= int(m.group(1)) <= 65535):
+            raise DebugError("원격 주소는 host:port 형식이어야 합니다(예: 192.168.0.5:1234, [::1]:2345).")
+        if self.status == "running":
+            raise DebugError("실행 중에는 원격에 연결할 수 없습니다.")
+        self._send("-gdb-set tcp connect-timeout 10", timeout=3)           # 응답 없는 호스트에서 오래 붙들리지 않게
+        self._send(f"-target-select {'extended-remote' if extended else 'remote'} {t}", timeout=30)
+        self.remote = t
+        self.status = "stopped"
+        frame = None
+        try:
+            frame = self._send("-stack-info-frame").get("results", {}).get("frame")
+        except DebugError:
+            pass
+        self.last_stop = {"reason": "remote-connected", "frame": frame} if frame else {"reason": "remote-connected"}
+        self._update_bias(frame)
+        return self.snapshot()
 
     # ---- 상태 조회 -----------------------------------------------------
     def registers(self) -> list:
@@ -1016,6 +1400,7 @@ class DebugSession:
         frames = self._send(f"-stack-list-frames 0 {STACK_FRAMES_MAX}").get("results", {}).get("stack", [])
         self._stack_truncated = len(frames) > STACK_FRAMES_MAX
         frames = frames[:STACK_FRAMES_MAX]
+        self._refine_bias(frames)
         out = []
         for f in frames:
             if isinstance(f, dict):
@@ -1023,6 +1408,29 @@ class DebugSession:
                             "func": f.get("func"), "file": f.get("file"),
                             "line": f.get("line")})
         return out
+
+    def _refine_bias(self, frames):
+        """가장 안쪽 프레임이 이 바이너리의 함수면, gdb 의 `info symbol` 로 함수 시작 주소를 구해 로드 바이어스를 정확히 맞춘다."""
+        bf = getattr(self, "_bias_func", None)
+        if not bf or not frames or self.load_bias is None or getattr(self, "_bias_exact", None) == self.last_stop_key():
+            return
+        func, st = bf
+        try:
+            f0 = frames[0]
+            if f0.get("func") != func:
+                return
+            rt = int(f0["addr"], 16)
+            m = re.match(r"^(.+?)(?:\+(\d+))?$", self._symbol_at(rt) or "")
+            if not m or m.group(1) != func:
+                return
+            self.load_bias = (rt - int(m.group(2) or 0)) - st
+            self._bias_exact = self.last_stop_key()
+        except (DebugError, ValueError, KeyError, TypeError):
+            pass
+
+    def last_stop_key(self):
+        ls = self.last_stop
+        return id(ls) if ls else None
 
     def locals(self) -> dict:
         # 지역변수 + 인자(값 포함)
@@ -1214,7 +1622,30 @@ class DebugSession:
             "sandbox_leftover": self._sandbox_leftover(ls),
             "end_reason": self.end_reason,
             "stack_truncated": self._stack_truncated,
+            "selected_frame": self.sel_frame,
+            "stop": self._stop_detail(ls),
+            "recording": self.recording and self.status in ("stopped", "running"),
+            "remote": self.remote,
         }
+
+    @staticmethod
+    def _stop_detail(ls):
+        """멈춘 이유의 구조화된 정보: 걸린 중단점 번호, 워치포인트의 옛 값·새 값 등."""
+        if not ls:
+            return None
+        d = {"reason": ls.get("reason")}
+        if ls.get("bkptno") is not None:
+            d["bkptno"] = ls.get("bkptno")
+        for key in ("wpt", "hw-rwpt", "hw-awpt"):
+            w = ls.get(key)
+            if isinstance(w, dict):
+                d["watch"] = {"number": w.get("number"), "exp": w.get("exp"), "kind": {"wpt": "watch", "hw-rwpt": "rwatch", "hw-awpt": "awatch"}[key]}
+        v = ls.get("value")
+        if isinstance(v, dict):
+            d["value"] = {k: v.get(k) for k in ("old", "new", "value") if k in v}
+        if ls.get("signal-name"):
+            d["signal"] = ls.get("signal-name")
+        return d
 
     def _sandbox_live(self):
         """샌드박스 안에 살아 있는 프로세스 수(감시 스레드가 센 값). 대상이 끝났는데 남은 프로세스가 있는지 알리는 데 쓴다."""

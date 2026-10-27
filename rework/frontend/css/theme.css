@@ -393,7 +393,7 @@ button.primary:disabled { opacity: .5; cursor: default; }
 .dbg-badge.running { color: var(--accent-2); }
 .dbg-badge.exited { color: var(--fg-faint); }
 
-.dbgws { flex: 1 1 auto; display: grid; grid-template-columns: 1fr 340px; min-height: 0; }
+.dbgws { flex: 1 1 auto; display: grid; grid-template-columns: 1fr 490px; min-height: 0; }
 .dbgws-disasm { overflow: auto; border-right: 1px solid var(--border); padding-bottom: 20px; }
 .dbgws-side { overflow: auto; padding-bottom: 20px; }
 .dbgws-head { position: sticky; top: 0; background: var(--bg-2); padding: 5px 12px; font-size: 11px;
@@ -486,3 +486,82 @@ button.primary:disabled { opacity: .5; cursor: default; }
 .ws-path-input { width: 100%; background: var(--bg); border: 1px solid var(--border); color: var(--fg); border-radius: 6px;
   padding: 5px 8px; font-size: 12px; outline: none; font-family: var(--mono); }
 .ws-path-input:focus { border-color: var(--accent); }
+
+/* ---- 디버거 심화: 중단점 종류·조건 표시, 오른쪽 탭(스택·메모리·감시식), 정지 이유, 기록 ---- */
+.bp-item { flex-wrap: wrap; row-gap: 2px; }
+.bp-ico { width: 18px; text-align: center; font-size: 11px; color: var(--err); flex: 0 0 auto; }
+.bp-log .bp-ico { color: var(--accent-2); }
+.bp-watch .bp-ico, .bp-rwatch .bp-ico, .bp-awatch .bp-ico { color: var(--warn); }
+.bp-log .li-name { color: var(--accent-2); }
+.bp-watch .li-name, .bp-rwatch .li-name, .bp-awatch .li-name { color: var(--warn); }
+.bp-tag { font-family: var(--mono); font-size: 10px; padding: 0 6px; border-radius: 8px; background: var(--bg-3);
+  border: 1px solid var(--border); color: var(--fg-dim); max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bp-tag.cond { color: var(--warn); border-color: var(--warn); }
+.bp-tag.log { color: var(--accent-2); }
+.bp-hits { font-size: 10px; color: var(--fg-faint); font-family: var(--mono); }
+.bp-edit { background: none; border: none; color: var(--fg-faint); font-size: 12px; }
+.bp-edit:hover { color: var(--accent); }
+.sel-frame { background: var(--sel); }
+.dbg-remote-opt { display: flex; align-items: center; gap: 6px; margin-top: 8px; font-size: 12px; color: var(--fg-dim); }
+.dbg-remote-opt input { width: auto; }
+
+.dbg-stopbar { padding: 4px 12px; font-size: 12px; border-bottom: 1px solid var(--border); background: var(--bg-2); color: var(--fg-dim); }
+.dbg-stopbar.watch { color: var(--warn); background: rgba(210,153,34,.12); }
+.dbg-stopbar.bp { color: var(--err); }
+.dbg-stopbar.warn { color: var(--warn); }
+.vt-btn.rec-on { color: var(--err); border-color: var(--err); }
+.dbgws-sub { margin-left: 10px; text-transform: none; letter-spacing: 0; color: var(--fg-faint); }
+
+.dbgws-side { display: flex; flex-direction: column; overflow: hidden; padding-bottom: 0; }
+.dbgx-tabs { display: flex; gap: 2px; padding: 4px 6px 0; background: var(--bg-2); border-bottom: 1px solid var(--border); flex: 0 0 auto; }
+.dbgx-tab { background: none; border: none; color: var(--fg-dim); padding: 5px 12px; font-size: 12px; border-radius: 6px 6px 0 0; cursor: pointer; }
+.dbgx-tab:hover { color: var(--fg); background: var(--bg-hover); }
+.dbgx-tab.active { color: var(--fg); background: var(--bg); box-shadow: inset 0 -2px 0 var(--accent); }
+.dbgx-pane { flex: 1 1 auto; overflow: auto; padding-bottom: 20px; }
+.mini-sel { background: var(--bg); color: var(--fg); border: 1px solid var(--border); border-radius: 5px; font-size: 11px; padding: 2px 4px; margin-left: 8px; text-transform: none; }
+
+.frame-list { padding: 4px 6px; }
+.frame { display: flex; gap: 8px; align-items: baseline; padding: 3px 8px; font-family: var(--mono); font-size: 12px; border-radius: 5px; cursor: pointer; }
+.frame:hover { background: var(--bg-hover); }
+.frame.sel { background: var(--sel); }
+.fr-n { color: var(--fg-faint); width: 26px; }
+.fr-f { color: var(--c-mnem); flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; }
+.fr-a, .fr-l { color: var(--fg-faint); font-size: 11px; }
+
+.stack-dump { font-family: var(--mono); font-size: 11.5px; padding: 2px 6px; }
+.sd-row { display: flex; gap: 8px; align-items: baseline; padding: 1px 6px; border-radius: 4px; }
+.sd-row:hover { background: var(--bg-hover); }
+.sd-off { color: var(--fg-faint); width: 38px; flex: 0 0 auto; text-align: right; }
+.sd-val { width: 148px; flex: 0 0 auto; color: var(--fg); }
+.sd-code .sd-val { color: var(--c-mnem); cursor: pointer; }
+.sd-stack .sd-val { color: var(--accent-2); cursor: pointer; }
+.sd-heap .sd-val, .sd-data .sd-val { color: var(--c-addr); cursor: pointer; }
+.sd-ret { background: rgba(210,153,34,.10); }
+.sd-note { color: var(--fg-dim); flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sd-mark { color: var(--warn); font-weight: 600; }
+
+.mem-bar { display: flex; gap: 4px; padding: 6px; align-items: center; }
+.mem-addr { flex: 1 1 auto; min-width: 0; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; color: var(--fg);
+  padding: 4px 8px; font-family: var(--mono); font-size: 12px; outline: none; }
+.mem-addr:focus { border-color: var(--accent); }
+.mem-view { font-family: var(--mono); font-size: 11.5px; padding: 2px 8px; white-space: pre; }
+.mem-row { display: flex; gap: 10px; padding: 1px 0; }
+.mem-a { color: var(--c-addr); flex: 0 0 auto; }
+.mem-b { display: inline-flex; gap: 4px; flex: 0 0 auto; }
+.mem-x { color: var(--fg); cursor: default; border-radius: 3px; padding: 0 1px; }
+.mem-x.zero { color: var(--fg-faint); }
+.mem-x.chg { background: rgba(210,153,34,.25); color: var(--warn); }
+.mem-x:hover { background: var(--bg-hover); }
+.mem-s { color: var(--fg-dim); flex: 0 0 auto; }
+.loc.changed { background: rgba(210,153,34,.16); }
+.loc-v.err { color: var(--err); font-size: 11px; }
+.side-head .mini-btn + .mini-btn { margin-left: 4px; }
+.mem-bar .mini-btn { margin-left: 0; border: 1px solid var(--border); border-radius: 5px; padding: 2px 8px; font-size: 12px; }
+
+.mem-bar { flex-wrap: wrap; }
+.mem-bar .mem-addr { flex: 1 1 150px; }
+.mem-bar .mem-reg { max-width: 150px; }
+.mem-bar .mini-btn { white-space: nowrap; flex: 0 0 auto; }
+.mem-b { gap: 2px; }
+.mem-row { gap: 8px; }
+.mem-view { font-size: 11px; }

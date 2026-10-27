@@ -66,14 +66,19 @@ export const api = {
   wsSearch:   (q, caseSensitive = false) => j("GET", `/api/ws/search?q=${encodeURIComponent(q)}&case=${caseSensitive}`),
 
   // 디버거 (GDB/MI)
-  dbgStart:   (breakpoints = [], sandbox) =>
-                j("POST", "/api/debug/start", sandbox ? { breakpoints, sandbox } : { breakpoints }),
+  dbgStart:   (breakpoints = [], sandbox, remote) =>
+                j("POST", "/api/debug/start", { breakpoints, ...(sandbox ? { sandbox } : {}), ...(remote ? { remote } : {}) }),
   sandboxStatus:  () => j("GET", "/api/sandbox/status"),
   sandboxRecheck: () => j("POST", "/api/sandbox/recheck"),
   sandboxSave:    (cfg) => j("POST", "/api/sandbox/config", cfg),
   dbgStop:    () => j("POST", "/api/debug/stop"),
   dbgState:   () => j("GET", "/api/debug/state"),
   dbgExec:    (action, args = "") => j("POST", "/api/debug/exec", { action, args }),
+  dbgExecUntil: (location) => j("POST", "/api/debug/exec", { action: "until", location }),
+  dbgFrame:   (level) => j("POST", "/api/debug/frame", { level }),
+  dbgStackDump: (count = 48) => j("GET", `/api/debug/stackdump?count=${count}`),
+  dbgMaps:    () => j("GET", "/api/debug/maps"),
+  dbgRecord:  (op) => j("POST", "/api/debug/record", { op }),
   dbgBreak:   (payload) => j("POST", "/api/debug/break", payload),
   dbgBreaks:  () => j("GET", "/api/debug/breakpoints"),
   dbgRegs:    () => j("GET", "/api/debug/registers"),
