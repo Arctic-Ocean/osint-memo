@@ -109,6 +109,52 @@ try {
     const saved = await waitFor(async () => (fs.readFileSync(path.join(work, 'hello.c'), 'utf8').includes('설치본에서 저장') ? true : null), 10000);
     check('4. 설치본에서 편집기가 한국어이고 Ctrl+S 가 디스크에 저장된다', ko === '찾기' && !!saved, ko);
   }
+
+  // ---- 이후에 추가된 기능을 설치본(동결 백엔드)에서: 디버거 심화·빌드 러너·노트북 ----
+  const api = (m, u, b) => page.evaluate(async ([m, u, b]) => {
+    const r = await fetch(u, { method: m, headers: { 'Content-Type': 'application/json' }, body: b ? JSON.stringify(b) : undefined });
+    return { s: r.status, j: await r.json().catch(() => null) };
+  }, [m, u, b]);
+  await api('POST', '/api/debug/start', { breakpoints: ['main'] });
+  const dr = await api('POST', '/api/debug/exec', { action: 'run' });
+  const maps = await api('GET', '/api/debug/maps');
+  const dump = await api('GET', '/api/debug/stackdump?count=16');
+  const lp = await api('POST', '/api/debug/break', { op: 'log', location: 'main', template: 'hit %d', args: ['1'] });
+  await api('POST', '/api/debug/stop');
+  check('4. 설치본에서 디버거 심화(메모리 맵·스택 덤프·로그포인트)가 동작한다',
+    dr.j.state.status === 'stopped' && maps.s === 200 && maps.j.regions.length > 3 && dump.s === 200 && lp.s === 200, `${maps.s} regions=${maps.j && maps.j.regions && maps.j.regions.length} dump=${dump.s} log=${lp.s}`);
+
+  const job = await (async () => {
+    const st = await api('POST', '/api/run/start', { command: 'gcc -o hello hello.c && ./hello; echo exit=$? uid=$(id -u)', timeout: 60 });
+    let s = st.j;
+    for (let i = 0; i < 300 && s && s.status === 'running'; i++) { await sleep(200); s = (await api('GET', '/api/run/state?since=0')).j; }
+    return { start: st.s, ...(s || {}) };
+  })();
+  const uid = /uid=(\d+)/.exec(job.output || '');
+  check('4. 설치본에서 러너가 격리 안에서 gcc 로 빌드·실행하고 결과물을 작업 폴더로 되가져온다',
+    job.start === 200 && job.status === 'done' && job.sandboxed === true && /exit=0/.test(job.output) && uid && uid[1] !== '0'
+    && fs.existsSync(path.join(work, 'hello')) && (job.changes || []).some((c) => c.path === 'hello' && c.status === 'new'),
+    `${job.status} sandboxed=${job.sandboxed} ${(job.output || '').trim().slice(-60)} changes=${(job.changes || []).map((c) => c.path + ':' + c.status)}`);
+
+  fs.writeFileSync(path.join(work, 'nb.ipynb'), JSON.stringify({
+    nbformat: 4, nbformat_minor: 5, metadata: {},
+    cells: [{ cell_type: 'code', id: 'a1', metadata: {}, execution_count: null, outputs: [],
+      source: 'x = 6 * 7\nprint(x)\nfs = [f for f in rk.functions() if rk.name(f.vaddr) == "main"]\nrk.decompile(fs[0].vaddr)[:40]' }] }));
+  await page.evaluate(() => document.querySelector('.ws-bar button[title*="새로"]')?.click());
+  await page.locator('.ws-row[data-rel="nb.ipynb"]').click({ timeout: 20000 });
+  await page.waitForSelector('.nb-cell textarea.nb-src', { timeout: 20000 });
+  await page.click('.nb-cell textarea.nb-src');
+  await page.keyboard.press('Shift+Enter');
+  const nbOut = await waitFor(async () => {
+    const t = await page.locator('.nb-cell .nb-out').first().innerText().catch(() => '');
+    return /Out\[1\]/.test(t) ? t : null;
+  }, 30000);
+  check('4. 설치본에서 노트북 셀이 실행된다(상태 유지 커널·print·마지막 식·rk.decompile)', !!nbOut && /(^|\n)42\n/.test(nbOut) && /main|int/.test(nbOut), (nbOut || '').replace(/\n/g, ' ⏎ ').slice(0, 120));
+  await page.keyboard.press('Control+s');
+  const nbSaved = await waitFor(async () => {
+    try { const j = JSON.parse(fs.readFileSync(path.join(work, 'nb.ipynb'), 'utf8')); return j.cells[0].execution_count === 1 && j.cells[0].outputs.length >= 2 ? j : null; } catch { return null; }
+  }, 10000);
+  check('4. 설치본에서 노트북 Ctrl+S 가 출력과 함께 nbformat 4 로 저장된다', !!nbSaved && nbSaved.nbformat === 4, nbSaved ? nbSaved.cells[0].outputs.map((o) => o.output_type).join(',') : '저장 안 됨');
   check('5. JS·CSP 오류 없음', errs.length === 0, errs.slice(0, 2).join(' / '));
 
   // ---- 종료: 앱을 닫으면 백엔드도 ----

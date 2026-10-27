@@ -115,6 +115,41 @@ def smoke(exe: str) -> None:
             st, body = get("/api/ws/file?path=a.c", {"X-Rework-Token": token})
             if st != 200 or "int main" not in json.loads(body)["text"]:
                 raise SystemExit(f"스모크 실패: 작업 폴더 파일 읽기 {st}")
+            # 노트북 커널(번들 안에서 상태 유지·rk 분석 API)과 러너(격리 없이 작업 폴더에서 직접 — 스모크는 격리 도구가 없는 환경에서도 돈다)
+            def post(path, payload):
+                cc = http.client.HTTPConnection("127.0.0.1", port, timeout=30)
+                cc.request("POST", path, json.dumps(payload), hdr)
+                rr = cc.getresponse()
+                return rr.status, json.loads(rr.read() or b"{}")
+
+            def nb_run(code):
+                st, _ = post("/api/nb/exec", {"code": code})
+                if st != 200:
+                    raise SystemExit(f"스모크 실패: 노트북 셀 실행 {st}")
+                for _ in range(100):
+                    time.sleep(0.1)
+                    st, body = get("/api/nb/poll?since=0", {"X-Rework-Token": token})
+                    d = json.loads(body)
+                    if not d["running"]:
+                        return d
+                raise SystemExit("스모크 실패: 노트북 셀이 끝나지 않음")
+            d = nb_run("x = 6 * 7\nprint(x)")
+            d2 = nb_run("print(x + 1, len(rk.functions()) > 0)")
+            if not (d["status"] == "ok" and "42" in "".join(e.get("text", "") for e in d["events"])
+                    and d2["status"] == "ok" and "43 True" in "".join(e.get("text", "") for e in d2["events"])):
+                raise SystemExit(f"스모크 실패: 노트북 커널 {d} {d2}")
+            st, _ = post("/api/run/start", {"command": "echo built > out.txt; echo ok", "sandbox": False, "timeout": 30})
+            if st != 200:
+                raise SystemExit(f"스모크 실패: 러너 시작 {st}")
+            job = None
+            for _ in range(100):
+                time.sleep(0.1)
+                st, body = get("/api/run/state?since=0", {"X-Rework-Token": token})
+                job = json.loads(body)
+                if job["status"] != "running":
+                    break
+            if job is None or job["status"] != "done" or job["exit_code"] != 0 or "ok" not in job["output"] or not os.path.exists(os.path.join(folder, "out.txt")):
+                raise SystemExit(f"스모크 실패: 러너 {str(job)[:300]}")
             c = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
             c.request("POST", "/api/ws/close", "", hdr)
             c.getresponse().read()
@@ -125,7 +160,7 @@ def smoke(exe: str) -> None:
             p.wait(timeout=20)
         except subprocess.TimeoutExpired:
             raise SystemExit("스모크 실패: 표준 입력을 닫아도 종료하지 않음")
-        print(f"스모크 통과: 포트 {port}, 토큰 401/200, UI·JS·Monaco 서빙, 파일 열기·의사코드, 작업 폴더 API, stdin EOF 로 종료(코드 {p.returncode})")
+        print(f"스모크 통과: 포트 {port}, 토큰 401/200, UI·JS·Monaco 서빙, 파일 열기·의사코드, 작업 폴더 API, 노트북 커널·러너, stdin EOF 로 종료(코드 {p.returncode})")
     finally:
         if p.poll() is None:
             p.kill()
