@@ -131,7 +131,7 @@ ARCH = {
                     uc=(UC_ARCH_X86, UC_MODE_32), ptr=4, long=4, abi="cdecl", ld=12),
     "i386fast": dict(target="i386-linux-gnu", cc="gcc", cflags=["-m32", "-march=i686", "-ffast-math", "-mfpmath=387", "-DX87_TESTS", "-DLD_TESTS"], uc=(UC_ARCH_X86, UC_MODE_32),
                      ptr=4, long=4, abi="cdecl", ld=12),
-    "arm64": dict(target="aarch64-linux-gnu", cflags=[], uc=(UC_ARCH_ARM64, UC_MODE_ARM), ptr=8, long=8, abi="aapcs64"),
+    "arm64": dict(target="aarch64-linux-gnu", cflags=["-DNEON_TESTS"], uc=(UC_ARCH_ARM64, UC_MODE_ARM), ptr=8, long=8, abi="aapcs64"),
     "arm": dict(target="armv7-linux-gnueabi", cflags=["-mcpu=cortex-a15", "-marm", "-mfloat-abi=soft", "-DNO_FP"],
                 uc=(UC_ARCH_ARM, UC_MODE_ARM), ptr=4, long=4, abi="aapcs"),
     "thumb": dict(target="thumbv7-linux-gnueabi", cflags=["-mcpu=cortex-a15", "-mthumb", "-mfloat-abi=soft", "-DNO_FP"],
@@ -169,6 +169,8 @@ def compiler_cmd(a):
 def cc(arch, opt, src, out, extra=()):
     a = ARCH[arch]
     base, link = compiler_cmd(a)
+    if "-DNEON_TESTS" in a["cflags"] and opt == "-O1":
+        base = base + ["-DNEON_ASM"]                       # naked 어셈 시험은 최적화 수준과 무관하므로 -O1 한 번만(시간)
     cmd = base + [opt, "-ffreestanding", "-nostdlib", "-static"] + link + ["-w",
                                                              "-fno-stack-protector", "-fno-pic", "-fwrapv", "-fno-builtin", "-fno-math-errno", "-o", out, src,
                                                              "-Wl,-e,main", "-Wl,--no-gc-sections"] + list(extra)

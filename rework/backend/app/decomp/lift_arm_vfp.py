@@ -17,6 +17,7 @@ from capstone.arm import ARM_OP_REG as OP_REG, ARM_OP_IMM as OP_IMM, ARM_OP_MEM 
 
 from . import ir
 from .ir import C, X, S, loc, mem, binop, unop, zext, trunc, pair, ite, flags, cc, insert
+from .lift_neon32 import A32Neon, NOT_NEON
 
 FLAGS = "F"
 FPF = "FPF"
@@ -31,7 +32,7 @@ def f_bits(v: float, sz: int) -> int:
     return struct.unpack("<Q", struct.pack("<d", v))[0] if sz == 8 else struct.unpack("<I", struct.pack("<f", v))[0]
 
 
-class A32Vfp:
+class A32Vfp(A32Neon):
     """A32Lifter 에 섞어 쓴다(self.cs·reg_name·read_reg·write_reg·mem_addr·load_mem·load_literal·tmp 사용)."""
 
     # ---- 레지스터 모델 --------------------------------------------------------------------
@@ -151,6 +152,9 @@ class A32Vfp:
         ops = list(insn.operands)
         a = insn.address
         n = len(ops)
+        nr = self.neon32_lift(insn, head, dts, ops, a)                          # NEON(Advanced SIMD) 형식이면 그쪽에서
+        if nr is not NOT_NEON:
+            return nr
         w = None
         if dts and dts[0] in ("f32", "f64"):
             w = 4 if dts[0] == "f32" else 8

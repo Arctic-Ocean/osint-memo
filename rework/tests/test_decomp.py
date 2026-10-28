@@ -75,6 +75,9 @@ SPECS = {
     "std_add": ("i", "ii"), "std_three": ("i", "iii"), "std_calls": ("i", "ii"), "std_dmix": ("D", "did"), "std_dcalls": ("D", "dd"),
     "bit_test": ("i", "un"), "bit_flag": ("i", "Ln"), "bit_set": ("u", "un"), "bswap32": ("u", "u"), "bswap64": ("l", "L"),
 }
+# 생성된 NEON 어셈 시험(nvi_*: int[16] 두 개, nvf_*: float[16] 두 개, nvd_*: double[16] 두 개)
+for _m in re.finditer(r"^NK void (nv([ifd])_\w+)\(", open(CORPUS, encoding="utf-8").read(), re.M):
+    SPECS[_m.group(1)] = ("v", {"i": "PP", "f": "GG", "d": "EE"}[_m.group(2)])
 # 인자 이름이 겹치는 특수 처리: bsearch_(const int *a, int n, int key) → Q(정렬 배열), n(<=16), i(키)
 SPECS["bsearch_"] = ("i", "Qni")
 SPECS["hash"] = ("u", "Sn")

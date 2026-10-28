@@ -393,3 +393,1021 @@ NK float va_alias3(float a, float b) { VASM("vmov.f32 s2, s1\n vsub.f32 s0, s0, 
 NK double fp9(double a, double b, double c, double d, double e, double f, double g, double h, double i) {
     VASM("vadd.f64 d0, d0, d1\n vsub.f64 d0, d0, d2\n vmla.f64 d0, d3, d4\n vadd.f64 d0, d0, d5\n vmls.f64 d0, d6, d7\n vldr d1, [sp]\n vadd.f64 d0, d0, d1"); }
 #endif
+
+#if defined(NEON_ASM) && defined(__aarch64__)           /* naked 어셈 함수(생성): 자동 벡터화가 만들지 않는 NEON 명령을 직접 시험한다. v0=*p, v1=*q, v2=p[4..7] → 결과는 v2 를 *q 에 */
+#define NK __attribute__((naked, noinline))
+#define AASM(...) __asm__(__VA_ARGS__ "\nret")
+NK void nvi_add_16b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n add v2.16b, v0.16b, v1.16b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_add_8h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n add v2.8h, v0.8h, v1.8h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_add_4s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n add v2.4s, v0.4s, v1.4s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_add_8b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n add v2.8b, v0.8b, v1.8b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_add_4h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n add v2.4h, v0.4h, v1.4h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_add_2s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n add v2.2s, v0.2s, v1.2s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_add_2d(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n add v2.2d, v0.2d, v1.2d\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_sub_16b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n sub v2.16b, v0.16b, v1.16b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_sub_8h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n sub v2.8h, v0.8h, v1.8h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_sub_4s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n sub v2.4s, v0.4s, v1.4s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_sub_8b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n sub v2.8b, v0.8b, v1.8b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_sub_4h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n sub v2.4h, v0.4h, v1.4h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_sub_2s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n sub v2.2s, v0.2s, v1.2s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_sub_2d(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n sub v2.2d, v0.2d, v1.2d\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_smax_16b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n smax v2.16b, v0.16b, v1.16b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_smax_8h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n smax v2.8h, v0.8h, v1.8h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_smax_4s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n smax v2.4s, v0.4s, v1.4s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_smax_8b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n smax v2.8b, v0.8b, v1.8b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_smax_4h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n smax v2.4h, v0.4h, v1.4h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_smax_2s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n smax v2.2s, v0.2s, v1.2s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_smin_16b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n smin v2.16b, v0.16b, v1.16b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_smin_8h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n smin v2.8h, v0.8h, v1.8h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_smin_4s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n smin v2.4s, v0.4s, v1.4s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_smin_8b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n smin v2.8b, v0.8b, v1.8b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_smin_4h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n smin v2.4h, v0.4h, v1.4h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_smin_2s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n smin v2.2s, v0.2s, v1.2s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_umax_16b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n umax v2.16b, v0.16b, v1.16b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_umax_8h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n umax v2.8h, v0.8h, v1.8h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_umax_4s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n umax v2.4s, v0.4s, v1.4s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_umax_8b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n umax v2.8b, v0.8b, v1.8b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_umax_4h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n umax v2.4h, v0.4h, v1.4h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_umax_2s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n umax v2.2s, v0.2s, v1.2s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_umin_16b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n umin v2.16b, v0.16b, v1.16b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_umin_8h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n umin v2.8h, v0.8h, v1.8h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_umin_4s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n umin v2.4s, v0.4s, v1.4s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_umin_8b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n umin v2.8b, v0.8b, v1.8b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_umin_4h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n umin v2.4h, v0.4h, v1.4h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_umin_2s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n umin v2.2s, v0.2s, v1.2s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_sabd_16b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n sabd v2.16b, v0.16b, v1.16b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_sabd_8h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n sabd v2.8h, v0.8h, v1.8h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_sabd_4s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n sabd v2.4s, v0.4s, v1.4s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_sabd_8b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n sabd v2.8b, v0.8b, v1.8b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_sabd_4h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n sabd v2.4h, v0.4h, v1.4h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_sabd_2s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n sabd v2.2s, v0.2s, v1.2s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_uabd_16b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n uabd v2.16b, v0.16b, v1.16b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_uabd_8h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n uabd v2.8h, v0.8h, v1.8h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_uabd_4s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n uabd v2.4s, v0.4s, v1.4s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_uabd_8b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n uabd v2.8b, v0.8b, v1.8b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_uabd_4h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n uabd v2.4h, v0.4h, v1.4h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_uabd_2s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n uabd v2.2s, v0.2s, v1.2s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_sqadd_16b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n sqadd v2.16b, v0.16b, v1.16b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_sqadd_8h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n sqadd v2.8h, v0.8h, v1.8h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_sqadd_4s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n sqadd v2.4s, v0.4s, v1.4s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_sqadd_8b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n sqadd v2.8b, v0.8b, v1.8b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_sqadd_4h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n sqadd v2.4h, v0.4h, v1.4h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_sqadd_2s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n sqadd v2.2s, v0.2s, v1.2s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_uqadd_16b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n uqadd v2.16b, v0.16b, v1.16b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_uqadd_8h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n uqadd v2.8h, v0.8h, v1.8h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_uqadd_4s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n uqadd v2.4s, v0.4s, v1.4s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_uqadd_8b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n uqadd v2.8b, v0.8b, v1.8b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_uqadd_4h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n uqadd v2.4h, v0.4h, v1.4h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_uqadd_2s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n uqadd v2.2s, v0.2s, v1.2s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_sqsub_16b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n sqsub v2.16b, v0.16b, v1.16b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_sqsub_8h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n sqsub v2.8h, v0.8h, v1.8h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_sqsub_4s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n sqsub v2.4s, v0.4s, v1.4s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_sqsub_8b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n sqsub v2.8b, v0.8b, v1.8b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_sqsub_4h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n sqsub v2.4h, v0.4h, v1.4h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_sqsub_2s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n sqsub v2.2s, v0.2s, v1.2s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_uqsub_16b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n uqsub v2.16b, v0.16b, v1.16b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_uqsub_8h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n uqsub v2.8h, v0.8h, v1.8h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_uqsub_4s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n uqsub v2.4s, v0.4s, v1.4s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_uqsub_8b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n uqsub v2.8b, v0.8b, v1.8b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_uqsub_4h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n uqsub v2.4h, v0.4h, v1.4h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_uqsub_2s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n uqsub v2.2s, v0.2s, v1.2s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_shadd_16b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n shadd v2.16b, v0.16b, v1.16b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_shadd_8h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n shadd v2.8h, v0.8h, v1.8h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_shadd_4s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n shadd v2.4s, v0.4s, v1.4s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_shadd_8b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n shadd v2.8b, v0.8b, v1.8b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_shadd_4h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n shadd v2.4h, v0.4h, v1.4h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_shadd_2s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n shadd v2.2s, v0.2s, v1.2s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_uhadd_16b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n uhadd v2.16b, v0.16b, v1.16b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_uhadd_8h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n uhadd v2.8h, v0.8h, v1.8h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_uhadd_4s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n uhadd v2.4s, v0.4s, v1.4s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_uhadd_8b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n uhadd v2.8b, v0.8b, v1.8b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_uhadd_4h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n uhadd v2.4h, v0.4h, v1.4h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_uhadd_2s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n uhadd v2.2s, v0.2s, v1.2s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_srhadd_16b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n srhadd v2.16b, v0.16b, v1.16b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_srhadd_8h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n srhadd v2.8h, v0.8h, v1.8h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_srhadd_4s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n srhadd v2.4s, v0.4s, v1.4s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_srhadd_8b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n srhadd v2.8b, v0.8b, v1.8b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_srhadd_4h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n srhadd v2.4h, v0.4h, v1.4h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_srhadd_2s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n srhadd v2.2s, v0.2s, v1.2s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_urhadd_16b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n urhadd v2.16b, v0.16b, v1.16b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_urhadd_8h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n urhadd v2.8h, v0.8h, v1.8h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_urhadd_4s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n urhadd v2.4s, v0.4s, v1.4s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_urhadd_8b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n urhadd v2.8b, v0.8b, v1.8b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_urhadd_4h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n urhadd v2.4h, v0.4h, v1.4h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_urhadd_2s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n urhadd v2.2s, v0.2s, v1.2s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_sshl_16b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n sshl v2.16b, v0.16b, v1.16b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_sshl_8h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n sshl v2.8h, v0.8h, v1.8h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_sshl_4s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n sshl v2.4s, v0.4s, v1.4s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_sshl_8b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n sshl v2.8b, v0.8b, v1.8b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_sshl_4h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n sshl v2.4h, v0.4h, v1.4h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_sshl_2s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n sshl v2.2s, v0.2s, v1.2s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_ushl_16b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n ushl v2.16b, v0.16b, v1.16b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_ushl_8h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n ushl v2.8h, v0.8h, v1.8h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_ushl_4s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n ushl v2.4s, v0.4s, v1.4s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_ushl_8b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n ushl v2.8b, v0.8b, v1.8b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_ushl_4h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n ushl v2.4h, v0.4h, v1.4h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_ushl_2s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n ushl v2.2s, v0.2s, v1.2s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_cmeq_16b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n cmeq v2.16b, v0.16b, v1.16b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_cmeq_8h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n cmeq v2.8h, v0.8h, v1.8h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_cmeq_4s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n cmeq v2.4s, v0.4s, v1.4s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_cmeq_8b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n cmeq v2.8b, v0.8b, v1.8b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_cmeq_4h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n cmeq v2.4h, v0.4h, v1.4h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_cmeq_2s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n cmeq v2.2s, v0.2s, v1.2s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_cmeq_2d(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n cmeq v2.2d, v0.2d, v1.2d\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_cmgt_16b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n cmgt v2.16b, v0.16b, v1.16b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_cmgt_8h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n cmgt v2.8h, v0.8h, v1.8h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_cmgt_4s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n cmgt v2.4s, v0.4s, v1.4s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_cmgt_8b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n cmgt v2.8b, v0.8b, v1.8b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_cmgt_4h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n cmgt v2.4h, v0.4h, v1.4h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_cmgt_2s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n cmgt v2.2s, v0.2s, v1.2s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_cmgt_2d(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n cmgt v2.2d, v0.2d, v1.2d\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_cmge_16b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n cmge v2.16b, v0.16b, v1.16b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_cmge_8h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n cmge v2.8h, v0.8h, v1.8h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_cmge_4s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n cmge v2.4s, v0.4s, v1.4s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_cmge_8b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n cmge v2.8b, v0.8b, v1.8b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_cmge_4h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n cmge v2.4h, v0.4h, v1.4h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_cmge_2s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n cmge v2.2s, v0.2s, v1.2s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_cmge_2d(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n cmge v2.2d, v0.2d, v1.2d\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_cmhi_16b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n cmhi v2.16b, v0.16b, v1.16b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_cmhi_8h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n cmhi v2.8h, v0.8h, v1.8h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_cmhi_4s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n cmhi v2.4s, v0.4s, v1.4s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_cmhi_8b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n cmhi v2.8b, v0.8b, v1.8b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_cmhi_4h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n cmhi v2.4h, v0.4h, v1.4h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_cmhi_2s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n cmhi v2.2s, v0.2s, v1.2s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_cmhi_2d(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n cmhi v2.2d, v0.2d, v1.2d\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_cmhs_16b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n cmhs v2.16b, v0.16b, v1.16b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_cmhs_8h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n cmhs v2.8h, v0.8h, v1.8h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_cmhs_4s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n cmhs v2.4s, v0.4s, v1.4s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_cmhs_8b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n cmhs v2.8b, v0.8b, v1.8b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_cmhs_4h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n cmhs v2.4h, v0.4h, v1.4h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_cmhs_2s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n cmhs v2.2s, v0.2s, v1.2s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_cmhs_2d(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n cmhs v2.2d, v0.2d, v1.2d\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_cmtst_16b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n cmtst v2.16b, v0.16b, v1.16b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_cmtst_8h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n cmtst v2.8h, v0.8h, v1.8h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_cmtst_4s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n cmtst v2.4s, v0.4s, v1.4s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_cmtst_8b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n cmtst v2.8b, v0.8b, v1.8b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_cmtst_4h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n cmtst v2.4h, v0.4h, v1.4h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_cmtst_2s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n cmtst v2.2s, v0.2s, v1.2s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_cmtst_2d(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n cmtst v2.2d, v0.2d, v1.2d\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_mul_16b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mul v2.16b, v0.16b, v1.16b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_mul_8h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mul v2.8h, v0.8h, v1.8h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_mul_4s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mul v2.4s, v0.4s, v1.4s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_mul_8b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mul v2.8b, v0.8b, v1.8b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_mul_4h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mul v2.4h, v0.4h, v1.4h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_mul_2s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mul v2.2s, v0.2s, v1.2s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_mla_16b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mla v2.16b, v0.16b, v1.16b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_mla_8h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mla v2.8h, v0.8h, v1.8h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_mla_4s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mla v2.4s, v0.4s, v1.4s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_mla_8b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mla v2.8b, v0.8b, v1.8b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_mla_4h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mla v2.4h, v0.4h, v1.4h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_mla_2s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mla v2.2s, v0.2s, v1.2s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_mls_16b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mls v2.16b, v0.16b, v1.16b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_mls_8h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mls v2.8h, v0.8h, v1.8h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_mls_4s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mls v2.4s, v0.4s, v1.4s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_mls_8b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mls v2.8b, v0.8b, v1.8b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_mls_4h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mls v2.4h, v0.4h, v1.4h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_mls_2s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mls v2.2s, v0.2s, v1.2s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_addp_16b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n addp v2.16b, v0.16b, v1.16b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_addp_8h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n addp v2.8h, v0.8h, v1.8h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_addp_4s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n addp v2.4s, v0.4s, v1.4s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_addp_8b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n addp v2.8b, v0.8b, v1.8b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_addp_4h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n addp v2.4h, v0.4h, v1.4h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_addp_2s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n addp v2.2s, v0.2s, v1.2s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_addp_2d(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n addp v2.2d, v0.2d, v1.2d\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_smaxp_16b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n smaxp v2.16b, v0.16b, v1.16b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_smaxp_8h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n smaxp v2.8h, v0.8h, v1.8h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_smaxp_4s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n smaxp v2.4s, v0.4s, v1.4s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_smaxp_8b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n smaxp v2.8b, v0.8b, v1.8b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_smaxp_4h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n smaxp v2.4h, v0.4h, v1.4h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_smaxp_2s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n smaxp v2.2s, v0.2s, v1.2s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_umaxp_16b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n umaxp v2.16b, v0.16b, v1.16b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_umaxp_8h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n umaxp v2.8h, v0.8h, v1.8h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_umaxp_4s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n umaxp v2.4s, v0.4s, v1.4s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_umaxp_8b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n umaxp v2.8b, v0.8b, v1.8b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_umaxp_4h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n umaxp v2.4h, v0.4h, v1.4h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_umaxp_2s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n umaxp v2.2s, v0.2s, v1.2s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_sminp_16b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n sminp v2.16b, v0.16b, v1.16b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_sminp_8h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n sminp v2.8h, v0.8h, v1.8h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_sminp_4s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n sminp v2.4s, v0.4s, v1.4s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_sminp_8b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n sminp v2.8b, v0.8b, v1.8b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_sminp_4h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n sminp v2.4h, v0.4h, v1.4h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_sminp_2s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n sminp v2.2s, v0.2s, v1.2s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_uminp_16b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n uminp v2.16b, v0.16b, v1.16b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_uminp_8h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n uminp v2.8h, v0.8h, v1.8h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_uminp_4s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n uminp v2.4s, v0.4s, v1.4s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_uminp_8b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n uminp v2.8b, v0.8b, v1.8b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_uminp_4h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n uminp v2.4h, v0.4h, v1.4h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_uminp_2s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n uminp v2.2s, v0.2s, v1.2s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_neg_16b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n neg v2.16b, v0.16b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_neg_8h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n neg v2.8h, v0.8h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_neg_4s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n neg v2.4s, v0.4s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_neg_8b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n neg v2.8b, v0.8b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_neg_4h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n neg v2.4h, v0.4h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_neg_2s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n neg v2.2s, v0.2s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_neg_2d(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n neg v2.2d, v0.2d\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_abs_16b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n abs v2.16b, v0.16b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_abs_8h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n abs v2.8h, v0.8h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_abs_4s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n abs v2.4s, v0.4s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_abs_8b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n abs v2.8b, v0.8b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_abs_4h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n abs v2.4h, v0.4h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_abs_2s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n abs v2.2s, v0.2s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_abs_2d(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n abs v2.2d, v0.2d\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_clz_16b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n clz v2.16b, v0.16b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_clz_8h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n clz v2.8h, v0.8h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_clz_4s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n clz v2.4s, v0.4s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_clz_8b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n clz v2.8b, v0.8b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_clz_4h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n clz v2.4h, v0.4h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_clz_2s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n clz v2.2s, v0.2s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_cnt_16b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n cnt v2.16b, v0.16b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_cnt_8b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n cnt v2.8b, v0.8b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_rbit_16b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n rbit v2.16b, v0.16b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_rbit_8b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n rbit v2.8b, v0.8b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_not_16b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n not v2.16b, v0.16b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_not_8b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n not v2.8b, v0.8b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_rev64_16b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n rev64 v2.16b, v0.16b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_rev64_8h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n rev64 v2.8h, v0.8h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_rev64_4s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n rev64 v2.4s, v0.4s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_rev64_8b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n rev64 v2.8b, v0.8b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_rev64_4h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n rev64 v2.4h, v0.4h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_rev64_2s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n rev64 v2.2s, v0.2s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_rev32_16b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n rev32 v2.16b, v0.16b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_rev32_8h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n rev32 v2.8h, v0.8h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_rev32_8b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n rev32 v2.8b, v0.8b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_rev32_4h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n rev32 v2.4h, v0.4h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_rev16_16b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n rev16 v2.16b, v0.16b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_rev16_8b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n rev16 v2.8b, v0.8b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_cmeqz_16b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n cmeq v2.16b, v0.16b, #0\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_cmeqz_8h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n cmeq v2.8h, v0.8h, #0\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_cmeqz_4s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n cmeq v2.4s, v0.4s, #0\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_cmeqz_8b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n cmeq v2.8b, v0.8b, #0\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_cmeqz_4h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n cmeq v2.4h, v0.4h, #0\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_cmeqz_2s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n cmeq v2.2s, v0.2s, #0\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_cmeqz_2d(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n cmeq v2.2d, v0.2d, #0\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_cmgtz_16b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n cmgt v2.16b, v0.16b, #0\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_cmgtz_8h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n cmgt v2.8h, v0.8h, #0\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_cmgtz_4s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n cmgt v2.4s, v0.4s, #0\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_cmgtz_8b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n cmgt v2.8b, v0.8b, #0\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_cmgtz_4h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n cmgt v2.4h, v0.4h, #0\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_cmgtz_2s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n cmgt v2.2s, v0.2s, #0\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_cmgtz_2d(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n cmgt v2.2d, v0.2d, #0\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_cmgez_16b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n cmge v2.16b, v0.16b, #0\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_cmgez_8h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n cmge v2.8h, v0.8h, #0\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_cmgez_4s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n cmge v2.4s, v0.4s, #0\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_cmgez_8b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n cmge v2.8b, v0.8b, #0\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_cmgez_4h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n cmge v2.4h, v0.4h, #0\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_cmgez_2s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n cmge v2.2s, v0.2s, #0\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_cmgez_2d(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n cmge v2.2d, v0.2d, #0\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_cmlez_16b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n cmle v2.16b, v0.16b, #0\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_cmlez_8h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n cmle v2.8h, v0.8h, #0\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_cmlez_4s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n cmle v2.4s, v0.4s, #0\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_cmlez_8b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n cmle v2.8b, v0.8b, #0\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_cmlez_4h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n cmle v2.4h, v0.4h, #0\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_cmlez_2s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n cmle v2.2s, v0.2s, #0\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_cmlez_2d(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n cmle v2.2d, v0.2d, #0\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_cmltz_16b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n cmlt v2.16b, v0.16b, #0\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_cmltz_8h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n cmlt v2.8h, v0.8h, #0\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_cmltz_4s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n cmlt v2.4s, v0.4s, #0\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_cmltz_8b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n cmlt v2.8b, v0.8b, #0\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_cmltz_4h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n cmlt v2.4h, v0.4h, #0\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_cmltz_2s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n cmlt v2.2s, v0.2s, #0\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_cmltz_2d(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n cmlt v2.2d, v0.2d, #0\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_shl_16b_1(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n shl v2.16b, v0.16b, #1\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_shl_16b_4(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n shl v2.16b, v0.16b, #4\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_shl_16b_7(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n shl v2.16b, v0.16b, #7\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_shl_8h_1(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n shl v2.8h, v0.8h, #1\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_shl_8h_8(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n shl v2.8h, v0.8h, #8\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_shl_8h_15(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n shl v2.8h, v0.8h, #15\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_shl_4s_1(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n shl v2.4s, v0.4s, #1\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_shl_4s_16(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n shl v2.4s, v0.4s, #16\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_shl_4s_31(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n shl v2.4s, v0.4s, #31\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_shl_8b_1(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n shl v2.8b, v0.8b, #1\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_shl_8b_4(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n shl v2.8b, v0.8b, #4\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_shl_8b_7(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n shl v2.8b, v0.8b, #7\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_shl_4h_1(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n shl v2.4h, v0.4h, #1\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_shl_4h_8(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n shl v2.4h, v0.4h, #8\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_shl_4h_15(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n shl v2.4h, v0.4h, #15\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_shl_2s_1(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n shl v2.2s, v0.2s, #1\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_shl_2s_16(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n shl v2.2s, v0.2s, #16\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_shl_2s_31(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n shl v2.2s, v0.2s, #31\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_shl_2d_1(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n shl v2.2d, v0.2d, #1\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_shl_2d_32(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n shl v2.2d, v0.2d, #32\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_shl_2d_63(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n shl v2.2d, v0.2d, #63\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_sshr_16b_1(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n sshr v2.16b, v0.16b, #1\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_sshr_16b_4(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n sshr v2.16b, v0.16b, #4\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_sshr_16b_8(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n sshr v2.16b, v0.16b, #8\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_sshr_8h_1(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n sshr v2.8h, v0.8h, #1\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_sshr_8h_8(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n sshr v2.8h, v0.8h, #8\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_sshr_8h_16(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n sshr v2.8h, v0.8h, #16\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_sshr_4s_1(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n sshr v2.4s, v0.4s, #1\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_sshr_4s_16(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n sshr v2.4s, v0.4s, #16\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_sshr_4s_32(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n sshr v2.4s, v0.4s, #32\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_sshr_8b_1(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n sshr v2.8b, v0.8b, #1\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_sshr_8b_4(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n sshr v2.8b, v0.8b, #4\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_sshr_8b_8(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n sshr v2.8b, v0.8b, #8\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_sshr_4h_1(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n sshr v2.4h, v0.4h, #1\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_sshr_4h_8(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n sshr v2.4h, v0.4h, #8\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_sshr_4h_16(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n sshr v2.4h, v0.4h, #16\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_sshr_2s_1(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n sshr v2.2s, v0.2s, #1\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_sshr_2s_16(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n sshr v2.2s, v0.2s, #16\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_sshr_2s_32(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n sshr v2.2s, v0.2s, #32\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_sshr_2d_1(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n sshr v2.2d, v0.2d, #1\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_sshr_2d_32(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n sshr v2.2d, v0.2d, #32\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_sshr_2d_64(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n sshr v2.2d, v0.2d, #64\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_ushr_16b_1(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n ushr v2.16b, v0.16b, #1\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_ushr_16b_4(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n ushr v2.16b, v0.16b, #4\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_ushr_16b_8(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n ushr v2.16b, v0.16b, #8\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_ushr_8h_1(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n ushr v2.8h, v0.8h, #1\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_ushr_8h_8(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n ushr v2.8h, v0.8h, #8\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_ushr_8h_16(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n ushr v2.8h, v0.8h, #16\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_ushr_4s_1(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n ushr v2.4s, v0.4s, #1\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_ushr_4s_16(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n ushr v2.4s, v0.4s, #16\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_ushr_4s_32(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n ushr v2.4s, v0.4s, #32\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_ushr_8b_1(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n ushr v2.8b, v0.8b, #1\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_ushr_8b_4(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n ushr v2.8b, v0.8b, #4\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_ushr_8b_8(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n ushr v2.8b, v0.8b, #8\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_ushr_4h_1(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n ushr v2.4h, v0.4h, #1\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_ushr_4h_8(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n ushr v2.4h, v0.4h, #8\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_ushr_4h_16(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n ushr v2.4h, v0.4h, #16\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_ushr_2s_1(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n ushr v2.2s, v0.2s, #1\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_ushr_2s_16(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n ushr v2.2s, v0.2s, #16\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_ushr_2s_32(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n ushr v2.2s, v0.2s, #32\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_ushr_2d_1(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n ushr v2.2d, v0.2d, #1\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_ushr_2d_32(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n ushr v2.2d, v0.2d, #32\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_ushr_2d_64(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n ushr v2.2d, v0.2d, #64\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_ssra_16b_1(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n ssra v2.16b, v0.16b, #1\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_ssra_16b_4(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n ssra v2.16b, v0.16b, #4\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_ssra_16b_8(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n ssra v2.16b, v0.16b, #8\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_ssra_8h_1(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n ssra v2.8h, v0.8h, #1\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_ssra_8h_8(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n ssra v2.8h, v0.8h, #8\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_ssra_8h_16(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n ssra v2.8h, v0.8h, #16\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_ssra_4s_1(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n ssra v2.4s, v0.4s, #1\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_ssra_4s_16(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n ssra v2.4s, v0.4s, #16\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_ssra_4s_32(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n ssra v2.4s, v0.4s, #32\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_ssra_8b_1(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n ssra v2.8b, v0.8b, #1\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_ssra_8b_4(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n ssra v2.8b, v0.8b, #4\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_ssra_8b_8(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n ssra v2.8b, v0.8b, #8\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_ssra_4h_1(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n ssra v2.4h, v0.4h, #1\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_ssra_4h_8(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n ssra v2.4h, v0.4h, #8\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_ssra_4h_16(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n ssra v2.4h, v0.4h, #16\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_ssra_2s_1(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n ssra v2.2s, v0.2s, #1\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_ssra_2s_16(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n ssra v2.2s, v0.2s, #16\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_ssra_2s_32(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n ssra v2.2s, v0.2s, #32\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_ssra_2d_1(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n ssra v2.2d, v0.2d, #1\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_ssra_2d_32(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n ssra v2.2d, v0.2d, #32\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_ssra_2d_64(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n ssra v2.2d, v0.2d, #64\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_usra_16b_1(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n usra v2.16b, v0.16b, #1\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_usra_16b_4(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n usra v2.16b, v0.16b, #4\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_usra_16b_8(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n usra v2.16b, v0.16b, #8\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_usra_8h_1(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n usra v2.8h, v0.8h, #1\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_usra_8h_8(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n usra v2.8h, v0.8h, #8\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_usra_8h_16(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n usra v2.8h, v0.8h, #16\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_usra_4s_1(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n usra v2.4s, v0.4s, #1\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_usra_4s_16(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n usra v2.4s, v0.4s, #16\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_usra_4s_32(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n usra v2.4s, v0.4s, #32\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_usra_8b_1(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n usra v2.8b, v0.8b, #1\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_usra_8b_4(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n usra v2.8b, v0.8b, #4\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_usra_8b_8(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n usra v2.8b, v0.8b, #8\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_usra_4h_1(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n usra v2.4h, v0.4h, #1\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_usra_4h_8(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n usra v2.4h, v0.4h, #8\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_usra_4h_16(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n usra v2.4h, v0.4h, #16\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_usra_2s_1(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n usra v2.2s, v0.2s, #1\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_usra_2s_16(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n usra v2.2s, v0.2s, #16\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_usra_2s_32(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n usra v2.2s, v0.2s, #32\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_usra_2d_1(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n usra v2.2d, v0.2d, #1\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_usra_2d_32(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n usra v2.2d, v0.2d, #32\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_usra_2d_64(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n usra v2.2d, v0.2d, #64\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_mul_e4s_0(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mul v2.4s, v0.4s, v1.s[0]\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_mul_e4s_3(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mul v2.4s, v0.4s, v1.s[3]\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_mla_e4s_0(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mla v2.4s, v0.4s, v1.s[0]\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_mla_e4s_3(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mla v2.4s, v0.4s, v1.s[3]\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_mls_e4s_0(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mls v2.4s, v0.4s, v1.s[0]\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_mls_e4s_3(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mls v2.4s, v0.4s, v1.s[3]\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_mul_e2s_0(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mul v2.2s, v0.2s, v1.s[0]\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_mul_e2s_3(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mul v2.2s, v0.2s, v1.s[3]\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_mla_e2s_0(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mla v2.2s, v0.2s, v1.s[0]\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_mla_e2s_3(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mla v2.2s, v0.2s, v1.s[3]\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_mls_e2s_0(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mls v2.2s, v0.2s, v1.s[0]\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_mls_e2s_3(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mls v2.2s, v0.2s, v1.s[3]\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_mul_e8h_0(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mul v2.8h, v0.8h, v1.h[0]\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_mul_e8h_7(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mul v2.8h, v0.8h, v1.h[7]\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_mla_e8h_0(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mla v2.8h, v0.8h, v1.h[0]\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_mla_e8h_7(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mla v2.8h, v0.8h, v1.h[7]\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_mls_e8h_0(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mls v2.8h, v0.8h, v1.h[0]\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_mls_e8h_7(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mls v2.8h, v0.8h, v1.h[7]\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_mul_e4h_0(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mul v2.4h, v0.4h, v1.h[0]\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_mul_e4h_7(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mul v2.4h, v0.4h, v1.h[7]\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_mla_e4h_0(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mla v2.4h, v0.4h, v1.h[0]\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_mla_e4h_7(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mla v2.4h, v0.4h, v1.h[7]\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_mls_e4h_0(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mls v2.4h, v0.4h, v1.h[0]\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_mls_e4h_7(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mls v2.4h, v0.4h, v1.h[7]\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_and_16b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n and v2.16b, v0.16b, v1.16b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_and_8b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n and v2.8b, v0.8b, v1.8b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_orr_16b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n orr v2.16b, v0.16b, v1.16b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_orr_8b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n orr v2.8b, v0.8b, v1.8b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_eor_16b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n eor v2.16b, v0.16b, v1.16b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_eor_8b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n eor v2.8b, v0.8b, v1.8b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_bic_16b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n bic v2.16b, v0.16b, v1.16b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_bic_8b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n bic v2.8b, v0.8b, v1.8b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_orn_16b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n orn v2.16b, v0.16b, v1.16b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_orn_8b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n orn v2.8b, v0.8b, v1.8b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_bsl_16b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mov v2.16b, v0.16b\n bsl v2.16b, v1.16b, v0.16b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_bsl_8b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mov v2.16b, v0.16b\n bsl v2.8b, v1.8b, v0.8b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_bit_16b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mov v2.16b, v0.16b\n bit v2.16b, v1.16b, v0.16b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_bit_8b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mov v2.16b, v0.16b\n bit v2.8b, v1.8b, v0.8b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_bif_16b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mov v2.16b, v0.16b\n bif v2.16b, v1.16b, v0.16b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_bif_8b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mov v2.16b, v0.16b\n bif v2.8b, v1.8b, v0.8b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvf_fadd_4s(float *p, float *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n fadd v2.4s, v0.4s, v1.4s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvf_fadd_2s(float *p, float *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n fadd v2.2s, v0.2s, v1.2s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvd_fadd_2d(double *p, double *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n fadd v2.2d, v0.2d, v1.2d\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvf_fsub_4s(float *p, float *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n fsub v2.4s, v0.4s, v1.4s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvf_fsub_2s(float *p, float *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n fsub v2.2s, v0.2s, v1.2s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvd_fsub_2d(double *p, double *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n fsub v2.2d, v0.2d, v1.2d\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvf_fmul_4s(float *p, float *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n fmul v2.4s, v0.4s, v1.4s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvf_fmul_2s(float *p, float *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n fmul v2.2s, v0.2s, v1.2s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvd_fmul_2d(double *p, double *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n fmul v2.2d, v0.2d, v1.2d\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvf_fdiv_4s(float *p, float *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n fdiv v2.4s, v0.4s, v1.4s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvf_fdiv_2s(float *p, float *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n fdiv v2.2s, v0.2s, v1.2s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvd_fdiv_2d(double *p, double *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n fdiv v2.2d, v0.2d, v1.2d\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvf_fmax_4s(float *p, float *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n fmax v2.4s, v0.4s, v1.4s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvf_fmax_2s(float *p, float *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n fmax v2.2s, v0.2s, v1.2s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvd_fmax_2d(double *p, double *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n fmax v2.2d, v0.2d, v1.2d\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvf_fmin_4s(float *p, float *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n fmin v2.4s, v0.4s, v1.4s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvf_fmin_2s(float *p, float *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n fmin v2.2s, v0.2s, v1.2s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvd_fmin_2d(double *p, double *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n fmin v2.2d, v0.2d, v1.2d\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvf_fmaxnm_4s(float *p, float *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n fmaxnm v2.4s, v0.4s, v1.4s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvf_fmaxnm_2s(float *p, float *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n fmaxnm v2.2s, v0.2s, v1.2s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvd_fmaxnm_2d(double *p, double *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n fmaxnm v2.2d, v0.2d, v1.2d\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvf_fminnm_4s(float *p, float *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n fminnm v2.4s, v0.4s, v1.4s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvf_fminnm_2s(float *p, float *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n fminnm v2.2s, v0.2s, v1.2s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvd_fminnm_2d(double *p, double *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n fminnm v2.2d, v0.2d, v1.2d\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvf_fabd_4s(float *p, float *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n fabd v2.4s, v0.4s, v1.4s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvf_fabd_2s(float *p, float *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n fabd v2.2s, v0.2s, v1.2s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvd_fabd_2d(double *p, double *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n fabd v2.2d, v0.2d, v1.2d\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvf_fcmeq_4s(float *p, float *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n fcmeq v2.4s, v0.4s, v1.4s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvf_fcmeq_2s(float *p, float *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n fcmeq v2.2s, v0.2s, v1.2s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvd_fcmeq_2d(double *p, double *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n fcmeq v2.2d, v0.2d, v1.2d\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvf_fcmgt_4s(float *p, float *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n fcmgt v2.4s, v0.4s, v1.4s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvf_fcmgt_2s(float *p, float *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n fcmgt v2.2s, v0.2s, v1.2s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvd_fcmgt_2d(double *p, double *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n fcmgt v2.2d, v0.2d, v1.2d\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvf_fcmge_4s(float *p, float *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n fcmge v2.4s, v0.4s, v1.4s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvf_fcmge_2s(float *p, float *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n fcmge v2.2s, v0.2s, v1.2s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvd_fcmge_2d(double *p, double *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n fcmge v2.2d, v0.2d, v1.2d\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvf_facgt_4s(float *p, float *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n facgt v2.4s, v0.4s, v1.4s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvf_facgt_2s(float *p, float *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n facgt v2.2s, v0.2s, v1.2s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvd_facgt_2d(double *p, double *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n facgt v2.2d, v0.2d, v1.2d\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvf_facge_4s(float *p, float *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n facge v2.4s, v0.4s, v1.4s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvf_facge_2s(float *p, float *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n facge v2.2s, v0.2s, v1.2s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvd_facge_2d(double *p, double *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n facge v2.2d, v0.2d, v1.2d\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvf_faddp_4s(float *p, float *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n faddp v2.4s, v0.4s, v1.4s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvf_faddp_2s(float *p, float *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n faddp v2.2s, v0.2s, v1.2s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvd_faddp_2d(double *p, double *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n faddp v2.2d, v0.2d, v1.2d\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvf_fmaxp_4s(float *p, float *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n fmaxp v2.4s, v0.4s, v1.4s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvf_fmaxp_2s(float *p, float *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n fmaxp v2.2s, v0.2s, v1.2s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvd_fmaxp_2d(double *p, double *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n fmaxp v2.2d, v0.2d, v1.2d\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvf_fminp_4s(float *p, float *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n fminp v2.4s, v0.4s, v1.4s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvf_fminp_2s(float *p, float *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n fminp v2.2s, v0.2s, v1.2s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvd_fminp_2d(double *p, double *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n fminp v2.2d, v0.2d, v1.2d\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvf_fmla_4s(float *p, float *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n fmla v2.4s, v0.4s, v1.4s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvf_fmla_2s(float *p, float *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n fmla v2.2s, v0.2s, v1.2s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvd_fmla_2d(double *p, double *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n fmla v2.2d, v0.2d, v1.2d\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvf_fmls_4s(float *p, float *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n fmls v2.4s, v0.4s, v1.4s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvf_fmls_2s(float *p, float *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n fmls v2.2s, v0.2s, v1.2s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvd_fmls_2d(double *p, double *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n fmls v2.2d, v0.2d, v1.2d\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvf_fneg_4s(float *p, float *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n fneg v2.4s, v0.4s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvf_fneg_2s(float *p, float *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n fneg v2.2s, v0.2s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvd_fneg_2d(double *p, double *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n fneg v2.2d, v0.2d\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvf_fabs_4s(float *p, float *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n fabs v2.4s, v0.4s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvf_fabs_2s(float *p, float *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n fabs v2.2s, v0.2s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvd_fabs_2d(double *p, double *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n fabs v2.2d, v0.2d\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvf_fsqrt_4s(float *p, float *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n fsqrt v2.4s, v0.4s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvf_fsqrt_2s(float *p, float *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n fsqrt v2.2s, v0.2s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvd_fsqrt_2d(double *p, double *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n fsqrt v2.2d, v0.2d\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvf_frintn_4s(float *p, float *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n frintn v2.4s, v0.4s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvf_frintn_2s(float *p, float *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n frintn v2.2s, v0.2s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvd_frintn_2d(double *p, double *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n frintn v2.2d, v0.2d\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvf_frintm_4s(float *p, float *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n frintm v2.4s, v0.4s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvf_frintm_2s(float *p, float *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n frintm v2.2s, v0.2s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvd_frintm_2d(double *p, double *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n frintm v2.2d, v0.2d\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvf_frintp_4s(float *p, float *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n frintp v2.4s, v0.4s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvf_frintp_2s(float *p, float *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n frintp v2.2s, v0.2s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvd_frintp_2d(double *p, double *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n frintp v2.2d, v0.2d\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvf_frintz_4s(float *p, float *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n frintz v2.4s, v0.4s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvf_frintz_2s(float *p, float *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n frintz v2.2s, v0.2s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvd_frintz_2d(double *p, double *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n frintz v2.2d, v0.2d\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvf_frinta_4s(float *p, float *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n frinta v2.4s, v0.4s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvf_frinta_2s(float *p, float *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n frinta v2.2s, v0.2s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvd_frinta_2d(double *p, double *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n frinta v2.2d, v0.2d\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvf_frintx_4s(float *p, float *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n frintx v2.4s, v0.4s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvf_frintx_2s(float *p, float *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n frintx v2.2s, v0.2s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvd_frintx_2d(double *p, double *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n frintx v2.2d, v0.2d\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_scvtf_4s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n scvtf v2.4s, v0.4s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_scvtf_2s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n scvtf v2.2s, v0.2s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_scvtf_2d(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n scvtf v2.2d, v0.2d\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvf_fcvtzs_4s(float *p, float *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n fcvtzs v2.4s, v0.4s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvf_fcvtzs_2s(float *p, float *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n fcvtzs v2.2s, v0.2s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvd_fcvtzs_2d(double *p, double *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n fcvtzs v2.2d, v0.2d\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvf_fcvtzu_4s(float *p, float *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n fcvtzu v2.4s, v0.4s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvf_fcvtzu_2s(float *p, float *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n fcvtzu v2.2s, v0.2s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvd_fcvtzu_2d(double *p, double *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n fcvtzu v2.2d, v0.2d\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_ucvtf_4s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n ucvtf v2.4s, v0.4s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_ucvtf_2s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n ucvtf v2.2s, v0.2s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_ucvtf_2d(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n ucvtf v2.2d, v0.2d\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvf_fcmeqz_4s(float *p, float *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n fcmeq v2.4s, v0.4s, #0.0\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvf_fcmeqz_2s(float *p, float *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n fcmeq v2.2s, v0.2s, #0.0\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvd_fcmeqz_2d(double *p, double *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n fcmeq v2.2d, v0.2d, #0.0\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvf_fcmgtz_4s(float *p, float *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n fcmgt v2.4s, v0.4s, #0.0\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvf_fcmgtz_2s(float *p, float *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n fcmgt v2.2s, v0.2s, #0.0\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvd_fcmgtz_2d(double *p, double *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n fcmgt v2.2d, v0.2d, #0.0\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvf_fcmgez_4s(float *p, float *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n fcmge v2.4s, v0.4s, #0.0\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvf_fcmgez_2s(float *p, float *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n fcmge v2.2s, v0.2s, #0.0\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvd_fcmgez_2d(double *p, double *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n fcmge v2.2d, v0.2d, #0.0\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvf_fcmlez_4s(float *p, float *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n fcmle v2.4s, v0.4s, #0.0\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvf_fcmlez_2s(float *p, float *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n fcmle v2.2s, v0.2s, #0.0\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvd_fcmlez_2d(double *p, double *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n fcmle v2.2d, v0.2d, #0.0\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvf_fcmltz_4s(float *p, float *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n fcmlt v2.4s, v0.4s, #0.0\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvf_fcmltz_2s(float *p, float *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n fcmlt v2.2s, v0.2s, #0.0\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvd_fcmltz_2d(double *p, double *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n fcmlt v2.2d, v0.2d, #0.0\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvf_fmul_e4s_0(float *p, float *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n fmul v2.4s, v0.4s, v1.s[0]\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvf_fmul_e4s_3(float *p, float *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n fmul v2.4s, v0.4s, v1.s[3]\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvf_fmul_e2s_0(float *p, float *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n fmul v2.2s, v0.2s, v1.s[0]\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvf_fmul_e2s_1(float *p, float *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n fmul v2.2s, v0.2s, v1.s[1]\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvd_fmul_e2d_0(double *p, double *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n fmul v2.2d, v0.2d, v1.d[0]\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvd_fmul_e2d_1(double *p, double *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n fmul v2.2d, v0.2d, v1.d[1]\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvf_fmla_e4s_0(float *p, float *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n fmla v2.4s, v0.4s, v1.s[0]\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvf_fmla_e4s_3(float *p, float *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n fmla v2.4s, v0.4s, v1.s[3]\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvf_fmla_e2s_0(float *p, float *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n fmla v2.2s, v0.2s, v1.s[0]\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvf_fmla_e2s_1(float *p, float *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n fmla v2.2s, v0.2s, v1.s[1]\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvd_fmla_e2d_0(double *p, double *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n fmla v2.2d, v0.2d, v1.d[0]\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvd_fmla_e2d_1(double *p, double *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n fmla v2.2d, v0.2d, v1.d[1]\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvf_fmls_e4s_0(float *p, float *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n fmls v2.4s, v0.4s, v1.s[0]\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvf_fmls_e4s_3(float *p, float *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n fmls v2.4s, v0.4s, v1.s[3]\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvf_fmls_e2s_0(float *p, float *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n fmls v2.2s, v0.2s, v1.s[0]\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvf_fmls_e2s_1(float *p, float *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n fmls v2.2s, v0.2s, v1.s[1]\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvd_fmls_e2d_0(double *p, double *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n fmls v2.2d, v0.2d, v1.d[0]\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvd_fmls_e2d_1(double *p, double *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n fmls v2.2d, v0.2d, v1.d[1]\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_zip1_16b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n zip1 v2.16b, v0.16b, v1.16b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_zip1_8h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n zip1 v2.8h, v0.8h, v1.8h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_zip1_4s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n zip1 v2.4s, v0.4s, v1.4s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_zip1_8b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n zip1 v2.8b, v0.8b, v1.8b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_zip1_4h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n zip1 v2.4h, v0.4h, v1.4h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_zip1_2s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n zip1 v2.2s, v0.2s, v1.2s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_zip1_2d(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n zip1 v2.2d, v0.2d, v1.2d\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_zip2_16b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n zip2 v2.16b, v0.16b, v1.16b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_zip2_8h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n zip2 v2.8h, v0.8h, v1.8h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_zip2_4s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n zip2 v2.4s, v0.4s, v1.4s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_zip2_8b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n zip2 v2.8b, v0.8b, v1.8b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_zip2_4h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n zip2 v2.4h, v0.4h, v1.4h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_zip2_2s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n zip2 v2.2s, v0.2s, v1.2s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_zip2_2d(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n zip2 v2.2d, v0.2d, v1.2d\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_uzp1_16b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n uzp1 v2.16b, v0.16b, v1.16b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_uzp1_8h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n uzp1 v2.8h, v0.8h, v1.8h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_uzp1_4s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n uzp1 v2.4s, v0.4s, v1.4s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_uzp1_8b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n uzp1 v2.8b, v0.8b, v1.8b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_uzp1_4h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n uzp1 v2.4h, v0.4h, v1.4h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_uzp1_2s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n uzp1 v2.2s, v0.2s, v1.2s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_uzp1_2d(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n uzp1 v2.2d, v0.2d, v1.2d\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_uzp2_16b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n uzp2 v2.16b, v0.16b, v1.16b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_uzp2_8h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n uzp2 v2.8h, v0.8h, v1.8h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_uzp2_4s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n uzp2 v2.4s, v0.4s, v1.4s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_uzp2_8b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n uzp2 v2.8b, v0.8b, v1.8b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_uzp2_4h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n uzp2 v2.4h, v0.4h, v1.4h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_uzp2_2s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n uzp2 v2.2s, v0.2s, v1.2s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_uzp2_2d(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n uzp2 v2.2d, v0.2d, v1.2d\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_trn1_16b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n trn1 v2.16b, v0.16b, v1.16b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_trn1_8h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n trn1 v2.8h, v0.8h, v1.8h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_trn1_4s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n trn1 v2.4s, v0.4s, v1.4s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_trn1_8b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n trn1 v2.8b, v0.8b, v1.8b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_trn1_4h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n trn1 v2.4h, v0.4h, v1.4h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_trn1_2s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n trn1 v2.2s, v0.2s, v1.2s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_trn1_2d(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n trn1 v2.2d, v0.2d, v1.2d\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_trn2_16b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n trn2 v2.16b, v0.16b, v1.16b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_trn2_8h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n trn2 v2.8h, v0.8h, v1.8h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_trn2_4s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n trn2 v2.4s, v0.4s, v1.4s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_trn2_8b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n trn2 v2.8b, v0.8b, v1.8b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_trn2_4h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n trn2 v2.4h, v0.4h, v1.4h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_trn2_2s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n trn2 v2.2s, v0.2s, v1.2s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_trn2_2d(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n trn2 v2.2d, v0.2d, v1.2d\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_ext_16b_1(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n ext v2.16b, v0.16b, v1.16b, #1\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_ext_16b_3(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n ext v2.16b, v0.16b, v1.16b, #3\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_ext_16b_7(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n ext v2.16b, v0.16b, v1.16b, #7\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_ext_16b_15(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n ext v2.16b, v0.16b, v1.16b, #15\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_ext_8b_1(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n ext v2.8b, v0.8b, v1.8b, #1\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_ext_8b_3(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n ext v2.8b, v0.8b, v1.8b, #3\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_ext_8b_7(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n ext v2.8b, v0.8b, v1.8b, #7\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_dupe_4s_0(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n dup v2.4s, v0.s[0]\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_dupe_4s_1(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n dup v2.4s, v0.s[1]\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_dupe_4s_3(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n dup v2.4s, v0.s[3]\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_dupe_2s_0(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n dup v2.2s, v0.s[0]\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_dupe_2s_1(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n dup v2.2s, v0.s[1]\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_dupe_8h_0(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n dup v2.8h, v0.h[0]\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_dupe_8h_3(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n dup v2.8h, v0.h[3]\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_dupe_8h_7(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n dup v2.8h, v0.h[7]\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_dupe_16b_0(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n dup v2.16b, v0.b[0]\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_dupe_16b_7(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n dup v2.16b, v0.b[7]\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_dupe_16b_15(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n dup v2.16b, v0.b[15]\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_dupe_2d_0(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n dup v2.2d, v0.d[0]\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_dupe_2d_1(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n dup v2.2d, v0.d[1]\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_dupg_4s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n ldr w5, [x1]\n dup v2.4s, w5\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_dupg_2s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n ldr w5, [x1]\n dup v2.2s, w5\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_dupg_8h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n ldr w5, [x1]\n dup v2.8h, w5\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_dupg_16b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n ldr w5, [x1]\n dup v2.16b, w5\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_dupg_8b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n ldr w5, [x1]\n dup v2.8b, w5\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_dupg_2d(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n ldr w5, [x1]\n dup v2.2d, x5\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_insg_s_0(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n ldr x5, [x1]\n mov v2.16b, v0.16b\n ins v2.s[0], w5\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_inse_s_0(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mov v2.16b, v0.16b\n ins v2.s[0], v1.s[3]\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_insg_s_3(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n ldr x5, [x1]\n mov v2.16b, v0.16b\n ins v2.s[3], w5\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_inse_s_3(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mov v2.16b, v0.16b\n ins v2.s[3], v1.s[0]\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_insg_h_0(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n ldr x5, [x1]\n mov v2.16b, v0.16b\n ins v2.h[0], w5\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_inse_h_0(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mov v2.16b, v0.16b\n ins v2.h[0], v1.h[7]\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_insg_h_7(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n ldr x5, [x1]\n mov v2.16b, v0.16b\n ins v2.h[7], w5\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_inse_h_7(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mov v2.16b, v0.16b\n ins v2.h[7], v1.h[0]\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_insg_b_0(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n ldr x5, [x1]\n mov v2.16b, v0.16b\n ins v2.b[0], w5\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_inse_b_0(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mov v2.16b, v0.16b\n ins v2.b[0], v1.b[15]\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_insg_b_15(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n ldr x5, [x1]\n mov v2.16b, v0.16b\n ins v2.b[15], w5\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_inse_b_15(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mov v2.16b, v0.16b\n ins v2.b[15], v1.b[0]\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_insg_d_0(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n ldr x5, [x1]\n mov v2.16b, v0.16b\n ins v2.d[0], x5\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_inse_d_0(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mov v2.16b, v0.16b\n ins v2.d[0], v1.d[1]\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_insg_d_1(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n ldr x5, [x1]\n mov v2.16b, v0.16b\n ins v2.d[1], x5\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_inse_d_1(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mov v2.16b, v0.16b\n ins v2.d[1], v1.d[0]\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_umov_s_0(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n umov w5, v0.s[0]\n dup v2.4s, w5\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_smov_s_0(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n smov x5, v0.s[0]\n dup v2.4s, w5\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_umov_s_3(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n umov w5, v0.s[3]\n dup v2.4s, w5\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_smov_s_3(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n smov x5, v0.s[3]\n dup v2.4s, w5\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_umov_h_0(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n umov w5, v0.h[0]\n dup v2.4s, w5\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_smov_h_0(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n smov w5, v0.h[0]\n dup v2.4s, w5\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_umov_h_7(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n umov w5, v0.h[7]\n dup v2.4s, w5\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_smov_h_7(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n smov w5, v0.h[7]\n dup v2.4s, w5\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_umov_b_0(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n umov w5, v0.b[0]\n dup v2.4s, w5\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_smov_b_0(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n smov w5, v0.b[0]\n dup v2.4s, w5\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_umov_b_15(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n umov w5, v0.b[15]\n dup v2.4s, w5\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_smov_b_15(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n smov w5, v0.b[15]\n dup v2.4s, w5\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_umov_d(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n umov x5, v0.d[1]\n dup v2.2d, x5\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_movi_4s_5(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n movi v2.4s, #5\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_mvni_4s_5(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mvni v2.4s, #5\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_movi_4s_5_lsl8(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n movi v2.4s, #5, lsl #8\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_mvni_4s_5_lsl8(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mvni v2.4s, #5, lsl #8\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_movi_4s_5_lsl16(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n movi v2.4s, #5, lsl #16\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_mvni_4s_5_lsl16(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mvni v2.4s, #5, lsl #16\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_movi_4s_7_msl8(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n movi v2.4s, #7, msl #8\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_mvni_4s_7_msl8(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mvni v2.4s, #7, msl #8\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_movi_2s_9_lsl24(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n movi v2.2s, #9, lsl #24\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_mvni_2s_9_lsl24(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mvni v2.2s, #9, lsl #24\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_movi_8h_3(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n movi v2.8h, #3\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_mvni_8h_3(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mvni v2.8h, #3\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_movi_8h_3_lsl8(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n movi v2.8h, #3, lsl #8\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_mvni_8h_3_lsl8(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mvni v2.8h, #3, lsl #8\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_movi_16b_77(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n movi v2.16b, #77\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_movi_8b_200(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n movi v2.8b, #200\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_movi_2d(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n movi v2.2d, #0xff00ff00ff00ff00\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_movi_2d0(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n movi v2.2d, #0\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvf_fmov_4s(float *p, float *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n fmov v2.4s, #1.5\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvf_fmov_2s(float *p, float *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n fmov v2.2s, #-0.25\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvd_fmov_2d(double *p, double *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n fmov v2.2d, #-2.0\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_orri_4s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mov v2.16b, v0.16b\n orr v2.4s, #3, lsl #8\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_bici_4s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mov v2.16b, v0.16b\n bic v2.4s, #3, lsl #16\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_orri_8h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mov v2.16b, v0.16b\n orr v2.8h, #1\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_sshll_8b_0(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n sshll v2.8h, v0.8b, #0\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_sshll2_16b_0(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n sshll2 v2.8h, v0.16b, #0\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_sshll_8b_1(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n sshll v2.8h, v0.8b, #1\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_sshll2_16b_1(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n sshll2 v2.8h, v0.16b, #1\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_sshll_8b_7(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n sshll v2.8h, v0.8b, #7\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_sshll2_16b_7(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n sshll2 v2.8h, v0.16b, #7\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_sshll_4h_0(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n sshll v2.4s, v0.4h, #0\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_sshll2_8h_0(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n sshll2 v2.4s, v0.8h, #0\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_sshll_4h_1(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n sshll v2.4s, v0.4h, #1\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_sshll2_8h_1(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n sshll2 v2.4s, v0.8h, #1\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_sshll_4h_15(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n sshll v2.4s, v0.4h, #15\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_sshll2_8h_15(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n sshll2 v2.4s, v0.8h, #15\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_sshll_2s_0(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n sshll v2.2d, v0.2s, #0\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_sshll2_4s_0(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n sshll2 v2.2d, v0.4s, #0\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_sshll_2s_1(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n sshll v2.2d, v0.2s, #1\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_sshll2_4s_1(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n sshll2 v2.2d, v0.4s, #1\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_sshll_2s_31(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n sshll v2.2d, v0.2s, #31\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_sshll2_4s_31(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n sshll2 v2.2d, v0.4s, #31\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_ushll_8b_0(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n ushll v2.8h, v0.8b, #0\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_ushll2_16b_0(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n ushll2 v2.8h, v0.16b, #0\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_ushll_8b_1(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n ushll v2.8h, v0.8b, #1\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_ushll2_16b_1(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n ushll2 v2.8h, v0.16b, #1\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_ushll_8b_7(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n ushll v2.8h, v0.8b, #7\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_ushll2_16b_7(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n ushll2 v2.8h, v0.16b, #7\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_ushll_4h_0(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n ushll v2.4s, v0.4h, #0\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_ushll2_8h_0(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n ushll2 v2.4s, v0.8h, #0\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_ushll_4h_1(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n ushll v2.4s, v0.4h, #1\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_ushll2_8h_1(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n ushll2 v2.4s, v0.8h, #1\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_ushll_4h_15(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n ushll v2.4s, v0.4h, #15\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_ushll2_8h_15(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n ushll2 v2.4s, v0.8h, #15\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_ushll_2s_0(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n ushll v2.2d, v0.2s, #0\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_ushll2_4s_0(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n ushll2 v2.2d, v0.4s, #0\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_ushll_2s_1(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n ushll v2.2d, v0.2s, #1\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_ushll2_4s_1(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n ushll2 v2.2d, v0.4s, #1\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_ushll_2s_31(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n ushll v2.2d, v0.2s, #31\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_ushll2_4s_31(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n ushll2 v2.2d, v0.4s, #31\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_xtn_8b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n xtn v2.8b, v0.8h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_xtn2_16b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mov v2.16b, v1.16b\n xtn2 v2.16b, v0.8h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_xtn_4h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n xtn v2.4h, v0.4s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_xtn2_8h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mov v2.16b, v1.16b\n xtn2 v2.8h, v0.4s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_xtn_2s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n xtn v2.2s, v0.2d\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_xtn2_4s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mov v2.16b, v1.16b\n xtn2 v2.4s, v0.2d\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_saddl_8b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mov v2.16b, v1.16b\n saddl v2.8h, v0.8b, v1.8b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_saddl2_16b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mov v2.16b, v1.16b\n saddl2 v2.8h, v0.16b, v1.16b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_saddl_4h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mov v2.16b, v1.16b\n saddl v2.4s, v0.4h, v1.4h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_saddl2_8h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mov v2.16b, v1.16b\n saddl2 v2.4s, v0.8h, v1.8h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_saddl_2s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mov v2.16b, v1.16b\n saddl v2.2d, v0.2s, v1.2s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_saddl2_4s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mov v2.16b, v1.16b\n saddl2 v2.2d, v0.4s, v1.4s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_uaddl_8b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mov v2.16b, v1.16b\n uaddl v2.8h, v0.8b, v1.8b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_uaddl2_16b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mov v2.16b, v1.16b\n uaddl2 v2.8h, v0.16b, v1.16b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_uaddl_4h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mov v2.16b, v1.16b\n uaddl v2.4s, v0.4h, v1.4h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_uaddl2_8h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mov v2.16b, v1.16b\n uaddl2 v2.4s, v0.8h, v1.8h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_uaddl_2s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mov v2.16b, v1.16b\n uaddl v2.2d, v0.2s, v1.2s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_uaddl2_4s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mov v2.16b, v1.16b\n uaddl2 v2.2d, v0.4s, v1.4s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_ssubl_8b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mov v2.16b, v1.16b\n ssubl v2.8h, v0.8b, v1.8b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_ssubl2_16b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mov v2.16b, v1.16b\n ssubl2 v2.8h, v0.16b, v1.16b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_ssubl_4h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mov v2.16b, v1.16b\n ssubl v2.4s, v0.4h, v1.4h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_ssubl2_8h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mov v2.16b, v1.16b\n ssubl2 v2.4s, v0.8h, v1.8h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_ssubl_2s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mov v2.16b, v1.16b\n ssubl v2.2d, v0.2s, v1.2s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_ssubl2_4s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mov v2.16b, v1.16b\n ssubl2 v2.2d, v0.4s, v1.4s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_usubl_8b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mov v2.16b, v1.16b\n usubl v2.8h, v0.8b, v1.8b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_usubl2_16b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mov v2.16b, v1.16b\n usubl2 v2.8h, v0.16b, v1.16b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_usubl_4h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mov v2.16b, v1.16b\n usubl v2.4s, v0.4h, v1.4h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_usubl2_8h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mov v2.16b, v1.16b\n usubl2 v2.4s, v0.8h, v1.8h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_usubl_2s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mov v2.16b, v1.16b\n usubl v2.2d, v0.2s, v1.2s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_usubl2_4s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mov v2.16b, v1.16b\n usubl2 v2.2d, v0.4s, v1.4s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_smull_8b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mov v2.16b, v1.16b\n smull v2.8h, v0.8b, v1.8b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_smull2_16b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mov v2.16b, v1.16b\n smull2 v2.8h, v0.16b, v1.16b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_smull_4h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mov v2.16b, v1.16b\n smull v2.4s, v0.4h, v1.4h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_smull2_8h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mov v2.16b, v1.16b\n smull2 v2.4s, v0.8h, v1.8h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_smull_2s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mov v2.16b, v1.16b\n smull v2.2d, v0.2s, v1.2s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_smull2_4s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mov v2.16b, v1.16b\n smull2 v2.2d, v0.4s, v1.4s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_umull_8b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mov v2.16b, v1.16b\n umull v2.8h, v0.8b, v1.8b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_umull2_16b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mov v2.16b, v1.16b\n umull2 v2.8h, v0.16b, v1.16b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_umull_4h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mov v2.16b, v1.16b\n umull v2.4s, v0.4h, v1.4h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_umull2_8h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mov v2.16b, v1.16b\n umull2 v2.4s, v0.8h, v1.8h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_umull_2s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mov v2.16b, v1.16b\n umull v2.2d, v0.2s, v1.2s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_umull2_4s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mov v2.16b, v1.16b\n umull2 v2.2d, v0.4s, v1.4s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_smlal_8b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mov v2.16b, v1.16b\n smlal v2.8h, v0.8b, v1.8b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_smlal2_16b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mov v2.16b, v1.16b\n smlal2 v2.8h, v0.16b, v1.16b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_smlal_4h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mov v2.16b, v1.16b\n smlal v2.4s, v0.4h, v1.4h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_smlal2_8h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mov v2.16b, v1.16b\n smlal2 v2.4s, v0.8h, v1.8h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_smlal_2s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mov v2.16b, v1.16b\n smlal v2.2d, v0.2s, v1.2s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_smlal2_4s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mov v2.16b, v1.16b\n smlal2 v2.2d, v0.4s, v1.4s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_umlal_8b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mov v2.16b, v1.16b\n umlal v2.8h, v0.8b, v1.8b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_umlal2_16b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mov v2.16b, v1.16b\n umlal2 v2.8h, v0.16b, v1.16b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_umlal_4h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mov v2.16b, v1.16b\n umlal v2.4s, v0.4h, v1.4h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_umlal2_8h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mov v2.16b, v1.16b\n umlal2 v2.4s, v0.8h, v1.8h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_umlal_2s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mov v2.16b, v1.16b\n umlal v2.2d, v0.2s, v1.2s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_umlal2_4s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mov v2.16b, v1.16b\n umlal2 v2.2d, v0.4s, v1.4s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_smlsl_8b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mov v2.16b, v1.16b\n smlsl v2.8h, v0.8b, v1.8b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_smlsl2_16b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mov v2.16b, v1.16b\n smlsl2 v2.8h, v0.16b, v1.16b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_smlsl_4h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mov v2.16b, v1.16b\n smlsl v2.4s, v0.4h, v1.4h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_smlsl2_8h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mov v2.16b, v1.16b\n smlsl2 v2.4s, v0.8h, v1.8h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_smlsl_2s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mov v2.16b, v1.16b\n smlsl v2.2d, v0.2s, v1.2s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_smlsl2_4s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mov v2.16b, v1.16b\n smlsl2 v2.2d, v0.4s, v1.4s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_umlsl_8b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mov v2.16b, v1.16b\n umlsl v2.8h, v0.8b, v1.8b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_umlsl2_16b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mov v2.16b, v1.16b\n umlsl2 v2.8h, v0.16b, v1.16b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_umlsl_4h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mov v2.16b, v1.16b\n umlsl v2.4s, v0.4h, v1.4h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_umlsl2_8h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mov v2.16b, v1.16b\n umlsl2 v2.4s, v0.8h, v1.8h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_umlsl_2s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mov v2.16b, v1.16b\n umlsl v2.2d, v0.2s, v1.2s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_umlsl2_4s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n mov v2.16b, v1.16b\n umlsl2 v2.2d, v0.4s, v1.4s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_saddw_8b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n saddw v2.8h, v0.8h, v1.8b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_saddw2_16b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n saddw2 v2.8h, v0.8h, v1.16b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_saddw_4h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n saddw v2.4s, v0.4s, v1.4h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_saddw2_8h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n saddw2 v2.4s, v0.4s, v1.8h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_saddw_2s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n saddw v2.2d, v0.2d, v1.2s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_saddw2_4s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n saddw2 v2.2d, v0.2d, v1.4s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_uaddw_8b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n uaddw v2.8h, v0.8h, v1.8b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_uaddw2_16b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n uaddw2 v2.8h, v0.8h, v1.16b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_uaddw_4h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n uaddw v2.4s, v0.4s, v1.4h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_uaddw2_8h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n uaddw2 v2.4s, v0.4s, v1.8h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_uaddw_2s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n uaddw v2.2d, v0.2d, v1.2s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_uaddw2_4s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n uaddw2 v2.2d, v0.2d, v1.4s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_addv_16b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n addv b2, v0.16b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_addv_8b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n addv b2, v0.8b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_addv_8h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n addv h2, v0.8h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_addv_4h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n addv h2, v0.4h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_addv_4s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n addv s2, v0.4s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_smaxv_16b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n smaxv b2, v0.16b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_smaxv_8b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n smaxv b2, v0.8b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_smaxv_8h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n smaxv h2, v0.8h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_smaxv_4h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n smaxv h2, v0.4h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_smaxv_4s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n smaxv s2, v0.4s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_sminv_16b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n sminv b2, v0.16b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_sminv_8b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n sminv b2, v0.8b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_sminv_8h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n sminv h2, v0.8h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_sminv_4h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n sminv h2, v0.4h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_sminv_4s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n sminv s2, v0.4s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_umaxv_16b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n umaxv b2, v0.16b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_umaxv_8b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n umaxv b2, v0.8b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_umaxv_8h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n umaxv h2, v0.8h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_umaxv_4h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n umaxv h2, v0.4h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_umaxv_4s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n umaxv s2, v0.4s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_uminv_16b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n uminv b2, v0.16b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_uminv_8b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n uminv b2, v0.8b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_uminv_8h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n uminv h2, v0.8h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_uminv_4h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n uminv h2, v0.4h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_uminv_4s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n uminv s2, v0.4s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_saddlv_16b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n saddlv h2, v0.16b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_saddlv_8b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n saddlv h2, v0.8b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_saddlv_8h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n saddlv s2, v0.8h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_saddlv_4h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n saddlv s2, v0.4h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_saddlv_4s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n saddlv d2, v0.4s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_uaddlv_16b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n uaddlv h2, v0.16b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_uaddlv_8b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n uaddlv h2, v0.8b\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_uaddlv_8h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n uaddlv s2, v0.8h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_uaddlv_4h(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n uaddlv s2, v0.4h\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_uaddlv_4s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n uaddlv d2, v0.4s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvd_faddp_s2d(double *p, double *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n faddp d2, v0.2d\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_addp_s2d(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n addp d2, v0.2d\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvf_fmaxv_4s(float *p, float *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n fmaxv s2, v0.4s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvf_fminv_4s(float *p, float *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n fminv s2, v0.4s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvf_fmaxnmv_4s(float *p, float *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n fmaxnmv s2, v0.4s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvf_fminnmv_4s(float *p, float *q) { AASM("ldr q0, [x0]\n ldr q1, [x1]\n ldr q2, [x0, #16]\n fminnmv s2, v0.4s\n str q0, [x0]\n str q2, [x1]"); }
+NK void nvi_ld1x1_16b(int *p, int *q) { AASM("movi v0.2d, #0\n movi v1.2d, #0\n movi v2.2d, #0\n movi v3.2d, #0\n ld1 {v0.16b}, [x0]\n str q0, [x1, #0]\n "); }
+NK void nvi_st1x1_16b(int *p, int *q) { AASM("ldr q0, [x0, #0]\n st1 {v0.16b}, [x1]"); }
+NK void nvi_ld1x2_16b(int *p, int *q) { AASM("movi v0.2d, #0\n movi v1.2d, #0\n movi v2.2d, #0\n movi v3.2d, #0\n ld1 {v0.16b, v1.16b}, [x0]\n str q0, [x1, #0]\n str q1, [x1, #16]\n "); }
+NK void nvi_st1x2_16b(int *p, int *q) { AASM("ldr q0, [x0, #0]\n ldr q1, [x0, #16]\n st1 {v0.16b, v1.16b}, [x1]"); }
+NK void nvi_ld2_16b(int *p, int *q) { AASM("movi v0.2d, #0\n movi v1.2d, #0\n movi v2.2d, #0\n movi v3.2d, #0\n ld2 {v0.16b, v1.16b}, [x0]\n str q0, [x1, #0]\n str q1, [x1, #16]\n "); }
+NK void nvi_st2_16b(int *p, int *q) { AASM("ldr q0, [x0, #0]\n ldr q1, [x0, #16]\n st2 {v0.16b, v1.16b}, [x1]"); }
+NK void nvi_ld1x3_16b(int *p, int *q) { AASM("movi v0.2d, #0\n movi v1.2d, #0\n movi v2.2d, #0\n movi v3.2d, #0\n ld1 {v0.16b, v1.16b, v2.16b}, [x0]\n str q0, [x1, #0]\n str q1, [x1, #16]\n str q2, [x1, #32]\n "); }
+NK void nvi_st1x3_16b(int *p, int *q) { AASM("ldr q0, [x0, #0]\n ldr q1, [x0, #16]\n ldr q2, [x0, #32]\n st1 {v0.16b, v1.16b, v2.16b}, [x1]"); }
+NK void nvi_ld3_16b(int *p, int *q) { AASM("movi v0.2d, #0\n movi v1.2d, #0\n movi v2.2d, #0\n movi v3.2d, #0\n ld3 {v0.16b, v1.16b, v2.16b}, [x0]\n str q0, [x1, #0]\n str q1, [x1, #16]\n str q2, [x1, #32]\n "); }
+NK void nvi_st3_16b(int *p, int *q) { AASM("ldr q0, [x0, #0]\n ldr q1, [x0, #16]\n ldr q2, [x0, #32]\n st3 {v0.16b, v1.16b, v2.16b}, [x1]"); }
+NK void nvi_ld1x4_16b(int *p, int *q) { AASM("movi v0.2d, #0\n movi v1.2d, #0\n movi v2.2d, #0\n movi v3.2d, #0\n ld1 {v0.16b, v1.16b, v2.16b, v3.16b}, [x0]\n str q0, [x1, #0]\n str q1, [x1, #16]\n str q2, [x1, #32]\n str q3, [x1, #48]\n "); }
+NK void nvi_st1x4_16b(int *p, int *q) { AASM("ldr q0, [x0, #0]\n ldr q1, [x0, #16]\n ldr q2, [x0, #32]\n ldr q3, [x0, #48]\n st1 {v0.16b, v1.16b, v2.16b, v3.16b}, [x1]"); }
+NK void nvi_ld4_16b(int *p, int *q) { AASM("movi v0.2d, #0\n movi v1.2d, #0\n movi v2.2d, #0\n movi v3.2d, #0\n ld4 {v0.16b, v1.16b, v2.16b, v3.16b}, [x0]\n str q0, [x1, #0]\n str q1, [x1, #16]\n str q2, [x1, #32]\n str q3, [x1, #48]\n "); }
+NK void nvi_st4_16b(int *p, int *q) { AASM("ldr q0, [x0, #0]\n ldr q1, [x0, #16]\n ldr q2, [x0, #32]\n ldr q3, [x0, #48]\n st4 {v0.16b, v1.16b, v2.16b, v3.16b}, [x1]"); }
+NK void nvi_ld1r_16b(int *p, int *q) { AASM("movi v0.2d, #0\n movi v1.2d, #0\n movi v2.2d, #0\n movi v3.2d, #0\n ld1r {v0.16b}, [x0]\n str q0, [x1, #0]\n "); }
+NK void nvi_ld2r_16b(int *p, int *q) { AASM("movi v0.2d, #0\n movi v1.2d, #0\n movi v2.2d, #0\n movi v3.2d, #0\n ld2r {v0.16b, v1.16b}, [x0]\n str q0, [x1, #0]\n str q1, [x1, #16]\n "); }
+NK void nvi_ld3r_16b(int *p, int *q) { AASM("movi v0.2d, #0\n movi v1.2d, #0\n movi v2.2d, #0\n movi v3.2d, #0\n ld3r {v0.16b, v1.16b, v2.16b}, [x0]\n str q0, [x1, #0]\n str q1, [x1, #16]\n str q2, [x1, #32]\n "); }
+NK void nvi_ld4r_16b(int *p, int *q) { AASM("movi v0.2d, #0\n movi v1.2d, #0\n movi v2.2d, #0\n movi v3.2d, #0\n ld4r {v0.16b, v1.16b, v2.16b, v3.16b}, [x0]\n str q0, [x1, #0]\n str q1, [x1, #16]\n str q2, [x1, #32]\n str q3, [x1, #48]\n "); }
+NK void nvi_ld1x1_8h(int *p, int *q) { AASM("movi v0.2d, #0\n movi v1.2d, #0\n movi v2.2d, #0\n movi v3.2d, #0\n ld1 {v0.8h}, [x0]\n str q0, [x1, #0]\n "); }
+NK void nvi_st1x1_8h(int *p, int *q) { AASM("ldr q0, [x0, #0]\n st1 {v0.8h}, [x1]"); }
+NK void nvi_ld1x2_8h(int *p, int *q) { AASM("movi v0.2d, #0\n movi v1.2d, #0\n movi v2.2d, #0\n movi v3.2d, #0\n ld1 {v0.8h, v1.8h}, [x0]\n str q0, [x1, #0]\n str q1, [x1, #16]\n "); }
+NK void nvi_st1x2_8h(int *p, int *q) { AASM("ldr q0, [x0, #0]\n ldr q1, [x0, #16]\n st1 {v0.8h, v1.8h}, [x1]"); }
+NK void nvi_ld2_8h(int *p, int *q) { AASM("movi v0.2d, #0\n movi v1.2d, #0\n movi v2.2d, #0\n movi v3.2d, #0\n ld2 {v0.8h, v1.8h}, [x0]\n str q0, [x1, #0]\n str q1, [x1, #16]\n "); }
+NK void nvi_st2_8h(int *p, int *q) { AASM("ldr q0, [x0, #0]\n ldr q1, [x0, #16]\n st2 {v0.8h, v1.8h}, [x1]"); }
+NK void nvi_ld1x3_8h(int *p, int *q) { AASM("movi v0.2d, #0\n movi v1.2d, #0\n movi v2.2d, #0\n movi v3.2d, #0\n ld1 {v0.8h, v1.8h, v2.8h}, [x0]\n str q0, [x1, #0]\n str q1, [x1, #16]\n str q2, [x1, #32]\n "); }
+NK void nvi_st1x3_8h(int *p, int *q) { AASM("ldr q0, [x0, #0]\n ldr q1, [x0, #16]\n ldr q2, [x0, #32]\n st1 {v0.8h, v1.8h, v2.8h}, [x1]"); }
+NK void nvi_ld3_8h(int *p, int *q) { AASM("movi v0.2d, #0\n movi v1.2d, #0\n movi v2.2d, #0\n movi v3.2d, #0\n ld3 {v0.8h, v1.8h, v2.8h}, [x0]\n str q0, [x1, #0]\n str q1, [x1, #16]\n str q2, [x1, #32]\n "); }
+NK void nvi_st3_8h(int *p, int *q) { AASM("ldr q0, [x0, #0]\n ldr q1, [x0, #16]\n ldr q2, [x0, #32]\n st3 {v0.8h, v1.8h, v2.8h}, [x1]"); }
+NK void nvi_ld1x4_8h(int *p, int *q) { AASM("movi v0.2d, #0\n movi v1.2d, #0\n movi v2.2d, #0\n movi v3.2d, #0\n ld1 {v0.8h, v1.8h, v2.8h, v3.8h}, [x0]\n str q0, [x1, #0]\n str q1, [x1, #16]\n str q2, [x1, #32]\n str q3, [x1, #48]\n "); }
+NK void nvi_st1x4_8h(int *p, int *q) { AASM("ldr q0, [x0, #0]\n ldr q1, [x0, #16]\n ldr q2, [x0, #32]\n ldr q3, [x0, #48]\n st1 {v0.8h, v1.8h, v2.8h, v3.8h}, [x1]"); }
+NK void nvi_ld4_8h(int *p, int *q) { AASM("movi v0.2d, #0\n movi v1.2d, #0\n movi v2.2d, #0\n movi v3.2d, #0\n ld4 {v0.8h, v1.8h, v2.8h, v3.8h}, [x0]\n str q0, [x1, #0]\n str q1, [x1, #16]\n str q2, [x1, #32]\n str q3, [x1, #48]\n "); }
+NK void nvi_st4_8h(int *p, int *q) { AASM("ldr q0, [x0, #0]\n ldr q1, [x0, #16]\n ldr q2, [x0, #32]\n ldr q3, [x0, #48]\n st4 {v0.8h, v1.8h, v2.8h, v3.8h}, [x1]"); }
+NK void nvi_ld1r_8h(int *p, int *q) { AASM("movi v0.2d, #0\n movi v1.2d, #0\n movi v2.2d, #0\n movi v3.2d, #0\n ld1r {v0.8h}, [x0]\n str q0, [x1, #0]\n "); }
+NK void nvi_ld2r_8h(int *p, int *q) { AASM("movi v0.2d, #0\n movi v1.2d, #0\n movi v2.2d, #0\n movi v3.2d, #0\n ld2r {v0.8h, v1.8h}, [x0]\n str q0, [x1, #0]\n str q1, [x1, #16]\n "); }
+NK void nvi_ld3r_8h(int *p, int *q) { AASM("movi v0.2d, #0\n movi v1.2d, #0\n movi v2.2d, #0\n movi v3.2d, #0\n ld3r {v0.8h, v1.8h, v2.8h}, [x0]\n str q0, [x1, #0]\n str q1, [x1, #16]\n str q2, [x1, #32]\n "); }
+NK void nvi_ld4r_8h(int *p, int *q) { AASM("movi v0.2d, #0\n movi v1.2d, #0\n movi v2.2d, #0\n movi v3.2d, #0\n ld4r {v0.8h, v1.8h, v2.8h, v3.8h}, [x0]\n str q0, [x1, #0]\n str q1, [x1, #16]\n str q2, [x1, #32]\n str q3, [x1, #48]\n "); }
+NK void nvi_ld1x1_4s(int *p, int *q) { AASM("movi v0.2d, #0\n movi v1.2d, #0\n movi v2.2d, #0\n movi v3.2d, #0\n ld1 {v0.4s}, [x0]\n str q0, [x1, #0]\n "); }
+NK void nvi_st1x1_4s(int *p, int *q) { AASM("ldr q0, [x0, #0]\n st1 {v0.4s}, [x1]"); }
+NK void nvi_ld1x2_4s(int *p, int *q) { AASM("movi v0.2d, #0\n movi v1.2d, #0\n movi v2.2d, #0\n movi v3.2d, #0\n ld1 {v0.4s, v1.4s}, [x0]\n str q0, [x1, #0]\n str q1, [x1, #16]\n "); }
+NK void nvi_st1x2_4s(int *p, int *q) { AASM("ldr q0, [x0, #0]\n ldr q1, [x0, #16]\n st1 {v0.4s, v1.4s}, [x1]"); }
+NK void nvi_ld2_4s(int *p, int *q) { AASM("movi v0.2d, #0\n movi v1.2d, #0\n movi v2.2d, #0\n movi v3.2d, #0\n ld2 {v0.4s, v1.4s}, [x0]\n str q0, [x1, #0]\n str q1, [x1, #16]\n "); }
+NK void nvi_st2_4s(int *p, int *q) { AASM("ldr q0, [x0, #0]\n ldr q1, [x0, #16]\n st2 {v0.4s, v1.4s}, [x1]"); }
+NK void nvi_ld1x3_4s(int *p, int *q) { AASM("movi v0.2d, #0\n movi v1.2d, #0\n movi v2.2d, #0\n movi v3.2d, #0\n ld1 {v0.4s, v1.4s, v2.4s}, [x0]\n str q0, [x1, #0]\n str q1, [x1, #16]\n str q2, [x1, #32]\n "); }
+NK void nvi_st1x3_4s(int *p, int *q) { AASM("ldr q0, [x0, #0]\n ldr q1, [x0, #16]\n ldr q2, [x0, #32]\n st1 {v0.4s, v1.4s, v2.4s}, [x1]"); }
+NK void nvi_ld3_4s(int *p, int *q) { AASM("movi v0.2d, #0\n movi v1.2d, #0\n movi v2.2d, #0\n movi v3.2d, #0\n ld3 {v0.4s, v1.4s, v2.4s}, [x0]\n str q0, [x1, #0]\n str q1, [x1, #16]\n str q2, [x1, #32]\n "); }
+NK void nvi_st3_4s(int *p, int *q) { AASM("ldr q0, [x0, #0]\n ldr q1, [x0, #16]\n ldr q2, [x0, #32]\n st3 {v0.4s, v1.4s, v2.4s}, [x1]"); }
+NK void nvi_ld1x4_4s(int *p, int *q) { AASM("movi v0.2d, #0\n movi v1.2d, #0\n movi v2.2d, #0\n movi v3.2d, #0\n ld1 {v0.4s, v1.4s, v2.4s, v3.4s}, [x0]\n str q0, [x1, #0]\n str q1, [x1, #16]\n str q2, [x1, #32]\n str q3, [x1, #48]\n "); }
+NK void nvi_st1x4_4s(int *p, int *q) { AASM("ldr q0, [x0, #0]\n ldr q1, [x0, #16]\n ldr q2, [x0, #32]\n ldr q3, [x0, #48]\n st1 {v0.4s, v1.4s, v2.4s, v3.4s}, [x1]"); }
+NK void nvi_ld4_4s(int *p, int *q) { AASM("movi v0.2d, #0\n movi v1.2d, #0\n movi v2.2d, #0\n movi v3.2d, #0\n ld4 {v0.4s, v1.4s, v2.4s, v3.4s}, [x0]\n str q0, [x1, #0]\n str q1, [x1, #16]\n str q2, [x1, #32]\n str q3, [x1, #48]\n "); }
+NK void nvi_st4_4s(int *p, int *q) { AASM("ldr q0, [x0, #0]\n ldr q1, [x0, #16]\n ldr q2, [x0, #32]\n ldr q3, [x0, #48]\n st4 {v0.4s, v1.4s, v2.4s, v3.4s}, [x1]"); }
+NK void nvi_ld1r_4s(int *p, int *q) { AASM("movi v0.2d, #0\n movi v1.2d, #0\n movi v2.2d, #0\n movi v3.2d, #0\n ld1r {v0.4s}, [x0]\n str q0, [x1, #0]\n "); }
+NK void nvi_ld2r_4s(int *p, int *q) { AASM("movi v0.2d, #0\n movi v1.2d, #0\n movi v2.2d, #0\n movi v3.2d, #0\n ld2r {v0.4s, v1.4s}, [x0]\n str q0, [x1, #0]\n str q1, [x1, #16]\n "); }
+NK void nvi_ld3r_4s(int *p, int *q) { AASM("movi v0.2d, #0\n movi v1.2d, #0\n movi v2.2d, #0\n movi v3.2d, #0\n ld3r {v0.4s, v1.4s, v2.4s}, [x0]\n str q0, [x1, #0]\n str q1, [x1, #16]\n str q2, [x1, #32]\n "); }
+NK void nvi_ld4r_4s(int *p, int *q) { AASM("movi v0.2d, #0\n movi v1.2d, #0\n movi v2.2d, #0\n movi v3.2d, #0\n ld4r {v0.4s, v1.4s, v2.4s, v3.4s}, [x0]\n str q0, [x1, #0]\n str q1, [x1, #16]\n str q2, [x1, #32]\n str q3, [x1, #48]\n "); }
+NK void nvi_ld1x1_2d(int *p, int *q) { AASM("movi v0.2d, #0\n movi v1.2d, #0\n movi v2.2d, #0\n movi v3.2d, #0\n ld1 {v0.2d}, [x0]\n str q0, [x1, #0]\n "); }
+NK void nvi_st1x1_2d(int *p, int *q) { AASM("ldr q0, [x0, #0]\n st1 {v0.2d}, [x1]"); }
+NK void nvi_ld1x2_2d(int *p, int *q) { AASM("movi v0.2d, #0\n movi v1.2d, #0\n movi v2.2d, #0\n movi v3.2d, #0\n ld1 {v0.2d, v1.2d}, [x0]\n str q0, [x1, #0]\n str q1, [x1, #16]\n "); }
+NK void nvi_st1x2_2d(int *p, int *q) { AASM("ldr q0, [x0, #0]\n ldr q1, [x0, #16]\n st1 {v0.2d, v1.2d}, [x1]"); }
+NK void nvi_ld2_2d(int *p, int *q) { AASM("movi v0.2d, #0\n movi v1.2d, #0\n movi v2.2d, #0\n movi v3.2d, #0\n ld2 {v0.2d, v1.2d}, [x0]\n str q0, [x1, #0]\n str q1, [x1, #16]\n "); }
+NK void nvi_st2_2d(int *p, int *q) { AASM("ldr q0, [x0, #0]\n ldr q1, [x0, #16]\n st2 {v0.2d, v1.2d}, [x1]"); }
+NK void nvi_ld1x3_2d(int *p, int *q) { AASM("movi v0.2d, #0\n movi v1.2d, #0\n movi v2.2d, #0\n movi v3.2d, #0\n ld1 {v0.2d, v1.2d, v2.2d}, [x0]\n str q0, [x1, #0]\n str q1, [x1, #16]\n str q2, [x1, #32]\n "); }
+NK void nvi_st1x3_2d(int *p, int *q) { AASM("ldr q0, [x0, #0]\n ldr q1, [x0, #16]\n ldr q2, [x0, #32]\n st1 {v0.2d, v1.2d, v2.2d}, [x1]"); }
+NK void nvi_ld3_2d(int *p, int *q) { AASM("movi v0.2d, #0\n movi v1.2d, #0\n movi v2.2d, #0\n movi v3.2d, #0\n ld3 {v0.2d, v1.2d, v2.2d}, [x0]\n str q0, [x1, #0]\n str q1, [x1, #16]\n str q2, [x1, #32]\n "); }
+NK void nvi_st3_2d(int *p, int *q) { AASM("ldr q0, [x0, #0]\n ldr q1, [x0, #16]\n ldr q2, [x0, #32]\n st3 {v0.2d, v1.2d, v2.2d}, [x1]"); }
+NK void nvi_ld1x4_2d(int *p, int *q) { AASM("movi v0.2d, #0\n movi v1.2d, #0\n movi v2.2d, #0\n movi v3.2d, #0\n ld1 {v0.2d, v1.2d, v2.2d, v3.2d}, [x0]\n str q0, [x1, #0]\n str q1, [x1, #16]\n str q2, [x1, #32]\n str q3, [x1, #48]\n "); }
+NK void nvi_st1x4_2d(int *p, int *q) { AASM("ldr q0, [x0, #0]\n ldr q1, [x0, #16]\n ldr q2, [x0, #32]\n ldr q3, [x0, #48]\n st1 {v0.2d, v1.2d, v2.2d, v3.2d}, [x1]"); }
+NK void nvi_ld4_2d(int *p, int *q) { AASM("movi v0.2d, #0\n movi v1.2d, #0\n movi v2.2d, #0\n movi v3.2d, #0\n ld4 {v0.2d, v1.2d, v2.2d, v3.2d}, [x0]\n str q0, [x1, #0]\n str q1, [x1, #16]\n str q2, [x1, #32]\n str q3, [x1, #48]\n "); }
+NK void nvi_st4_2d(int *p, int *q) { AASM("ldr q0, [x0, #0]\n ldr q1, [x0, #16]\n ldr q2, [x0, #32]\n ldr q3, [x0, #48]\n st4 {v0.2d, v1.2d, v2.2d, v3.2d}, [x1]"); }
+NK void nvi_ld1r_2d(int *p, int *q) { AASM("movi v0.2d, #0\n movi v1.2d, #0\n movi v2.2d, #0\n movi v3.2d, #0\n ld1r {v0.2d}, [x0]\n str q0, [x1, #0]\n "); }
+NK void nvi_ld2r_2d(int *p, int *q) { AASM("movi v0.2d, #0\n movi v1.2d, #0\n movi v2.2d, #0\n movi v3.2d, #0\n ld2r {v0.2d, v1.2d}, [x0]\n str q0, [x1, #0]\n str q1, [x1, #16]\n "); }
+NK void nvi_ld3r_2d(int *p, int *q) { AASM("movi v0.2d, #0\n movi v1.2d, #0\n movi v2.2d, #0\n movi v3.2d, #0\n ld3r {v0.2d, v1.2d, v2.2d}, [x0]\n str q0, [x1, #0]\n str q1, [x1, #16]\n str q2, [x1, #32]\n "); }
+NK void nvi_ld4r_2d(int *p, int *q) { AASM("movi v0.2d, #0\n movi v1.2d, #0\n movi v2.2d, #0\n movi v3.2d, #0\n ld4r {v0.2d, v1.2d, v2.2d, v3.2d}, [x0]\n str q0, [x1, #0]\n str q1, [x1, #16]\n str q2, [x1, #32]\n str q3, [x1, #48]\n "); }
+NK void nvi_ld1x1_8b(int *p, int *q) { AASM("movi v0.2d, #0\n movi v1.2d, #0\n movi v2.2d, #0\n movi v3.2d, #0\n ld1 {v0.8b}, [x0]\n str q0, [x1, #0]\n "); }
+NK void nvi_st1x1_8b(int *p, int *q) { AASM("ldr q0, [x0, #0]\n st1 {v0.8b}, [x1]"); }
+NK void nvi_ld1x2_8b(int *p, int *q) { AASM("movi v0.2d, #0\n movi v1.2d, #0\n movi v2.2d, #0\n movi v3.2d, #0\n ld1 {v0.8b, v1.8b}, [x0]\n str q0, [x1, #0]\n str q1, [x1, #16]\n "); }
+NK void nvi_st1x2_8b(int *p, int *q) { AASM("ldr q0, [x0, #0]\n ldr q1, [x0, #16]\n st1 {v0.8b, v1.8b}, [x1]"); }
+NK void nvi_ld2_8b(int *p, int *q) { AASM("movi v0.2d, #0\n movi v1.2d, #0\n movi v2.2d, #0\n movi v3.2d, #0\n ld2 {v0.8b, v1.8b}, [x0]\n str q0, [x1, #0]\n str q1, [x1, #16]\n "); }
+NK void nvi_st2_8b(int *p, int *q) { AASM("ldr q0, [x0, #0]\n ldr q1, [x0, #16]\n st2 {v0.8b, v1.8b}, [x1]"); }
+NK void nvi_ld1x3_8b(int *p, int *q) { AASM("movi v0.2d, #0\n movi v1.2d, #0\n movi v2.2d, #0\n movi v3.2d, #0\n ld1 {v0.8b, v1.8b, v2.8b}, [x0]\n str q0, [x1, #0]\n str q1, [x1, #16]\n str q2, [x1, #32]\n "); }
+NK void nvi_st1x3_8b(int *p, int *q) { AASM("ldr q0, [x0, #0]\n ldr q1, [x0, #16]\n ldr q2, [x0, #32]\n st1 {v0.8b, v1.8b, v2.8b}, [x1]"); }
+NK void nvi_ld3_8b(int *p, int *q) { AASM("movi v0.2d, #0\n movi v1.2d, #0\n movi v2.2d, #0\n movi v3.2d, #0\n ld3 {v0.8b, v1.8b, v2.8b}, [x0]\n str q0, [x1, #0]\n str q1, [x1, #16]\n str q2, [x1, #32]\n "); }
+NK void nvi_st3_8b(int *p, int *q) { AASM("ldr q0, [x0, #0]\n ldr q1, [x0, #16]\n ldr q2, [x0, #32]\n st3 {v0.8b, v1.8b, v2.8b}, [x1]"); }
+NK void nvi_ld1x4_8b(int *p, int *q) { AASM("movi v0.2d, #0\n movi v1.2d, #0\n movi v2.2d, #0\n movi v3.2d, #0\n ld1 {v0.8b, v1.8b, v2.8b, v3.8b}, [x0]\n str q0, [x1, #0]\n str q1, [x1, #16]\n str q2, [x1, #32]\n str q3, [x1, #48]\n "); }
+NK void nvi_st1x4_8b(int *p, int *q) { AASM("ldr q0, [x0, #0]\n ldr q1, [x0, #16]\n ldr q2, [x0, #32]\n ldr q3, [x0, #48]\n st1 {v0.8b, v1.8b, v2.8b, v3.8b}, [x1]"); }
+NK void nvi_ld4_8b(int *p, int *q) { AASM("movi v0.2d, #0\n movi v1.2d, #0\n movi v2.2d, #0\n movi v3.2d, #0\n ld4 {v0.8b, v1.8b, v2.8b, v3.8b}, [x0]\n str q0, [x1, #0]\n str q1, [x1, #16]\n str q2, [x1, #32]\n str q3, [x1, #48]\n "); }
+NK void nvi_st4_8b(int *p, int *q) { AASM("ldr q0, [x0, #0]\n ldr q1, [x0, #16]\n ldr q2, [x0, #32]\n ldr q3, [x0, #48]\n st4 {v0.8b, v1.8b, v2.8b, v3.8b}, [x1]"); }
+NK void nvi_ld1r_8b(int *p, int *q) { AASM("movi v0.2d, #0\n movi v1.2d, #0\n movi v2.2d, #0\n movi v3.2d, #0\n ld1r {v0.8b}, [x0]\n str q0, [x1, #0]\n "); }
+NK void nvi_ld2r_8b(int *p, int *q) { AASM("movi v0.2d, #0\n movi v1.2d, #0\n movi v2.2d, #0\n movi v3.2d, #0\n ld2r {v0.8b, v1.8b}, [x0]\n str q0, [x1, #0]\n str q1, [x1, #16]\n "); }
+NK void nvi_ld3r_8b(int *p, int *q) { AASM("movi v0.2d, #0\n movi v1.2d, #0\n movi v2.2d, #0\n movi v3.2d, #0\n ld3r {v0.8b, v1.8b, v2.8b}, [x0]\n str q0, [x1, #0]\n str q1, [x1, #16]\n str q2, [x1, #32]\n "); }
+NK void nvi_ld4r_8b(int *p, int *q) { AASM("movi v0.2d, #0\n movi v1.2d, #0\n movi v2.2d, #0\n movi v3.2d, #0\n ld4r {v0.8b, v1.8b, v2.8b, v3.8b}, [x0]\n str q0, [x1, #0]\n str q1, [x1, #16]\n str q2, [x1, #32]\n str q3, [x1, #48]\n "); }
+NK void nvi_ld1x1_4h(int *p, int *q) { AASM("movi v0.2d, #0\n movi v1.2d, #0\n movi v2.2d, #0\n movi v3.2d, #0\n ld1 {v0.4h}, [x0]\n str q0, [x1, #0]\n "); }
+NK void nvi_st1x1_4h(int *p, int *q) { AASM("ldr q0, [x0, #0]\n st1 {v0.4h}, [x1]"); }
+NK void nvi_ld1x2_4h(int *p, int *q) { AASM("movi v0.2d, #0\n movi v1.2d, #0\n movi v2.2d, #0\n movi v3.2d, #0\n ld1 {v0.4h, v1.4h}, [x0]\n str q0, [x1, #0]\n str q1, [x1, #16]\n "); }
+NK void nvi_st1x2_4h(int *p, int *q) { AASM("ldr q0, [x0, #0]\n ldr q1, [x0, #16]\n st1 {v0.4h, v1.4h}, [x1]"); }
+NK void nvi_ld2_4h(int *p, int *q) { AASM("movi v0.2d, #0\n movi v1.2d, #0\n movi v2.2d, #0\n movi v3.2d, #0\n ld2 {v0.4h, v1.4h}, [x0]\n str q0, [x1, #0]\n str q1, [x1, #16]\n "); }
+NK void nvi_st2_4h(int *p, int *q) { AASM("ldr q0, [x0, #0]\n ldr q1, [x0, #16]\n st2 {v0.4h, v1.4h}, [x1]"); }
+NK void nvi_ld1x3_4h(int *p, int *q) { AASM("movi v0.2d, #0\n movi v1.2d, #0\n movi v2.2d, #0\n movi v3.2d, #0\n ld1 {v0.4h, v1.4h, v2.4h}, [x0]\n str q0, [x1, #0]\n str q1, [x1, #16]\n str q2, [x1, #32]\n "); }
+NK void nvi_st1x3_4h(int *p, int *q) { AASM("ldr q0, [x0, #0]\n ldr q1, [x0, #16]\n ldr q2, [x0, #32]\n st1 {v0.4h, v1.4h, v2.4h}, [x1]"); }
+NK void nvi_ld3_4h(int *p, int *q) { AASM("movi v0.2d, #0\n movi v1.2d, #0\n movi v2.2d, #0\n movi v3.2d, #0\n ld3 {v0.4h, v1.4h, v2.4h}, [x0]\n str q0, [x1, #0]\n str q1, [x1, #16]\n str q2, [x1, #32]\n "); }
+NK void nvi_st3_4h(int *p, int *q) { AASM("ldr q0, [x0, #0]\n ldr q1, [x0, #16]\n ldr q2, [x0, #32]\n st3 {v0.4h, v1.4h, v2.4h}, [x1]"); }
+NK void nvi_ld1x4_4h(int *p, int *q) { AASM("movi v0.2d, #0\n movi v1.2d, #0\n movi v2.2d, #0\n movi v3.2d, #0\n ld1 {v0.4h, v1.4h, v2.4h, v3.4h}, [x0]\n str q0, [x1, #0]\n str q1, [x1, #16]\n str q2, [x1, #32]\n str q3, [x1, #48]\n "); }
+NK void nvi_st1x4_4h(int *p, int *q) { AASM("ldr q0, [x0, #0]\n ldr q1, [x0, #16]\n ldr q2, [x0, #32]\n ldr q3, [x0, #48]\n st1 {v0.4h, v1.4h, v2.4h, v3.4h}, [x1]"); }
+NK void nvi_ld4_4h(int *p, int *q) { AASM("movi v0.2d, #0\n movi v1.2d, #0\n movi v2.2d, #0\n movi v3.2d, #0\n ld4 {v0.4h, v1.4h, v2.4h, v3.4h}, [x0]\n str q0, [x1, #0]\n str q1, [x1, #16]\n str q2, [x1, #32]\n str q3, [x1, #48]\n "); }
+NK void nvi_st4_4h(int *p, int *q) { AASM("ldr q0, [x0, #0]\n ldr q1, [x0, #16]\n ldr q2, [x0, #32]\n ldr q3, [x0, #48]\n st4 {v0.4h, v1.4h, v2.4h, v3.4h}, [x1]"); }
+NK void nvi_ld1r_4h(int *p, int *q) { AASM("movi v0.2d, #0\n movi v1.2d, #0\n movi v2.2d, #0\n movi v3.2d, #0\n ld1r {v0.4h}, [x0]\n str q0, [x1, #0]\n "); }
+NK void nvi_ld2r_4h(int *p, int *q) { AASM("movi v0.2d, #0\n movi v1.2d, #0\n movi v2.2d, #0\n movi v3.2d, #0\n ld2r {v0.4h, v1.4h}, [x0]\n str q0, [x1, #0]\n str q1, [x1, #16]\n "); }
+NK void nvi_ld3r_4h(int *p, int *q) { AASM("movi v0.2d, #0\n movi v1.2d, #0\n movi v2.2d, #0\n movi v3.2d, #0\n ld3r {v0.4h, v1.4h, v2.4h}, [x0]\n str q0, [x1, #0]\n str q1, [x1, #16]\n str q2, [x1, #32]\n "); }
+NK void nvi_ld4r_4h(int *p, int *q) { AASM("movi v0.2d, #0\n movi v1.2d, #0\n movi v2.2d, #0\n movi v3.2d, #0\n ld4r {v0.4h, v1.4h, v2.4h, v3.4h}, [x0]\n str q0, [x1, #0]\n str q1, [x1, #16]\n str q2, [x1, #32]\n str q3, [x1, #48]\n "); }
+NK void nvi_ld1x1_2s(int *p, int *q) { AASM("movi v0.2d, #0\n movi v1.2d, #0\n movi v2.2d, #0\n movi v3.2d, #0\n ld1 {v0.2s}, [x0]\n str q0, [x1, #0]\n "); }
+NK void nvi_st1x1_2s(int *p, int *q) { AASM("ldr q0, [x0, #0]\n st1 {v0.2s}, [x1]"); }
+NK void nvi_ld1x2_2s(int *p, int *q) { AASM("movi v0.2d, #0\n movi v1.2d, #0\n movi v2.2d, #0\n movi v3.2d, #0\n ld1 {v0.2s, v1.2s}, [x0]\n str q0, [x1, #0]\n str q1, [x1, #16]\n "); }
+NK void nvi_st1x2_2s(int *p, int *q) { AASM("ldr q0, [x0, #0]\n ldr q1, [x0, #16]\n st1 {v0.2s, v1.2s}, [x1]"); }
+NK void nvi_ld2_2s(int *p, int *q) { AASM("movi v0.2d, #0\n movi v1.2d, #0\n movi v2.2d, #0\n movi v3.2d, #0\n ld2 {v0.2s, v1.2s}, [x0]\n str q0, [x1, #0]\n str q1, [x1, #16]\n "); }
+NK void nvi_st2_2s(int *p, int *q) { AASM("ldr q0, [x0, #0]\n ldr q1, [x0, #16]\n st2 {v0.2s, v1.2s}, [x1]"); }
+NK void nvi_ld1x3_2s(int *p, int *q) { AASM("movi v0.2d, #0\n movi v1.2d, #0\n movi v2.2d, #0\n movi v3.2d, #0\n ld1 {v0.2s, v1.2s, v2.2s}, [x0]\n str q0, [x1, #0]\n str q1, [x1, #16]\n str q2, [x1, #32]\n "); }
+NK void nvi_st1x3_2s(int *p, int *q) { AASM("ldr q0, [x0, #0]\n ldr q1, [x0, #16]\n ldr q2, [x0, #32]\n st1 {v0.2s, v1.2s, v2.2s}, [x1]"); }
+NK void nvi_ld3_2s(int *p, int *q) { AASM("movi v0.2d, #0\n movi v1.2d, #0\n movi v2.2d, #0\n movi v3.2d, #0\n ld3 {v0.2s, v1.2s, v2.2s}, [x0]\n str q0, [x1, #0]\n str q1, [x1, #16]\n str q2, [x1, #32]\n "); }
+NK void nvi_st3_2s(int *p, int *q) { AASM("ldr q0, [x0, #0]\n ldr q1, [x0, #16]\n ldr q2, [x0, #32]\n st3 {v0.2s, v1.2s, v2.2s}, [x1]"); }
+NK void nvi_ld1x4_2s(int *p, int *q) { AASM("movi v0.2d, #0\n movi v1.2d, #0\n movi v2.2d, #0\n movi v3.2d, #0\n ld1 {v0.2s, v1.2s, v2.2s, v3.2s}, [x0]\n str q0, [x1, #0]\n str q1, [x1, #16]\n str q2, [x1, #32]\n str q3, [x1, #48]\n "); }
+NK void nvi_st1x4_2s(int *p, int *q) { AASM("ldr q0, [x0, #0]\n ldr q1, [x0, #16]\n ldr q2, [x0, #32]\n ldr q3, [x0, #48]\n st1 {v0.2s, v1.2s, v2.2s, v3.2s}, [x1]"); }
+NK void nvi_ld4_2s(int *p, int *q) { AASM("movi v0.2d, #0\n movi v1.2d, #0\n movi v2.2d, #0\n movi v3.2d, #0\n ld4 {v0.2s, v1.2s, v2.2s, v3.2s}, [x0]\n str q0, [x1, #0]\n str q1, [x1, #16]\n str q2, [x1, #32]\n str q3, [x1, #48]\n "); }
+NK void nvi_st4_2s(int *p, int *q) { AASM("ldr q0, [x0, #0]\n ldr q1, [x0, #16]\n ldr q2, [x0, #32]\n ldr q3, [x0, #48]\n st4 {v0.2s, v1.2s, v2.2s, v3.2s}, [x1]"); }
+NK void nvi_ld1r_2s(int *p, int *q) { AASM("movi v0.2d, #0\n movi v1.2d, #0\n movi v2.2d, #0\n movi v3.2d, #0\n ld1r {v0.2s}, [x0]\n str q0, [x1, #0]\n "); }
+NK void nvi_ld2r_2s(int *p, int *q) { AASM("movi v0.2d, #0\n movi v1.2d, #0\n movi v2.2d, #0\n movi v3.2d, #0\n ld2r {v0.2s, v1.2s}, [x0]\n str q0, [x1, #0]\n str q1, [x1, #16]\n "); }
+NK void nvi_ld3r_2s(int *p, int *q) { AASM("movi v0.2d, #0\n movi v1.2d, #0\n movi v2.2d, #0\n movi v3.2d, #0\n ld3r {v0.2s, v1.2s, v2.2s}, [x0]\n str q0, [x1, #0]\n str q1, [x1, #16]\n str q2, [x1, #32]\n "); }
+NK void nvi_ld4r_2s(int *p, int *q) { AASM("movi v0.2d, #0\n movi v1.2d, #0\n movi v2.2d, #0\n movi v3.2d, #0\n ld4r {v0.2s, v1.2s, v2.2s, v3.2s}, [x0]\n str q0, [x1, #0]\n str q1, [x1, #16]\n str q2, [x1, #32]\n str q3, [x1, #48]\n "); }
+NK void nvi_ld1post_4s(int *p, int *q) { AASM("ld1 {v0.4s}, [x0], #16\n ldr q1, [x0]\n str q0, [x1]\n str q1, [x1, #16]"); }
+NK void nvi_st1post_4s(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x0, #16]\n st1 {v0.4s}, [x1], #16\n str q1, [x1]"); }
+NK void nvi_ld1postr_4s(int *p, int *q) { AASM("mov x2, #16\n ld1 {v0.4s}, [x0], x2\n ldr q1, [x0]\n str q0, [x1]\n str q1, [x1, #16]"); }
+NK void nvi_ld1post_8b(int *p, int *q) { AASM("ld1 {v0.8b}, [x0], #8\n ldr q1, [x0]\n str q0, [x1]\n str q1, [x1, #16]"); }
+NK void nvi_st1post_8b(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x0, #16]\n st1 {v0.8b}, [x1], #8\n str q1, [x1]"); }
+NK void nvi_ld1postr_8b(int *p, int *q) { AASM("mov x2, #8\n ld1 {v0.8b}, [x0], x2\n ldr q1, [x0]\n str q0, [x1]\n str q1, [x1, #16]"); }
+NK void nvi_ld1post_2d(int *p, int *q) { AASM("ld1 {v0.2d}, [x0], #16\n ldr q1, [x0]\n str q0, [x1]\n str q1, [x1, #16]"); }
+NK void nvi_st1post_2d(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x0, #16]\n st1 {v0.2d}, [x1], #16\n str q1, [x1]"); }
+NK void nvi_ld1postr_2d(int *p, int *q) { AASM("mov x2, #16\n ld1 {v0.2d}, [x0], x2\n ldr q1, [x0]\n str q0, [x1]\n str q1, [x1, #16]"); }
+NK void nvi_ld2post(int *p, int *q) { AASM("ld2 {v0.4s, v1.4s}, [x0], #32\n ldr q2, [x0]\n str q0, [x1]\n str q1, [x1, #16]\n str q2, [x1, #32]"); }
+NK void nvi_ld1lane_b0(int *p, int *q) { AASM("ldr q0, [x1]\n ld1 {v0.b}[0], [x0]\n str q0, [x1]"); }
+NK void nvi_st1lane_b0(int *p, int *q) { AASM("ldr q0, [x0]\n st1 {v0.b}[0], [x1]"); }
+NK void nvi_ld1lane_b7(int *p, int *q) { AASM("ldr q0, [x1]\n ld1 {v0.b}[7], [x0]\n str q0, [x1]"); }
+NK void nvi_st1lane_b7(int *p, int *q) { AASM("ldr q0, [x0]\n st1 {v0.b}[7], [x1]"); }
+NK void nvi_ld1lane_b15(int *p, int *q) { AASM("ldr q0, [x1]\n ld1 {v0.b}[15], [x0]\n str q0, [x1]"); }
+NK void nvi_st1lane_b15(int *p, int *q) { AASM("ldr q0, [x0]\n st1 {v0.b}[15], [x1]"); }
+NK void nvi_ld1lane_h0(int *p, int *q) { AASM("ldr q0, [x1]\n ld1 {v0.h}[0], [x0]\n str q0, [x1]"); }
+NK void nvi_st1lane_h0(int *p, int *q) { AASM("ldr q0, [x0]\n st1 {v0.h}[0], [x1]"); }
+NK void nvi_ld1lane_h3(int *p, int *q) { AASM("ldr q0, [x1]\n ld1 {v0.h}[3], [x0]\n str q0, [x1]"); }
+NK void nvi_st1lane_h3(int *p, int *q) { AASM("ldr q0, [x0]\n st1 {v0.h}[3], [x1]"); }
+NK void nvi_ld1lane_h7(int *p, int *q) { AASM("ldr q0, [x1]\n ld1 {v0.h}[7], [x0]\n str q0, [x1]"); }
+NK void nvi_st1lane_h7(int *p, int *q) { AASM("ldr q0, [x0]\n st1 {v0.h}[7], [x1]"); }
+NK void nvi_ld1lane_s0(int *p, int *q) { AASM("ldr q0, [x1]\n ld1 {v0.s}[0], [x0]\n str q0, [x1]"); }
+NK void nvi_st1lane_s0(int *p, int *q) { AASM("ldr q0, [x0]\n st1 {v0.s}[0], [x1]"); }
+NK void nvi_ld1lane_s1(int *p, int *q) { AASM("ldr q0, [x1]\n ld1 {v0.s}[1], [x0]\n str q0, [x1]"); }
+NK void nvi_st1lane_s1(int *p, int *q) { AASM("ldr q0, [x0]\n st1 {v0.s}[1], [x1]"); }
+NK void nvi_ld1lane_s3(int *p, int *q) { AASM("ldr q0, [x1]\n ld1 {v0.s}[3], [x0]\n str q0, [x1]"); }
+NK void nvi_st1lane_s3(int *p, int *q) { AASM("ldr q0, [x0]\n st1 {v0.s}[3], [x1]"); }
+NK void nvi_ld1lane_d0(int *p, int *q) { AASM("ldr q0, [x1]\n ld1 {v0.d}[0], [x0]\n str q0, [x1]"); }
+NK void nvi_st1lane_d0(int *p, int *q) { AASM("ldr q0, [x0]\n st1 {v0.d}[0], [x1]"); }
+NK void nvi_ld1lane_d1(int *p, int *q) { AASM("ldr q0, [x1]\n ld1 {v0.d}[1], [x0]\n str q0, [x1]"); }
+NK void nvi_st1lane_d1(int *p, int *q) { AASM("ldr q0, [x0]\n st1 {v0.d}[1], [x1]"); }
+NK void nvi_ld2lane_s1(int *p, int *q) { AASM("ldr q0, [x1]\n ldr q1, [x1, #16]\n ld2 {v0.s, v1.s}[1], [x0]\n str q0, [x1]\n str q1, [x1, #16]"); }
+NK void nvi_st2lane_h3(int *p, int *q) { AASM("ldr q0, [x0]\n ldr q1, [x0, #16]\n st2 {v0.h, v1.h}[3], [x1]"); }
+NK void nvi_ld3lane_b5(int *p, int *q) { AASM("ldr q0, [x1]\n ldr q1, [x1, #16]\n ldr q2, [x1, #32]\n ld3 {v0.b, v1.b, v2.b}[5], [x0]\n str q0, [x1]\n str q1, [x1, #16]\n str q2, [x1, #32]"); }
+NK void nvi_ldr_q(int *p, int *q) { AASM("ldr q0, [x0, #16]\n str q0, [x1]"); }
+NK void nvi_ldr_d(int *p, int *q) { AASM("movi v0.2d, #0xffffffffffffffff\n ldr d0, [x0, #8]\n str q0, [x1]"); }
+NK void nvi_ldr_s(int *p, int *q) { AASM("movi v0.2d, #0xffffffffffffffff\n ldr s0, [x0, #4]\n str q0, [x1]"); }
+NK void nvi_ldr_h(int *p, int *q) { AASM("movi v0.2d, #0xffffffffffffffff\n ldr h0, [x0, #2]\n str q0, [x1]"); }
+NK void nvi_ldr_b(int *p, int *q) { AASM("movi v0.2d, #0xffffffffffffffff\n ldr b0, [x0, #3]\n str q0, [x1]"); }
+NK void nvi_str_d(int *p, int *q) { AASM("ldr q0, [x0]\n str d0, [x1, #8]"); }
+NK void nvi_str_s(int *p, int *q) { AASM("ldr q0, [x0]\n str s0, [x1, #4]"); }
+NK void nvi_str_h(int *p, int *q) { AASM("ldr q0, [x0]\n str h0, [x1, #2]"); }
+NK void nvi_str_b(int *p, int *q) { AASM("ldr q0, [x0]\n str b0, [x1, #3]"); }
+NK void nvi_ldur_q(int *p, int *q) { AASM("ldur q0, [x0, #5]\n stur q0, [x1, #3]"); }
+NK void nvi_ldr_q_post(int *p, int *q) { AASM("ldr q0, [x0], #16\n ldr q1, [x0]\n str q0, [x1]\n str q1, [x1, #16]"); }
+NK void nvi_ldr_q_pre(int *p, int *q) { AASM("ldr q0, [x0, #16]!\n ldr q1, [x0]\n str q0, [x1]\n str q1, [x1, #16]"); }
+NK void nvi_str_q_post(int *p, int *q) { AASM("ldr q0, [x0]\n str q0, [x1], #16\n str q0, [x1]"); }
+NK void nvi_str_q_pre(int *p, int *q) { AASM("ldr q0, [x0]\n str q0, [x1, #16]!\n str q0, [x1, #16]"); }
+NK void nvi_ldr_q_reg(int *p, int *q) { AASM("mov x2, #16\n ldr q0, [x0, x2]\n str q0, [x1]"); }
+NK void nvi_ldr_q_regsh(int *p, int *q) { AASM("mov x2, #1\n ldr q0, [x0, x2, lsl #4]\n str q0, [x1]"); }
+NK void nvi_ldr_d_regw(int *p, int *q) { AASM("mov w2, #2\n ldr d0, [x0, w2, uxtw #3]\n str q0, [x1]"); }
+NK void nvi_ldp_q(int *p, int *q) { AASM("ldp q0, q1, [x0]\n stp q1, q0, [x1]"); }
+NK void nvi_ldp_q_post(int *p, int *q) { AASM("ldp q0, q1, [x0], #32\n ldr q2, [x0]\n stp q0, q1, [x1]\n str q2, [x1, #32]"); }
+NK void nvi_ldp_d(int *p, int *q) { AASM("ldp d0, d1, [x0, #8]\n stp d1, d0, [x1]"); }
+NK void nvi_ldp_s(int *p, int *q) { AASM("ldp s0, s1, [x0, #4]\n stp s1, s0, [x1]"); }
+NK void nvi_stp_q_pre(int *p, int *q) { AASM("ldp q0, q1, [x0]\n stp q0, q1, [x1, #16]!\n str q0, [x1, #32]"); }
+NK void nvi_fmov_x_d(int *p, int *q) { AASM("ldr q0, [x0]\n fmov x5, d0\n str x5, [x1]"); }
+NK void nvi_fmov_d_x(int *p, int *q) { AASM("ldr x5, [x0]\n fmov d2, x5\n str q2, [x1]"); }
+NK void nvi_fmov_x_dh(int *p, int *q) { AASM("ldr q0, [x0]\n fmov x5, v0.d[1]\n str x5, [x1]"); }
+NK void nvi_fmov_dh_x(int *p, int *q) { AASM("ldr q2, [x1]\n ldr x5, [x0]\n fmov v2.d[1], x5\n str q2, [x1]"); }
+NK void nvi_fmov_w_s(int *p, int *q) { AASM("ldr q0, [x0]\n fmov w5, s0\n str w5, [x1]"); }
+NK void nvi_fmov_s_w(int *p, int *q) { AASM("ldr w5, [x0]\n fmov s2, w5\n str q2, [x1]"); }
+#endif

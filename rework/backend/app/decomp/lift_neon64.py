@@ -83,6 +83,15 @@ class A64Neon:
     # ---- 진입점 --------------------------------------------------------------------------
     def _neon(self, insn, m, ops, a):
         """벡터 명령이면 문장 목록, 해석하지 못하면 None."""
+        import re
+        # Capstone 은 원소 지정 피연산자 `v0.s[0]` 의 원소 폭(vas)을 번호가 0 일 때 비워 두기도 한다 → 텍스트의 `.s[` 에서 읽는다
+        sizes = [{"b": 1, "h": 2, "s": 4, "d": 8}[c_] for c_ in re.findall(r"\.([bhsd])\[", insn.op_str)]
+        self._esz_by_op = {}
+        k = 0
+        for o in ops:
+            if o.type == OP_REG and self.is_fpop(o) and o.vector_index >= 0 and k < len(sizes):
+                self._esz_by_op[id(o)] = sizes[k]
+                k += 1
         try:
             return self._neon_inner(insn, m, ops, a)
         except NeonUnsupported:
@@ -91,8 +100,14 @@ class A64Neon:
     def _neon_inner(self, insn, m, ops, a):
         n = len(ops)
         d = ops[0]
+        if m in ("ld1", "ld2", "ld3", "ld4", "st1", "st2", "st3", "st4", "ld1r", "ld2r", "ld3r", "ld4r"):
+            return self._neon_ldst(insn, m, ops, a)
         sh = self.vshape(d)
         if sh is None:
+            if d.type == OP_REG and self.is_fpop(d) and d.vector_index >= 0:             # ins v0.s[1], w1 / v1.s[2] (목적지가 한 원소)
+                r = self._neon_perm(insn, m, ops, a, 0, 0)
+                if r is not None:
+                    return r
             return self._neon_scalar_dest(insn, m, ops, a)
         esz, total = sh
         per = 8 // esz
@@ -208,9 +223,12 @@ class A64Neon:
 
     def _funop(self, nm, esz, x):
         if esz == 8:
-            return {"fneg": X("fneg", (x,), 8), "fabs": X("fabs", (x,), 8), "fsqrt": X("fsqrt", (x,), 8)}.get(nm) or X(
-                "fround", (x,), 8, {"frintn": "rint", "frintm": "floor", "frintp": "ceil", "frintz": "trunc", "frinta": "round", "frintx": "rint"}[nm]) \
-                if nm.startswith("frint") else (_ for _ in ()).throw(NeonUnsupported(nm))
+            if nm in ("fneg", "fabs", "fsqrt"):
+                return X(nm, (x,), 8)
+            mode = {"frintn": "rint", "frintm": "floor", "frintp": "ceil", "frintz": "trunc", "frinta": "round", "frintx": "rint"}.get(nm)
+            if mode is None:
+                raise NeonUnsupported(nm)
+            return X("fround", (x,), 8, mode)
         return vop(nm, (x,), esz, "f")
 
     def _neon_bin(self, a, d, ops, esz, total, nm, cls, flt):
@@ -226,6 +244,11 @@ class A64Neon:
                 return self.lanewise(a, d, lambda x: binop(ints[nm], x[0], x[1], 8), [l1, l2], esz, total)
             if flt and nm in fl:
                 return self.lanewise(a, d, lambda x: X(fl[nm], (x[0], x[1]), 8), [l1, l2], esz, total)
+            if flt and nm == "fabd":
+                return self.lanewise(a, d, lambda x: X("fabs", (X("fsub", (x[0], x[1]), 8),), 8), [l1, l2], esz, total)
+            if flt and nm in ("facgt", "facge"):
+                c = "fgt" if nm == "facgt" else "fge"
+                return self.lanewise(a, d, lambda x: unop("neg", zext(X(c, (X("fabs", (x[0],), 8), X("fabs", (x[1],), 8)), 1), 8)), [l1, l2], esz, total)
             if not flt and nm in ("ceq", "cgt", "cge", "tst"):
                 return self.lanewise(a, d, lambda x: self._cmpop(nm, cls, esz, x[0], x[1]), [l1, l2], esz, total)
             if not flt and nm in ("max", "min"):
@@ -278,6 +301,8 @@ class A64Neon:
                 fn = lambda x: binop("shl", x[0], C(n, 1), 8)                               # noqa: E731
             else:
                 sop = "shr" if sgn == "u" else "sar"
+                if n >= 64:                                                                  # 오른쪽으로 64칸: 부호 있으면 부호 비트로 가득, 없으면 0
+                    n = 63 if sgn == "s" else 64
                 if acc:
                     fn = lambda x: binop("add", x[1], binop(sop, x[0], C(n, 1), 8), 8)      # noqa: E731
                 else:
@@ -311,8 +336,8 @@ class A64Neon:
     def _neon_perm(self, insn, m, ops, a, esz, total):
         n = len(ops)
         d = ops[0]
-        per = 8 // esz
-        nl = total // esz                                   # 전체 원소 수
+        per = 8 // esz if esz else 1
+        nl = total // esz if esz else 1                      # 전체 원소 수
         cls = "s"
         if m == "dup" and n == 2:
             s = ops[1]
@@ -359,8 +384,11 @@ class A64Neon:
         return None
 
     def _elem_size(self, op):
-        """원소 지정 피연산자 `v0.s[1]` 의 원소 폭(Capstone 은 vas 로 알려 준다)."""
-        return {c64.ARM64_VAS_1B: 1, c64.ARM64_VAS_1H: 2, c64.ARM64_VAS_1S: 4, c64.ARM64_VAS_1D: 8}.get(op.vas) or {11: 4, 8: 2, 4: 1, 13: 8}.get(op.vas)
+        """원소 지정 피연산자 `v0.s[1]` 의 원소 폭."""
+        e = getattr(self, "_esz_by_op", {}).get(id(op))
+        if e is not None:
+            return e
+        return {c64.ARM64_VAS_1B: 1, c64.ARM64_VAS_1H: 2, c64.ARM64_VAS_1S: 4, c64.ARM64_VAS_1D: 8}.get(op.vas)
 
     def _zip_like(self, a, d, ops, m, esz, total):
         """zip/uzp/trn: 입력 두 벡터의 원소를 섞는다. 출력 한 조각이 입력 두 조각에서만 오도록 인덱스를 잡는다."""
@@ -530,7 +558,9 @@ class A64Neon:
         cls = "f" if flt else ("u" if m.startswith("u") else "s")
         x, y = self.vhalves(ops[1], total), self.vhalves(ops[2], total)
         if esz == 8:
-            op2 = {"addp": lambda p, q: binop("add", p, q, 8), "faddp": lambda p, q: X("fadd", (p, q), 8)}.get(m)
+            op2 = {"addp": lambda p, q: binop("add", p, q, 8), "faddp": lambda p, q: X("fadd", (p, q), 8),
+                   "fmaxp": lambda p, q: X("fcmax", (p, q), 8), "fminp": lambda p, q: X("fcmin", (p, q), 8),
+                   "fmaxnmp": lambda p, q: X("fcmax", (p, q), 8), "fminnmp": lambda p, q: X("fcmin", (p, q), 8)}.get(m)
             if op2 is None:
                 raise NeonUnsupported(m)
             return self.vout(a, d, op2(x[0], x[1]), op2(y[0], y[1]) if total == 16 else None, total)
@@ -582,8 +612,19 @@ class A64Neon:
             nm, cls = "min", m[0]
         elif flt:
             nm, cls = {"fmaxv": "fmax", "fminv": "fmin", "fmaxnmv": "fmaxnm", "fminnmv": "fminnm"}[m], "f"
+        elif m in ("saddlv", "uaddlv"):                                                          # 원소를 두 배 폭으로 넓혀 모두 더한다
+            wide = 2 * esz
+            ext = sext if m[0] == "s" else zext
+            acc = None
+            for piece in (lo, hi):
+                if piece is None:
+                    continue
+                for j in range(8 // esz):
+                    t = ext(vlane(piece, j, esz, "s"), wide)
+                    acc = t if acc is None else binop("add", acc, t, wide)
+            return self.fwrite(a, d, acc)
         else:
-            raise NeonUnsupported(m)                                                           # saddlv/uaddlv(넓혀 더하기)는 아직
+            raise NeonUnsupported(m)
         comb = lo if hi is None else vop(nm, (lo, hi), esz, cls)
         r = X("vredf" if flt else "vred", (comb,), esz, ({"add": "addv", "max": "maxv", "min": "minv", "fmax": "maxv", "fmin": "minv",
                                                           "fmaxnm": "maxnmv", "fminnm": "minnmv"}[nm], esz, cls))
@@ -598,3 +639,133 @@ class A64Neon:
         if op is None:
             raise NeonUnsupported(m)
         return self.fwrite(a, d, op(lo, hi))
+
+
+    # ---- 구조 로드·스토어(ld1–ld4·st1–st4·ldNr) ------------------------------------------------
+    def _neon_ldst(self, insn, m, ops, a):
+        regs = [o for o in ops if o.type == OP_REG and self.is_fpop(o)]
+        mi = next(i for i, o in enumerate(ops) if o.type == OP_MEM)
+        mop = ops[mi]
+        post = ops[mi + 1] if mi + 1 < len(ops) else None
+        load = m.startswith("ld")
+        rep = m.endswith("r")
+        nreg = len(regs)
+        nn = int(m[2])
+        ea = self.mem_addr(mop)
+        out = []
+        if nreg == 0 or nn != nreg and not (m == "ld1" or m == "st1"):
+            raise NeonUnsupported(m)
+        r0 = regs[0]
+        lane_idx = max(r.vector_index for r in regs)
+        lane_form = lane_idx >= 0
+        xfer = 0                                                                               # 전송 바이트 수(후위 증가의 기본 증분)
+        if lane_form:                                                                          # ld1 {v0.s}[2], [x0] / st2 {v0.s, v1.s}[1], [x0]
+            import re
+            mt = re.search(r"\{v\d+\.([bhsd])", insn.op_str)
+            if mt is None:
+                raise NeonUnsupported(m)
+            esz = {"b": 1, "h": 2, "s": 4, "d": 8}[mt.group(1)]
+            xfer = nreg * esz
+            for k, r in enumerate(regs):
+                kk, rn = self.fp_info(r.reg)
+                per_ = 8 // esz
+                half, i = loc(f"v{rn}" if lane_idx < per_ else f"v{rn}h", 8), lane_idx % per_
+                addr = ea if k == 0 else binop("add", ea, C(k * esz, 8), 8)
+                if load:
+                    v = self.load_mem(addr, esz)
+                    out.append(S("asg", a, half, vsetlane(half, v, i, esz, "s") if esz < 8 else v))
+                else:
+                    out.append(S("asg", a, mem(addr, esz), vlane(half, i, esz, "s")))
+        elif rep:                                                                              # ld1r {v0.4s}, [x0]
+            esz, total = VAS[r0.vas]
+            xfer = nreg * esz
+            for k, r in enumerate(regs):
+                addr = ea if k == 0 else binop("add", ea, C(k * esz, 8), 8)
+                v = self.load_mem(addr, esz)
+                h = vdup(v, esz, "s") if esz < 8 else v
+                out += self.vout(a, r, h, h, total)
+        else:
+            esz, total = VAS[r0.vas]
+            per = 8 // esz
+            L = total // esz
+            nchunk = (nreg if nn == 1 else nn) * total // 8
+            xfer = nchunk * 8
+            if load:
+                raw = [self.load_mem(binop("add", ea, C(8 * c, 8), 8) if c else ea, 8) for c in range(nchunk)]
+                if nn == 1:                                                                    # ld1 여러 레지스터: 연속된 메모리
+                    for k, r in enumerate(regs):
+                        lo = raw[k * (total // 8)]
+                        hi = raw[k * (total // 8) + 1] if total == 16 else None
+                        out += self.vout(a, r, lo, hi, total)
+                else:
+                    # 모든 읽기가 끝난 뒤에 레지스터에 쓴다(주소·원본 조각이 레지스터를 읽을 수 있으므로 임시 값에 먼저)
+                    tmps = []
+                    for c in range(nchunk):
+                        t = self.tmp(8)
+                        out.append(S("asg", a, t, raw[c]))
+                        tmps.append(t)
+                    for r_i, r in enumerate(regs):
+                        halves = []
+                        for h in range(2 if total == 16 else 1):
+                            srcs = []
+                            for i in range(h * per, (h + 1) * per):
+                                j = i * nn + r_i
+                                srcs.append(((j * esz) // 8, ((j * esz) % 8) // esz))
+                            halves.append(self._gather([tmps[c] for c in range(nchunk)], srcs, esz))
+                        out += self.vout(a, r, halves[0], halves[1] if len(halves) > 1 else None, total)
+            else:
+                pieces = {}
+                for r_i, r in enumerate(regs):
+                    lo, hi = self.vhalves(r, total)
+                    pieces[(r_i, 0)] = lo
+                    if hi is not None:
+                        pieces[(r_i, 1)] = hi
+                if nn == 1:
+                    for k, r in enumerate(regs):
+                        out.append(S("asg", a, mem(binop("add", ea, C(k * total, 8), 8) if k else ea, 8), pieces[(k, 0)]))
+                        if total == 16:
+                            out.append(S("asg", a, mem(binop("add", ea, C(k * total + 8, 8), 8), 8), pieces[(k, 1)]))
+                else:
+                    for c in range(nchunk):
+                        srcs = []
+                        for l in range(per):
+                            j = c * per + l
+                            r_i, i = j % nn, j // nn
+                            srcs.append(((r_i, i // per), i % per))
+                        val = self._gather_keyed(pieces, srcs, esz)
+                        out.append(S("asg", a, mem(binop("add", ea, C(8 * c, 8), 8) if c else ea, 8), val))
+        if insn.writeback:                                                                     # 후위 증가(Capstone 은 st 계열의 즉값 증분 피연산자를 알려 주지 않는다 → 전송 크기)
+            bname = self.reg_info(mop.mem.base)[0]
+            if post is None:
+                delta = C(xfer, 8)
+            else:
+                delta = C(post.imm, 8) if post.type == OP_IMM else self.read_reg(post.reg)
+            out.append(S("asg", a, loc(bname, 8), binop("add", loc(bname, 8), delta, 8)))
+        return out
+
+    def _gather(self, chunks, srcs, esz):
+        """chunks[c] 의 l 번째 원소들을 순서대로 모아 벡터 한 조각을 만든다. 입력 조각이 둘 이하면 shufflevector."""
+        per = 8 // esz
+        uniq = []
+        for c, _ in srcs:
+            if c not in uniq:
+                uniq.append(c)
+        if esz == 8:
+            return chunks[srcs[0][0]]
+        if len(uniq) <= 2:
+            second = uniq[1] if len(uniq) > 1 else uniq[0]
+            return vshuf(chunks[uniq[0]], chunks[second], [uniq.index(c) * per + l for c, l in srcs], esz, "s")
+        return vpack([vlane(chunks[c], l, esz, "s") for c, l in srcs], esz, "s")
+
+    def _gather_keyed(self, pieces, srcs, esz):
+        per = 8 // esz
+        keys = []
+        for k, _ in srcs:
+            if k not in keys:
+                keys.append(k)
+        if esz == 8:
+            return pieces[srcs[0][0]]
+        if len(keys) <= 2:
+            second = keys[1] if len(keys) > 1 else keys[0]
+            return vshuf(pieces[keys[0]], pieces[second], [keys.index(k) * per + l for k, l in srcs], esz, "s")
+        return vpack([vlane(pieces[k], l, esz, "s") for k, l in srcs], esz, "s")

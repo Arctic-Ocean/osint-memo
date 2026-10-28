@@ -28,16 +28,16 @@ FCOMPARES = {"fceq", "fcgt", "fcge", "facgt", "facge"}
 CONVS = {"scvtf": ((4, "s"), (4, "f")), "ucvtf": ((4, "u"), (4, "f")), "fcvtzs": ((4, "f"), (4, "s")), "fcvtzu": ((4, "f"), (4, "u"))}
 _OPER = {"add": "{0} + {1}", "sub": "{0} - {1}", "mul": "{0} * {1}", "fadd": "{0} + {1}", "fsub": "{0} - {1}", "fmul": "{0} * {1}",
          "fdiv": "{0} / {1}", "neg": "-{0}", "fneg": "-{0}", "not": "~{0}", "mla": "{0} + {1} * {2}", "mls": "{0} - {1} * {2}",
-         "shl_n": "{0} << {1}", "shr_n": "{0} >> {1}", "sra_n": "{0} + ({1} >> {2})"}
+         "shl_n": "{0} << {1}"}
 _PREC_OPER = {"add": "add", "sub": "add", "mul": "mul", "fadd": "add", "fsub": "add", "fmul": "mul", "fdiv": "mul", "neg": "unary", "fneg": "unary",
-              "not": "unary", "mla": "add", "mls": "add", "shl_n": "shift", "shr_n": "shift", "sra_n": "add"}
+              "not": "unary", "mla": "add", "mls": "add", "shl_n": "shift"}
 _INTR = {"max": "vmax", "min": "vmin", "abd": "vabd", "qadd": "vqadd", "qsub": "vqsub", "hadd": "vhadd", "rhadd": "vrhadd", "abs": "vabs",
          "clz": "vclz", "cnt": "vcnt", "rbit": "vrbit", "padd": "vpadd", "pmax": "vpmax", "pmin": "vpmin", "ceq": "vceq", "cgt": "vcgt",
          "cge": "vcge", "tst": "vtst", "shl": "vshl", "fabs": "vabs", "fsqrt": "vsqrt", "fmax": "vmax", "fmin": "vmin", "fmaxnm": "vmaxnm",
          "fminnm": "vminnm", "fabd": "vabd", "fmla": "vfma", "fmls": "vfms", "fpadd": "vpadd", "fpmax": "vpmax", "fpmin": "vpmin",
          "fceq": "vceq", "fcgt": "vcgt", "fcge": "vcge", "facgt": "vcagt", "facge": "vcage", "frintn": "vrndn", "frintm": "vrndm",
          "frintp": "vrndp", "frintz": "vrnd", "frinta": "vrnda", "frintx": "vrndx", "frecpe": "vrecpe", "frsqrte": "vrsqrte",
-         "rev": "vrev"}
+         "rev": "vrev", "shr_n": "vshr_n", "sra_n": "vsra_n"}
 _SIGNED_ONLY = {"abs", "qabs"}
 
 
@@ -236,7 +236,7 @@ class VecRender:
                 lit = [str(ir.to_signed(x, vt[0]) if vt[1] == "s" else x) + ("" if vt[0] < 8 else ("LL" if vt[1] == "s" else "ULL")) for x in lanes]
             if len(set(lit)) == 1 and len(lit) > 1:
                 return f"vdup_n_{SF[vt]}({lit[0]})", PREC["prim"]
-            return f"({ty}){{{', '.join(lit)}}}", PREC["prim"]
+            return f"(({ty}){{{', '.join(lit)}}})", PREC["prim"]
         if op == "mem" and e.sz == 8:
             addr = e.args[0]
             if addr.op == "c":                                                   # 읽기 전용 데이터의 상수 벡터는 값으로
@@ -261,7 +261,7 @@ class VecRender:
             return f"vdup_n_{SF[(esz, cls)]}({self._scal(e.args[0], esz, cls)})", PREC["prim"]
         if op == "vpack":
             esz, cls = e.aux
-            return f"({TN[(esz, cls)]}){{{', '.join(self._scal(x, esz, cls) for x in e.args)}}}", PREC["prim"]
+            return f"(({TN[(esz, cls)]}){{{', '.join(self._scal(x, esz, cls) for x in e.args)}}})", PREC["prim"]
         if op == "vsetlane":
             idx, esz, cls = e.aux
             v, _ = self.PV(e.args[0], (esz, cls))
