@@ -49,6 +49,8 @@ SPECS = {
     "x_sin": ("D", "d"), "x_cos": ("D", "d"), "x_tan": ("D", "k"), "x_atan2": ("D", "dd"), "x_log2": ("D", "a"), "x_log": ("D", "a"),
     "x_exp2": ("D", "k"), "x_fmod": ("D", "da"), "x_floor": ("D", "d"), "x_ceil": ("D", "d"), "x_trunc": ("D", "d"), "x_lrint": ("i", "d"),
     "x_floor_i": ("i", "d"), "x_fsin": ("F", "f"),
+    "ld_add": ("X", "XX"), "ld_mix": ("X", "Xdi"), "ld2d": ("D", "X"), "d2ld": ("X", "d"), "ld_cmp": ("i", "XX"), "ld_sum": ("X", "Yn"),
+    "ld_scale": ("v", "YnX"), "ld2i": ("i", "X"), "ld_sqrt": ("X", "X"), "ld_poly": ("X", "X"), "ld_calls": ("X", "XX"),
     "std_add": ("i", "ii"), "std_three": ("i", "iii"), "std_calls": ("i", "ii"),
     "bit_test": ("i", "un"), "bit_flag": ("i", "Ln"), "bit_set": ("u", "un"), "bswap32": ("u", "u"), "bswap64": ("l", "L"),
 }

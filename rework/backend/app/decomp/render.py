@@ -19,8 +19,8 @@ PREC = {"prim": 16, "unary": 14, "mul": 13, "add": 12, "shift": 11, "rel": 10, "
 
 
 def itype(sz: int, sign: str) -> str:
-    if sign == "f":                                   # 부동소수점 원소(float·double)
-        return "double" if sz == 8 else "float"
+    if sign == "f":                                   # 부동소수점 원소(float·double·long double)
+        return "long double" if sz == 10 else "double" if sz == 8 else "float"
     return ("int" if sign == "s" else "uint") + f"{8 * sz}_t"
 
 
@@ -318,11 +318,12 @@ class Renderer(FpRender):
         # 이름: 매개변수 → arg1.., 슬롯 → var_xx, 레지스터 → v1..
         counter = 0
         pidx = {w: i for w, i in self.params if w is not None}
+        ppos = {w: k for k, (w, _i) in enumerate(self.params) if w is not None}          # 넓은 인자(double·long double) 뒤의 빈 번호를 건너뛴 위치 순서
         for w in order:
             web = self.webs[w]
             if w in pidx:
                 slot = f"arg{pidx[w] + 1}"
-                default = slot
+                default = f"arg{ppos[w] + 1}"
             elif web.loc.startswith("slot:"):
                 off = int(web.loc[5:])
                 base = fd.frame if fd.frame is not None else 0
@@ -348,7 +349,7 @@ class Renderer(FpRender):
         fd.stack_names.param_by_off = {}
         for i, (w, idx) in enumerate(self.params):
             if w is None:
-                nm = fd.varmap.get(f"arg{idx + 1}", f"arg{idx + 1}")
+                nm = fd.varmap.get(f"arg{idx + 1}", f"arg{i + 1}")
                 self.names[("p", idx)] = self._unique_name(nm)
                 self.slot_ids[("p", idx)] = f"arg{idx + 1}"
                 if idx in fd.mem_params:
@@ -390,13 +391,15 @@ class Renderer(FpRender):
         return self.names[w]
 
     def pointee(self, pt) -> str:
-        return itype(pt.esz, pt.signed) if pt.kind == "arr" else "uint8_t"
+        if pt.kind == "arr" and pt.esz in (1, 2, 4, 8):
+            return itype(pt.esz, pt.signed)
+        return "uint8_t"                                       # 10바이트(long double) 같은 폭은 정수 형이 없으니 바이트 포인터로 두고 접근 때 형 변환한다
 
     def decl_type(self, w) -> str:
         if w in self.ptypes:
             return self.pointee(self.ptypes[w]) + " *"
         if w in self.fkind:
-            return ("double" if self.fkind[w] == 8 else "float") + " "
+            return FTYPE_[self.fkind[w]] + " "
         return itype(self.webs[w].sz, self.vsign[w]) + " "
 
     def fit(self, e: X, want, prec=0) -> str:

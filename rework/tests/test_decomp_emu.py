@@ -24,6 +24,7 @@ from unicorn import x86_const as X, arm64_const as A64, arm_const as A32      # 
 from app.loader import load                         # noqa: E402
 from app.analysis import Program                    # noqa: E402
 from app.decompile import Decompiler                # noqa: E402
+from app.decomp.x87 import float_to_ext             # noqa: E402
 from test_decomp import SPECS, CORPUS, c_param_list, HELPERS as _H   # noqa: E402
 
 HELPERS = """#include <stdint.h>
@@ -42,6 +43,8 @@ HELPERS = """#include <stdint.h>
 #define round __builtin_round
 #define rint __builtin_rint
 #define sqrt __builtin_sqrt
+#define sqrtl __builtin_sqrtl
+#define fabsl __builtin_fabsl
 #define sqrtf __builtin_sqrtf
 #define fabs __builtin_fabs
 #define fabsf __builtin_fabsf
@@ -94,17 +97,17 @@ double trunc(double x) { return round_mode(x, 0xc00); }
 """
 
 ARCH = {
-    "i386": dict(target="i386-linux-gnu", cflags=["-DX87_TESTS"], uc=(UC_ARCH_X86, UC_MODE_32), ptr=4, long=4, abi="cdecl"),
+    "i386": dict(target="i386-linux-gnu", cflags=["-DX87_TESTS", "-DLD_TESTS"], uc=(UC_ARCH_X86, UC_MODE_32), ptr=4, long=4, abi="cdecl", ld=12),
     # gcc -m32: clang 과 다른 x87 관용구(fnstsw+sahf·fcmov·fld1 …)를 시험한다. i386fast 는 인라인 초월함수(fsin·fpatan·fprem …)까지 쓰게 한다
-    "i386gcc": dict(target="i386-linux-gnu", cc="gcc", cflags=["-m32", "-march=i686", "-DX87_TESTS"], uc=(UC_ARCH_X86, UC_MODE_32), ptr=4, long=4, abi="cdecl"),
-    "i386fast": dict(target="i386-linux-gnu", cc="gcc", cflags=["-m32", "-march=i686", "-ffast-math", "-mfpmath=387", "-DX87_TESTS"], uc=(UC_ARCH_X86, UC_MODE_32),
-                     ptr=4, long=4, abi="cdecl"),
+    "i386gcc": dict(target="i386-linux-gnu", cc="gcc", cflags=["-m32", "-march=i686", "-DX87_TESTS", "-DLD_TESTS"], uc=(UC_ARCH_X86, UC_MODE_32), ptr=4, long=4, abi="cdecl", ld=12),
+    "i386fast": dict(target="i386-linux-gnu", cc="gcc", cflags=["-m32", "-march=i686", "-ffast-math", "-mfpmath=387", "-DX87_TESTS", "-DLD_TESTS"], uc=(UC_ARCH_X86, UC_MODE_32),
+                     ptr=4, long=4, abi="cdecl", ld=12),
     "arm64": dict(target="aarch64-linux-gnu", cflags=[], uc=(UC_ARCH_ARM64, UC_MODE_ARM), ptr=8, long=8, abi="aapcs64"),
     "arm": dict(target="armv7-linux-gnueabi", cflags=["-mcpu=cortex-a15", "-marm", "-mfloat-abi=soft", "-DNO_FP"],
                 uc=(UC_ARCH_ARM, UC_MODE_ARM), ptr=4, long=4, abi="aapcs"),
     "thumb": dict(target="thumbv7-linux-gnueabi", cflags=["-mcpu=cortex-a15", "-mthumb", "-mfloat-abi=soft", "-DNO_FP"],
                   uc=(UC_ARCH_ARM, UC_MODE_THUMB), ptr=4, long=4, abi="aapcs", thumb=True),
-    "x64": dict(target="x86_64-linux-gnu", cflags=[], uc=(UC_ARCH_X86, UC_MODE_64), ptr=8, long=8, abi="sysv"),
+    "x64": dict(target="x86_64-linux-gnu", cflags=["-DLD_TESTS"], uc=(UC_ARCH_X86, UC_MODE_64), ptr=8, long=8, abi="sysv", ld=16),
     "win64": dict(target="x86_64-linux-gnu", cflags=["-DMS_ABI"], uc=(UC_ARCH_X86, UC_MODE_64), ptr=8, long=8, abi="win64"),
 }
 
@@ -160,13 +163,19 @@ class Machine:
         self.syms = {s.name: s.value for s in lb.symbols if s.name}
 
     def _x87_result(self, ret_size):
-        """ST(0) 을 `fstp tbyte` 스텁으로 메모리에 꺼내 float(4)·double(8) 비트 패턴으로 바꾼다. 스택이 비어 있으면 None."""
+        """ST(0) 을 `fstp tbyte` 스텁으로 메모리에 꺼내 float(4)·double(8) 비트 패턴으로, 10 이면 80비트 그대로 바꾼다."""
         uc = self.uc
         tag = uc.reg_read(X.UC_X86_REG_FPTAG)
         stub, res = DATA_BASE + DATA_SIZE - 0x100, DATA_BASE + DATA_SIZE - 0x80
-        uc.mem_write(stub, bytes([0xdb, 0x3d]) + res.to_bytes(4, "little"))              # fstp tbyte ptr [res]
-        uc.emu_start(stub, stub + 6)
+        if self.a["uc"][1] == UC_MODE_64:                                                 # 64비트에서는 modrm 0x3d 가 RIP 상대라 SIB(절대 32비트 주소) 형태로
+            code = bytes([0xdb, 0x3c, 0x25]) + res.to_bytes(4, "little")
+        else:
+            code = bytes([0xdb, 0x3d]) + res.to_bytes(4, "little")                        # fstp tbyte ptr [res]
+        uc.mem_write(stub, code)
+        uc.emu_start(stub, stub + len(code))
         raw = bytes(uc.mem_read(res, 10))
+        if ret_size == 10:
+            return int.from_bytes(raw, "little")
         mant, se = int.from_bytes(raw[:8], "little"), int.from_bytes(raw[8:], "little")
         sign, exp = se >> 15, se & 0x7FFF
         if exp == 0x7FFF:
@@ -193,6 +202,9 @@ class Machine:
                 if arg[0] == "fp":
                     raw = arg[2] & ((1 << (8 * arg[1])) - 1)
                     words += [(raw >> (32 * k)) & 0xFFFFFFFF for k in range(arg[1] // 4)]
+                elif arg[0] == "ld":                                # long double: 12바이트(80비트 + 2바이트 쓰레기), 4바이트 정렬
+                    raw = arg[2] | (0xBEEF << 80)
+                    words += [(raw >> (32 * k)) & 0xFFFFFFFF for k in range(3)]
                 else:
                     words.append(mask_(arg[0], 4))
             top = sp - 4 * len(words) - 4
@@ -225,6 +237,8 @@ class Machine:
                     int_args.append((pos, arg))
             stack_args = []
             slot = 0
+            ldargs = [(pos, arg) for pos, arg in enumerate(args) if arg[0] == "ld"]
+            int_args = [(pos, arg) for pos, arg in int_args if arg[0] != "ld"]
             for pos, (v, n) in int_args:
                 ri = pos if win else slot
                 slot += 1
@@ -234,15 +248,23 @@ class Machine:
                 else:
                     stack_args.append((v, n))
             shadow = 32 if win else 0
-            base = (sp - 8 * len(stack_args) - shadow - 8) & ~0xF
+            ldwords = 2 * len(ldargs)
+            base = (sp - 8 * (len(stack_args) + ldwords) - shadow - 8) & ~0xF
             base -= 8
             for i, (v, n) in enumerate(stack_args):
                 uc.mem_write(base + 8 + shadow + 8 * i, mask_(v, 8).to_bytes(8, "little"))
+            for i, (_pos, (_t, _n, v80)) in enumerate(ldargs):          # long double 은 스택에 16바이트로(순서는 호출 순서, 다른 스택 인자 뒤)
+                uc.mem_write(base + 8 + shadow + 8 * len(stack_args) + 16 * i, v80.to_bytes(10, "little") + b"\x00" * 6)
             uc.mem_write(base, SENTINEL.to_bytes(8, "little"))
             uc.reg_write(X.UC_X86_REG_RSP, base)
             uc.reg_write(X.UC_X86_REG_RAX, 0xDEADBEEF12345678)
+            uc.reg_write(X.UC_X86_REG_FPCW, 0x37F)
+            uc.reg_write(X.UC_X86_REG_FPSW, 0)
+            uc.reg_write(X.UC_X86_REG_FPTAG, 0xFFFF)
             uc.emu_start(addr, SENTINEL, count=3_000_000)
             r = uc.reg_read(X.UC_X86_REG_XMM0 if ret_fp else X.UC_X86_REG_RAX)
+            if ret_size == 10:
+                r = self._x87_result(10)
         elif a["abi"] == "aapcs64":
             regs = [A64.UC_ARM64_REG_X0 + i for i in range(8)]
             rng = random.Random(addr)
@@ -330,6 +352,10 @@ def make_case(rng, name, kinds, a):
             out.append((k, [rng.randint(-99, 99) for _ in range(4)]))
         elif k == "B":
             out.append((k, [rng.randint(-99, 99) for _ in range(16)]))
+        elif k == "X":
+            out.append((k, round(rng.uniform(-20, 20), 4) if name != "ld_sqrt" else round(rng.uniform(0, 50), 4)))
+        elif k == "Y":
+            out.append((k, [round(rng.uniform(-9, 9), 3) for _ in range(8)]))
     return out
 
 
@@ -356,6 +382,8 @@ def run_one(m, addr, kinds_vals, ret, a, buf_slots):
             args.append(("fp", 8, struct.unpack("<Q", struct.pack("<d", v))[0]))
         elif k == "f":
             args.append(("fp", 4, struct.unpack("<I", struct.pack("<f", v))[0]))
+        elif k == "X":
+            args.append(("ld", a["ld"], float_to_ext(v)))
         else:
             base = DATA_BASE + buf_slots[idx]
             if k in ("P", "Q"):
@@ -368,6 +396,8 @@ def run_one(m, addr, kinds_vals, ret, a, buf_slots):
                 data = b"".join(struct.pack("<f", x) for x in v)
             elif k == "V":                                          # V: struct { double x, y; int k; }
                 data = struct.pack("<ddi", v[0], v[1], v[2]) + b"\x00" * 4
+            elif k == "Y":                                          # long double 배열(원소 폭은 ABI 의 sizeof(long double))
+                data = b"".join(float_to_ext(x).to_bytes(10, "little") + b"\x00" * (a["ld"] - 10) for x in v)
             elif k in ("W", "B"):                                   # W: struct { long a, b, c, d; } · B: struct { long v[16]; }
                 data = b"".join((x & ((1 << (8 * a["long"])) - 1)).to_bytes(a["long"], "little") for x in v)
             else:                                                   # T: struct { int x; int y; long z; }
@@ -377,8 +407,8 @@ def run_one(m, addr, kinds_vals, ret, a, buf_slots):
             uc.mem_write(base, data)
             args.append((base, a["ptr"]))
             bufs.append((base, len(data)))
-    rs = {"i": 4, "u": 4, "l": a["long"], "v": 0, "D": 8, "F": 4}[ret]
-    r = m.call(addr, args, rs, ret_fp=ret in ("D", "F"))
+    rs = {"i": 4, "u": 4, "l": a["long"], "v": 0, "D": 8, "F": 4, "X": 10}[ret]
+    r = m.call(addr, args, rs, ret_fp=ret in ("D", "F", "X"))
     outs = [bytes(uc.mem_read(b, n)) for b, n in bufs]
     return r, outs
 

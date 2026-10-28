@@ -22,8 +22,53 @@ _CMP = {"feq": ("==", "eq"), "fne": ("!=", "eq"), "flt": ("<", "rel"), "fle": ("
 FP_VALUE_OPS = ir.FOPS2 | ir.FOPS1 | ir.FOPS3 | {"i2f", "f2f"}          # 부동소수점 값을 만드는 연산
 
 
+def _ext_literal(bits: int) -> str:
+    """x87 80비트 확장 정밀도 비트 패턴 → C long double 상수(소수 21자리면 64비트 가수가 왕복된다)."""
+    from decimal import Decimal, getcontext
+    from .x87 import ext_to_float
+    mant, se = bits & ((1 << 64) - 1), (bits >> 64) & 0xFFFF
+    sign, exp = se >> 15, se & 0x7FFF
+    if exp == 0x7FFF:
+        return "NAN" if mant << 1 & ((1 << 64) - 1) else ("-" if sign else "") + "INFINITY"
+    if mant == 0:
+        return "-0.0L" if sign else "0.0L"
+    getcontext().prec = 60
+    v = Decimal(mant) * (Decimal(2) ** (exp - 16383 - 63 if exp else -16382 - 63))
+    for digits in range(1, 23):                                            # 다시 80비트로 읽었을 때 같은 값이 되는 가장 짧은 자릿수
+        t = f"{v:.{digits}g}"
+        if _decimal_to_ext(Decimal(t)) == (exp, mant):
+            break
+    if "." not in t and "e" not in t.lower():
+        t += ".0"
+    return ("-" if sign else "") + t + "L"
+
+
+def _decimal_to_ext(d) -> tuple:
+    """양의 십진수 → (80비트 지수 필드, 64비트 가수)(가장 가까운 짝수로 반올림). 확장 정밀도 범위를 벗어나면 (0, 0)."""
+    from fractions import Fraction
+    f = Fraction(d)
+    if f <= 0:
+        return (0, 0)
+    e = f.numerator.bit_length() - f.denominator.bit_length()               # f 는 대략 2^e
+    if Fraction(2) ** e > f:
+        e -= 1
+    # 정규화: 1 <= f / 2^e < 2, 가수 = f / 2^e * 2^63
+    scaled = f / (Fraction(2) ** e) * (1 << 63)
+    m = scaled.numerator // scaled.denominator
+    rem = scaled - m
+    if rem > Fraction(1, 2) or (rem == Fraction(1, 2) and m & 1):
+        m += 1
+    if m >> 64:
+        m >>= 1
+        e += 1
+    biased = e + 16383
+    return (biased, m) if 0 < biased < 0x7FFF else (0, 0)
+
+
 def fp_literal(bits: int, kind: int) -> str:
     """IEEE 비트 패턴 → C 부동소수점 상수(왕복이 정확한 가장 짧은 표기)."""
+    if kind == 10:
+        return _ext_literal(bits)
     if kind == 8:
         v = struct.unpack("<d", (bits & mask(8)).to_bytes(8, "little"))[0]
         if math.isnan(v):
@@ -152,6 +197,8 @@ class FpRender:
         """부동소수점 식을 정수 문맥에서 쓸 때: 비트 그대로 옮긴다."""
         kind = self.fkind_of(e) or e.sz
         t, p = self.PF(e, kind)
+        if kind == 10:                                                      # 80비트는 정수 형에 비트를 그대로 옮길 수 없다: 값을 64비트 정수로 바꿔 쓴다(정수 문맥에서 쓰이는 일은 드물다)
+            return f"(uint64_t)({t})", "u", PREC["unary"]
         ty = "uint64_t" if kind == 8 else "uint32_t"
         return f"__builtin_bit_cast({ty}, {t})", "u", PREC["prim"]
 
@@ -178,14 +225,14 @@ class FpRender:
         if op in ("fcmin", "fcmax") and e.sz == kind:
             ta, pa = self.PF(e.args[0], kind)
             tb, pb = self.PF(e.args[1], kind)
-            nm = ("fmin" if op == "fcmin" else "fmax") + ("" if kind == 8 else "f")
+            nm = ("fmin" if op == "fcmin" else "fmax") + _SUF[kind]
             return f"{nm}({ta}, {tb})", PREC["prim"]
         if op == "ffma" and e.sz == kind:
             ts = [self.PF(a_, kind)[0] for a_ in e.args]
-            return f"{'fma' if kind == 8 else 'fmaf'}({', '.join(ts)})", PREC["prim"]
+            return f"fma{_SUF[kind]}({', '.join(ts)})", PREC["prim"]
         if op == "fround" and e.sz == kind:
             t, p = self.PF(e.args[0], kind)
-            return f"{e.aux}{'' if kind == 8 else 'f'}({t})", PREC["prim"]
+            return f"{e.aux}{_SUF[kind]}({t})", PREC["prim"]
         if op in ("fmin", "fmax") and e.sz == kind:
             ta, pa = self.PF(e.args[0], kind)
             tb, pb = self.PF(e.args[1], kind)
@@ -201,10 +248,10 @@ class FpRender:
             return f"{_MATH[op]}{_SUF[kind]}({ta}, {tb})", PREC["prim"]
         if op == "fsqrt" and e.sz == kind:
             t, p = self.PF(e.args[0], kind)
-            return f"{'sqrt' if kind == 8 else 'sqrtf'}({t})", PREC["prim"]
+            return f"sqrt{_SUF[kind]}({t})", PREC["prim"]
         if op == "fabs" and e.sz == kind:
             t, p = self.PF(e.args[0], kind)
-            return f"{'fabs' if kind == 8 else 'fabsf'}({t})", PREC["prim"]
+            return f"fabs{_SUF[kind]}({t})", PREC["prim"]
         if op == "fneg" and e.sz == kind:
             t, p = self.PF(e.args[0], kind)
             return f"-{self._paren(t, p, PREC['unary'])}", PREC["unary"]
@@ -244,8 +291,11 @@ class FpRender:
             return f"-{self._paren(t, p, PREC['unary'])}", PREC["unary"]
         if op == "and" and e.sz == kind and e.args[1].op == "c" and e.args[1].aux == mask(kind) >> 1:               # 부호 비트 지우기 = 절댓값
             t, p = self.PF(e.args[0], kind)
-            return f"{'fabs' if kind == 8 else 'fabsf'}({t})", PREC["prim"]
+            return f"fabs{_SUF[kind]}({t})", PREC["prim"]
         # 그 밖에는 비트 패턴을 그대로 부동소수점으로 본다
+        if kind == 10:
+            t, s, p = self.P(e if e.sz == 8 else (ir.trunc(e, 8) if e.sz > 8 else ir.zext(e, 8)), "u")
+            return f"__builtin_bit_cast(double, (uint64_t){self._paren(t, p, PREC['unary'])})", PREC["prim"]
         ity = "uint64_t" if kind == 8 else "uint32_t"
         if e.sz != kind:
             e = ir.trunc(e, kind) if e.sz > kind else ir.zext(e, kind)

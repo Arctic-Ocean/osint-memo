@@ -167,6 +167,20 @@ FN int x_floor_i(double x) { return (int)__builtin_floor(x); }
 FN float x_fsin(float x) { return __builtin_sinf(x) + 1.0f; }
 #endif
 
+#ifdef LD_TESTS                                 /* long double(x87 80비트): i386·x86-64 SysV 에서만 */
+FN long double ld_add(long double a, long double b) { return a + b * 2.0L; }
+FN long double ld_mix(long double a, double b, int n) { return a * b + n; }
+FN double ld2d(long double x) { return (double)x * 0.5; }
+FN long double d2ld(double x) { return x * 3.0; }
+FN int ld_cmp(long double a, long double b) { if (a < b) return -1; if (a > b) return 1; return 0; }
+FN long double ld_sum(const long double *p, int n) { long double s = 0; for (int i = 0; i < n; i++) s += p[i]; return s; }
+FN void ld_scale(long double *p, int n, long double k) { for (int i = 0; i < n; i++) p[i] *= k; }
+FN int ld2i(long double x) { return (int)x; }
+FN long double ld_sqrt(long double x) { return __builtin_sqrtl(x) + 1.0L; }
+FN long double ld_poly(long double x) { return (x * 3.0L + 2.0L) * x - 1.0L; }
+FN long double ld_calls(long double a, long double b) { return ld_add(a, b) * ld_add(b, a); }
+#endif
+
 #if defined(__i386__)
 #define STD __attribute__((stdcall))
 #else

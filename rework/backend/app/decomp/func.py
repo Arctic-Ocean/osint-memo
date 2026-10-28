@@ -159,6 +159,11 @@ class FuncDecomp:
         t = C(addr, self.full)
         name = self.callee_name(t)
         pr = protos.proto(name) if name else None
+        if self.arch == "x64":                                  # x86-64 는 double·float 을 xmm0 으로 돌려준다 — st(0) 은 long double 뿐
+            if pr is not None:
+                return pr[0] == "long double"
+            ci = self.callee_info(t)
+            return None if ci is None else ci.get("ret_fp") == 10 and ci.get("x87_ret", False)
         if pr is not None:
             return pr[0] in protos.FP_TYPES
         ci = self.callee_info(t)
@@ -325,7 +330,7 @@ class FuncDecomp:
         nparams = max(len(self.params), pop // self.full) if pop else len(self.params)
         return {"nparams": nparams, "pop": pop, "returns": self.returns_value and not self.ret_fp, "noreturn": has_noret and not has_ret,
                 "clobbers": sorted(written), "fp_params": [(k, kind) for _w, k, kind in self.fp_params], "ret_fp": self.ret_fp,
-                "layout": self._stack_layout()}
+                "x87_ret": getattr(self, "x87_mode", False), "ld_count": len(getattr(self, "ld_entries", ())), "layout": self._stack_layout()}
 
     def _stack_layout(self):
         """x86-32 의 스택 인자 배치: [(바이트 폭, 실수 폭 또는 None)] — 호출하는 쪽이 double 은 8바이트 하나로 넘기도록."""
@@ -339,7 +344,7 @@ class FuncDecomp:
                 lay.append((sz if sz in (4, 8) else 4, None))
             else:
                 sz = self.webs[w].sz
-                lay.append((sz if sz in (4, 8) else 4, kinds.get(w) if kinds.get(w) == sz else None))
+                lay.append((12 if sz == 10 else (sz if sz in (4, 8) else 4), kinds.get(w) if kinds.get(w) == sz else None))
         return lay
 
     def _real(self, defs) -> bool:
@@ -474,6 +479,8 @@ class FuncDecomp:
                 if self.arch == "x86" and (x87w or (tail and rk)):
                     x87w = x87w or getattr(self.lifter, "W", 8)           # x86-32 의 부동소수점 반환값은 st(0)(폭 W)에 남는다 — float 를 돌려주는 함수도 W 폭 값으로 다룬다
                     rk = x87w
+                elif self.arch == "x64" and x87w:                         # x86-64 는 long double 만 st(0) 으로 돌려준다
+                    rk = x87w
                 fp_pos = {k for k, _ in fp} if abi.name == "win64" else set()
                 args = []
                 pos = 0
@@ -496,15 +503,20 @@ class FuncDecomp:
                 info = dict(s.src.aux or {})
                 info.update(name=name, proto=pr, nargs=len(args), callee=ci, fp_kinds=fkinds, ret_fp=rk)
                 if rk:
-                    s.dst = loc(abi.fp_ret, x87w or 8)
+                    s.dst = loc("x87ret" if x87w else abi.fp_ret, x87w or 8)
                     fp_ret = True
                 if lay is not None:                                          # x86-32: 실수·8바이트 인자가 섞인 호출은 호출 규약대로 폭을 지켜 인자를 만든다
                     args, akinds, k = [], [], 0
                     for size, kind in lay:
-                        args.append(self._stack_arg(sp + k * full, size))
+                        args.append(self._stack_arg(sp + k * full, 10 if kind == 10 else size))       # long double 은 12바이트 칸이지만 값은 10바이트
                         akinds.append(kind)
                         k += size // full
                     info.update(nargs=len(args), arg_kinds=akinds)
+                if self.arch == "x64" and ci is not None and ci.get("ld_count") and sp is not None and not tail:
+                    for j in range(ci["ld_count"]):                           # x86-64: long double 인자는 스택 16바이트 칸(호출 시점 sp 위쪽부터)
+                        fargs.append(self._stack_arg(sp + 16 * j, 10))
+                        fkinds.append(10)
+                    info["fp_kinds"] = fkinds
                 s.src = X("call", (tgt,) + tuple(args) + tuple(fargs), x87w or full, info)
         return fp_ret
 
@@ -516,6 +528,8 @@ class FuncDecomp:
             return 8, 8
         if t == "float":
             return 4, 4
+        if t == "long double":
+            return 12, 10                                                   # i386: 12바이트(4바이트 정렬)
         if t in ("long long", "unsigned long long", "int64_t", "uint64_t", "intmax_t", "uintmax_t", "off64_t"):
             return 8, None
         return 4, None
@@ -540,12 +554,12 @@ class FuncDecomp:
                     return None
         elif ci is not None and ci.get("layout"):
             lay = list(ci["layout"])
-        if not lay or not any(sz == 8 or kind for sz, kind in lay):
+        if not lay or not any(sz >= 8 or kind for sz, kind in lay):
             return None
         for k, (size, _kind) in enumerate(lay):                              # 승격된 칸의 크기가 인자 폭과 어긋나면 기존 방식에 맡긴다
             off = sp + sum(z for z, _ in lay[:k])
             pm = self.slots["promoted"].get(off)
-            if pm is not None and pm != size:
+            if pm is not None and pm != size and not (pm == 10 and size == 12):
                 return None
         return lay
 
@@ -588,14 +602,17 @@ class FuncDecomp:
                 rv = False
         self.returns_value = rv
         self.ret_fp = None
+        x87info = getattr(self.lifter, "x87", None)
         x87 = getattr(self.lifter, "x87_used", False) or any(
             (st.src.aux or {}).get("ret_fp") for b in self.blocks.values() for st in b.stmts if st.k == "call" and st.src.op == "call")
-        if self.arch == "x86" and x87:                         # x87: ret 직전 스택 깊이가 1 이면 반환값이 부동소수점이라고 확정(리프터가 x87ret 에 대입해 둔다)
-            fpk = self._fp_return_kind(flow)
+        self.x87_mode = False
+        if x87 and (self.arch == "x86" or (self.arch == "x64" and x87info is not None and 1 in x87info.ret_depth.values())):
+            fpk = self._fp_return_kind(flow, "x87ret")            # x87: ret 직전 스택 깊이가 1 이면 반환값이 부동소수점이라고 확정(리프터가 x87ret 에 대입해 둔다)
             if fpk:
-                self.ret_fp = fpk
+                self.ret_fp = 10 if self.arch == "x64" else fpk   # x86-64 에서 st(0) 으로 돌려주는 형은 long double 뿐이다
                 self.returns_value = rv = True
-        if self.arch in ("x64", "arm64"):
+                self.x87_mode = True
+        if self.arch in ("x64", "arm64") and not self.x87_mode:
             fpk = self._fp_return_kind(flow)
             if fpk:
                 pf = self._ret_pure(flow, self.abi.fp_ret)
@@ -626,8 +643,9 @@ class FuncDecomp:
         for b in self.blocks.values():
             if b.term.k == "ret":
                 if self.ret_fp:
-                    if self.arch == "x86":
-                        b.term.src = loc(self.abi.fp_ret, self.lifter.W)
+                    if self.x87_mode:
+                        v = loc("x87ret", self.lifter.W)
+                        b.term.src = v if self.lifter.W == self.ret_fp else X("f2f", (v,), self.ret_fp)
                         continue
                     x0 = loc(self.abi.fp_ret, 8)
                     b.term.src = x0 if self.ret_fp == 8 else ir.trunc(x0, 4)
@@ -684,16 +702,17 @@ class FuncDecomp:
     def _ret_terms(self):
         return [b.term for b in self.blocks.values() if b.term.k == "ret"]
 
-    def _fp_return_kind(self, flow):
-        """xmm0 의 하위 조각을 ret 직전에 실제로 쓰는 정의가 있으면 부동소수점 반환으로 보고 그 폭(4·8)을 돌려준다. 없으면 None."""
+    def _fp_return_kind(self, flow, regname=None):
+        """xmm0 의 하위 조각(x87 은 x87ret)을 ret 직전에 실제로 쓰는 정의가 있으면 부동소수점 반환으로 보고 그 폭(4·8·10)을 돌려준다. 없으면 None."""
         found = False
         kind = None
+        x87 = regname == "x87ret"
         for t in self._ret_terms():
-            for d in flow.reaching_at(t, self.abi.fp_ret):
+            for d in flow.reaching_at(t, regname or self.abi.fp_ret):
                 if d.kind == "call":
                     info = d.stmt.src.aux or {}
                     rk = info.get("ret_fp")
-                    if self.arch == "x86" and not info.get("tail"):
+                    if x87 and not info.get("tail"):
                         continue                         # x87: 호출이 st(0) 에 남긴 값은 곧바로 x87_k 칸으로 옮겨진다 — 반환값은 ret 직전의 대입(또는 꼬리 호출)만
                     if rk:
                         found = True
@@ -705,7 +724,7 @@ class FuncDecomp:
             return None
         if kind:
             return kind
-        if self.arch == "x86":
+        if x87:
             return self.lifter.W                                                   # x87: ret 직전 스택에 값이 있으면 반환값이다
         return 8 if self.callers_use_fp_result() is True else None                  # 증거가 없으면 호출자가 xmm0 을 읽을 때만
 
@@ -959,11 +978,17 @@ class FuncDecomp:
                 pw[i] = flow.web_of_def[d.id]
         base = abi.stack_arg_base
         self.arg_base = base
+        ld_stack = []                                      # x86-64: long double 은 스택(16바이트)으로 넘어와 정수·실수 레지스터 번호와 무관하다
         for name, d in flow.entry_def.items():
             if name.startswith("slot:"):
                 off = int(name[5:])
                 if off >= base and (off - base) % self.full == 0:
-                    pw[len(abi.arg_regs) + (off - base) // self.full] = flow.web_of_def[d.id]
+                    w_ = flow.web_of_def[d.id]
+                    if self.arch == "x64" and self.webs[w_].sz == 10:
+                        ld_stack.append((off, w_))
+                        continue
+                    pw[len(abi.arg_regs) + (off - base) // self.full] = w_
+        self.ld_stack = sorted(ld_stack)
         # 스택 슬롯으로 흘려 보관(-O0 의 인자 저장): 진입 블록의 `v := 인자` 를 매개변수로 합친다
         entry_webs = {w: i for i, w in pw.items()}
         keep = []
@@ -1010,11 +1035,22 @@ class FuncDecomp:
                 params.append((w, i))
             else:
                 params.append((None, i))
-        if self.full == 4:                                  # 32비트에서 8바이트 스택 인자(double·long long)는 4바이트 칸 둘을 차지한다: 뒤 칸의 자리표시는 매개변수가 아니다
-            covered = {i + 1 for w, i in params if w is not None and webs[w].sz == 8}
+        if self.arch in ("x86", "x64"):                      # 넓은 스택 인자(double·long long 은 4바이트 칸 둘, long double 은 셋/둘)는 뒤 칸의 자리표시가 매개변수가 아니다
+            covered = set()
+            for w, i in params:
+                if w is not None and webs[w].sz > self.full:
+                    covered.update(range(i + 1, i + (webs[w].sz + self.full - 1) // self.full))
             params = [(w, i) for w, i in params if not (w is None and i in covered and i not in self.mem_params)]
         self.params = params
         self.infer_fp_params(used)
+        self.ld_entries = []
+        for k, (off, w_) in enumerate(getattr(self, "ld_stack", ())):                  # long double 매개변수: 시그니처에서 실수 인자 뒤에
+            if w_ in used or self.webs[w_].param is not None:
+                idx = 100 + k
+                self.webs[w_].param = idx
+                self.fp_param_kinds[w_] = 10
+                self.fp_entries.append((w_, idx))
+                self.ld_entries.append((w_, idx))
 
     def _strip_va_prologue(self, pw) -> bool:
         """가변 인자 함수의 프롤로그(`test al,al` 뒤에서 rdi·rsi·… 와 xmm0..7 을 레지스터 저장 영역에 쏟아 두는 저장문)를 지운다.
@@ -1432,7 +1468,8 @@ class StackNames:
             if argb is not None and o >= argb:
                 continue                                  # 인자 영역은 매개변수로 선언한다
             sizes = mv[o]
-            ivs.append([o, o + max(sizes), max(sizes) if len(sizes) == 1 else 1, "scalar" if len(sizes) == 1 else "bytes"])
+            plain = len(sizes) == 1 and max(sizes) in (1, 2, 4, 8)          # long double(10바이트) 같은 폭은 바이트 덩어리로 두고 접근 때 형 변환한다
+            ivs.append([o, o + max(sizes), max(sizes) if plain else 1, "scalar" if plain else "bytes"])
         # 겹치는 칸은 바이트 덩어리로 합친다
         ivs.sort()
         merged = []

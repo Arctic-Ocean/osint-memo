@@ -421,7 +421,7 @@ class X86Lifter(X87Mixin):
 
     def load_mem(self, a: X, sz: int) -> X:
         """메모리 읽기. 읽기 전용 구역의 상수 주소(`.rodata` 의 상수)는 그 값으로 접는다."""
-        if a.op == "c" and self.is_const is not None and sz in (1, 2, 4, 8) and self.is_const(a.aux):
+        if a.op == "c" and self.is_const is not None and sz in (1, 2, 4, 8, 10) and self.is_const(a.aux):
             data = self.read(a.aux, sz) if self.read is not None else None
             if data and len(data) == sz:
                 return C(int.from_bytes(data, "little"), sz)
