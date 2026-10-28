@@ -118,7 +118,7 @@ class FuncDecomp:
         else:
             raise Unsupported(self.arch)
         self.lifter = lifter
-        if self.arch in ("x86", "x64") and any(x87_mod.is_x87(i.mnemonic) for i in insns):
+        if self.arch in ("x86", "x64") and (any(x87_mod.is_x87(i.mnemonic) for i in insns) or self._calls_fp_returner(insns)):
             lifter.x87_setup(x87_mod.analyze(insns, f.vaddr, self._callee_fp))          # x87 스택 깊이를 명령마다 미리 구해 둔다
         lifted = []
         leaders = self._leader_addrs(insns)
@@ -153,6 +153,45 @@ class FuncDecomp:
             raise Thunk(eb.term.src.args[0].aux)
         self.graph = Graph(self.blocks, self.entry)
         self.sp = self.abi.sp
+
+    def _calls_fp_returner(self, insns) -> bool:
+        """x87 명령이 없어도 st(0) 에 값을 남기는 함수를 호출한 뒤 그 값을 그대로 돌려주는 함수가 있다(SSE 로 인자를 만들고 `call sin; ret`)."""
+        for ins in insns:
+            if ins.mnemonic == "call" and ins.operands and ins.operands[0].type == 2:
+                if self._callee_fp(ins.operands[0].imm & ((1 << 64) - 1)) is True:
+                    return True
+        return False
+
+    def _prebind_tail_calls(self):
+        """x86-32 의 꼬리 호출(`jmp f`)은 이 함수가 받은 스택 인자를 그대로 넘긴다: 호출 시점 sp 의 위(반환 주소 다음)부터가 인자다.
+        슬롯 승격 전에 인자 읽기를 문장에 드러내 두어 그 칸들이 이 함수의 매개변수로 인식되게 한다(대상의 원형·요약을 아는 경우에만)."""
+        for b in self.blocks.values():
+            for s in b.stmts:
+                if not (s.k == "call" and (s.src.aux or {}).get("tail") and s.src.args and s.src.args[0].op == "c"):
+                    continue
+                sp = (s.extra or {}).get("sp")
+                if sp is None:
+                    continue
+                tgt = s.src.args[0]
+                name = self.callee_name(tgt)
+                pr = protos.proto(name) if name else None
+                lay = None
+                if pr is not None and not pr[2]:
+                    lay = [self._slot_of(t) for t in pr[1]]
+                elif pr is None:
+                    ci = self.callee_info(tgt)
+                    if ci is not None and ci.get("layout") is not None:
+                        lay = list(ci["layout"])
+                if lay is None:
+                    continue
+                base, k = sp + self.full, 0
+                args, kinds = [], []
+                for size, kind in lay:
+                    args.append(ir.mem(ir.stk(base + k * self.full, self.full), 10 if kind == 10 else size))
+                    kinds.append(kind)
+                    k += size // self.full
+                aux = dict(s.src.aux, args_bound=True, arg_kinds=kinds, nargs=len(args))
+                s.src = X("call", (tgt,) + tuple(args), s.src.sz, aux)
 
     def _callee_fp(self, addr):
         """호출 대상이 st(0) 에 부동소수점 값을 남기는 함수인가(True·False), 알 수 없으면 None."""
@@ -203,6 +242,7 @@ class FuncDecomp:
         stk_mod.drop_dead_bookkeeping(self.blocks, self.abi)
         if self.arch == "x86":
             stk_mod.merge_wide_params(self.blocks, self.abi)
+            self._prebind_tail_calls()
         self.slots = stk_mod.promote_slots(self.blocks, self.abi, self.frame if self.frame is not None else 0, self.frame is not None, self.entry)
         # 바깥으로 넘기는 인자 칸: 승격된 슬롯 중 어디서도 읽히지 않는 것(저장만 되는 칸)
         read = set()
@@ -352,6 +392,9 @@ class FuncDecomp:
 
     def _stack_arg(self, off: int, sz: int) -> X:
         prom = self.slots["promoted"]
+        if self.full == 4 and sz == 8 and prom.get(off) == 4 and prom.get(off + 4) == 4:          # 구형 gcc: double 인자를 4바이트 push 두 번으로 넘긴다 → 두 칸을 합친다
+            lo, hi = loc(stk_mod.slot_name(off), 4), loc(stk_mod.slot_name(off + 4), 4)
+            return ir.binop("or", ir.zext(lo, 8), ir.binop("shl", ir.zext(hi, 8), ir.C(32, 1), 8), 8)
         if off in prom:
             v = loc(stk_mod.slot_name(off), prom[off])
             return ir.trunc(v, sz) if prom[off] > sz and sz == self.full else v            # 8바이트 칸의 아래 4바이트
@@ -465,7 +508,10 @@ class FuncDecomp:
                 name = self.callee_name(tgt)
                 pr = protos.proto(name)
                 sp = (s.extra or {}).get("sp")
-                if (s.src.aux or {}).get("tail"):
+                bound = bool((s.src.aux or {}).get("args_bound"))          # x86 꼬리 호출: 인자를 이미 문장에 묶어 두었다
+                if bound:
+                    total = 0
+                elif (s.src.aux or {}).get("tail"):
                     total = len(pr[1]) if pr is not None else self._tail_arity(flow, s)
                 else:
                     total = self._arity(flow, s, name, pr, sp)
@@ -500,6 +546,8 @@ class FuncDecomp:
                     x = loc(f"{abi.fpr}{k}", 8)
                     fargs.append(x if kind == 8 else ir.trunc(x, 4))
                     fkinds.append(kind)
+                if bound:
+                    args = list(s.src.args[1:])
                 info = dict(s.src.aux or {})
                 info.update(name=name, proto=pr, nargs=len(args), callee=ci, fp_kinds=fkinds, ret_fp=rk)
                 if rk:
@@ -559,7 +607,7 @@ class FuncDecomp:
         for k, (size, _kind) in enumerate(lay):                              # 승격된 칸의 크기가 인자 폭과 어긋나면 기존 방식에 맡긴다
             off = sp + sum(z for z, _ in lay[:k])
             pm = self.slots["promoted"].get(off)
-            if pm is not None and pm != size and not (pm == 10 and size == 12):
+            if pm is not None and pm != size and not (pm == 10 and size == 12) and not (pm == 4 and size == 8 and self.slots["promoted"].get(off + 4) == 4):
                 return None
         return lay
 

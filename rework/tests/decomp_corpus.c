@@ -150,7 +150,7 @@ FN void v_set(V *v, double a) { v->x = a; v->y = a * 2; v->k = 3; }
 
 #ifdef X87_TESTS                                /* x87 전용(i386 시험에서만): 초월함수·반올림 모드·long double. 라이브러리 함수는 시험 지원 코드가 x87 어셈으로 제공한다 */
 double sin(double), cos(double), tan(double), atan2(double, double), log2(double), log(double), exp2(double), fmod(double, double),
-       floor(double), ceil(double), trunc(double);
+       floor(double), ceil(double), trunc(double), remainder(double, double);
 FN double x_sin(double x) { return __builtin_sin(x) * 2.0; }
 FN double x_cos(double x) { return __builtin_cos(x) + 1.0; }
 FN double x_tan(double x) { return __builtin_tan(x); }
@@ -165,6 +165,48 @@ FN double x_trunc(double x) { return __builtin_trunc(x); }
 FN int x_lrint(double x) { return __builtin_lrint(x); }
 FN int x_floor_i(double x) { return (int)__builtin_floor(x); }
 FN float x_fsin(float x) { return __builtin_sinf(x) + 1.0f; }
+#endif
+
+#ifdef X87_TESTS                                /* naked 어셈 함수: 컴파일러가 거의 만들지 않는 x87 명령·피연산자 형태를 직접 시험한다(i386 만) */
+#define NK __attribute__((naked, noinline))
+#define ASM(...) __asm__(".intel_syntax noprefix\n" __VA_ARGS__ "\n.att_syntax")
+NK double xa_fisttp(double x) { ASM("fld qword ptr [esp+4]\n sub esp, 4\n fisttp dword ptr [esp]\n fild dword ptr [esp]\n add esp, 4\n ret"); }
+NK double xa_sincos(double x) { ASM("fld qword ptr [esp+4]\n fsincos\n fadd st(0), st(0)\n faddp st(1), st(0)\n ret"); }
+NK double xa_prem1(double a, double b) { ASM("fld qword ptr [esp+12]\n fld qword ptr [esp+4]\n 1: fprem1\n fnstsw ax\n test ah, 4\n jnz 1b\n fstp st(1)\n ret"); }
+NK int xa_ftst(double x) { ASM("fld qword ptr [esp+4]\n ftst\n fnstsw ax\n fstp st(0)\n sahf\n jz 2f\n jc 3f\n mov eax, 1\n ret\n 2: xor eax, eax\n ret\n 3: mov eax, -1\n ret"); }
+NK int xa_fucomp_eq(double a, double b) { ASM("fld qword ptr [esp+12]\n fld qword ptr [esp+4]\n fucomp st(1)\n fnstsw ax\n fstp st(0)\n and ah, 0x45\n cmp ah, 0x40\n sete al\n movzx eax, al\n ret"); }
+NK int xa_fucompp_np(double a, double b) { ASM("fld qword ptr [esp+12]\n fld qword ptr [esp+4]\n fucompp\n fnstsw ax\n test ah, 0x44\n setnp al\n movzx eax, al\n ret"); }
+NK int xa_fcom_lt(double a, double b) { ASM("fld qword ptr [esp+12]\n fld qword ptr [esp+4]\n fcom st(1)\n fnstsw ax\n fstp st(0)\n fstp st(0)\n test ah, 1\n setne al\n movzx eax, al\n ret"); }
+NK int xa_ficomp_lt7(double x) { ASM("push 7\n fld qword ptr [esp+8]\n ficomp dword ptr [esp]\n fnstsw ax\n add esp, 4\n test ah, 1\n setne al\n movzx eax, al\n ret"); }
+#define FORMS2(N, BODY) NK double N(double a, double b) { ASM("fld qword ptr [esp+4]\n fld qword ptr [esp+12]\n " BODY "\n ret"); }
+FORMS2(xa_subrp, "fsubrp st(1), st(0)")
+FORMS2(xa_subp, "fsubp st(1), st(0)")
+FORMS2(xa_divrp, "fdivrp st(1), st(0)")
+FORMS2(xa_divp, "fdivp st(1), st(0)")
+FORMS2(xa_sub_i0, "fsub st(1), st(0)\n fstp st(0)")
+FORMS2(xa_subr_i0, "fsubr st(1), st(0)\n fstp st(0)")
+FORMS2(xa_div_i0, "fdiv st(1), st(0)\n fstp st(0)")
+FORMS2(xa_divr_i0, "fdivr st(1), st(0)\n fstp st(0)")
+FORMS2(xa_sub_0i, "fsub st(0), st(1)\n fstp st(1)")
+FORMS2(xa_subr_0i, "fsubr st(0), st(1)\n fstp st(1)")
+FORMS2(xa_div_0i, "fdiv st(0), st(1)\n fstp st(1)")
+FORMS2(xa_divr_0i, "fdivr st(0), st(1)\n fstp st(1)")
+NK double xa_fxch3(double a, double b, double c) { ASM("fld qword ptr [esp+4]\n fld qword ptr [esp+12]\n fld qword ptr [esp+20]\n fxch st(2)\n fsubp st(1), st(0)\n fxch st(1)\n fdivp st(1), st(0)\n ret"); }
+NK double xa_fldsti(double a, double b) { ASM("fld qword ptr [esp+4]\n fld qword ptr [esp+12]\n fld st(1)\n fst st(2)\n fmul st(0), st(1)\n fstp st(2)\n fsubp st(1), st(0)\n ret"); }
+NK double xa_fiarith(double x, int n) { ASM("fld qword ptr [esp+4]\n fiadd dword ptr [esp+12]\n fimul dword ptr [esp+12]\n fidivr dword ptr [esp+12]\n fisub dword ptr [esp+12]\n ret"); }
+#define CMOV2(N, CC) NK double N(double a, double b) { ASM("fld qword ptr [esp+12]\n fld qword ptr [esp+4]\n fucomi st(0), st(1)\n " CC " st(0), st(1)\n fstp st(1)\n ret"); }
+CMOV2(xa_cmov_b, "fcmovb") CMOV2(xa_cmov_e, "fcmove") CMOV2(xa_cmov_be, "fcmovbe") CMOV2(xa_cmov_u, "fcmovu")
+CMOV2(xa_cmov_nb, "fcmovnb") CMOV2(xa_cmov_ne, "fcmovne") CMOV2(xa_cmov_nbe, "fcmovnbe") CMOV2(xa_cmov_nu, "fcmovnu")
+/* 반올림 모드: or ah,imm 로 만든 제어 워드(내림·올림)·상수로 쓴 제어 워드(0x077f 내림 · 0x0b7f 올림 · 0x0f7f 자름)·기본(가장 가까운) */
+#define RND(N, SETUP) NK double N(double x) { ASM("sub esp, 8\n fnstcw word ptr [esp]\n " SETUP "\n fld qword ptr [esp+12]\n frndint\n fldcw word ptr [esp]\n add esp, 8\n ret"); }
+RND(xa_floor_or, "mov ax, word ptr [esp]\n and ah, 0xf3\n or ah, 4\n mov word ptr [esp+2], ax\n fldcw word ptr [esp+2]")
+RND(xa_ceil_or, "mov ax, word ptr [esp]\n and ah, 0xf3\n or ah, 8\n mov word ptr [esp+2], ax\n fldcw word ptr [esp+2]")
+RND(xa_floor_imm, "mov word ptr [esp+2], 0x077f\n fldcw word ptr [esp+2]")
+RND(xa_ceil_imm, "mov word ptr [esp+2], 0x0b7f\n fldcw word ptr [esp+2]")
+RND(xa_trunc_imm, "mov word ptr [esp+2], 0x0f7f\n fldcw word ptr [esp+2]")
+RND(xa_near, "nop")
+NK int xa_fist_near(double x) { ASM("sub esp, 4\n fld qword ptr [esp+8]\n fist dword ptr [esp]\n fstp st(0)\n mov eax, dword ptr [esp]\n add esp, 4\n ret"); }
+NK int xa_fist_down(double x) { ASM("sub esp, 8\n fnstcw word ptr [esp]\n mov word ptr [esp+2], 0x077f\n fldcw word ptr [esp+2]\n fld qword ptr [esp+12]\n fistp dword ptr [esp+4]\n fldcw word ptr [esp]\n mov eax, dword ptr [esp+4]\n add esp, 8\n ret"); }
 #endif
 
 #ifdef LD_TESTS                                 /* long double(x87 80비트): i386·x86-64 SysV 에서만 */

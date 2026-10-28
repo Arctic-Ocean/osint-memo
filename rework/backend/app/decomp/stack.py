@@ -267,6 +267,9 @@ def merge_wide_params(blocks: dict, abi) -> bool:
                     d = st[k]
                     if d is skip:
                         continue
+                    if d.k == "asg" and d.dst.op == "loc" and d.dst.aux == reg and d.src.op == "ins" and d.src.args[0].op == "loc" \
+                            and d.src.args[0].aux == reg and reg not in {n.aux for n in ir.walk(d.src.args[1]) if n.op == "loc"}:
+                        return True                                    # `fnstsw ax` 같은 부분 쓰기는 옛 값을 보는 것처럼 보이지만 이 값을 읽는 것이 아니다
                     if reg in names_used(d):
                         return False
                     if d.k == "asg" and d.dst.op == "loc" and d.dst.aux == reg:

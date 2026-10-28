@@ -367,6 +367,8 @@ class X87Mixin:
     """X86Lifter 에 섞어 쓴다. self.x87(StackInfo) 이 있을 때만 쓰인다."""
 
     x87 = None
+    W = 8                      # x87 값의 폭(기본 double, tbyte 가 있으면 10) — x87 명령이 없어도 꼬리 호출로 st(0) 값을 돌려주는 함수가 있다
+    x87_used = False
 
     def x87_setup(self, info: StackInfo):
         self.x87 = info
