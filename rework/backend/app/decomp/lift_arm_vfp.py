@@ -281,7 +281,7 @@ class A32Vfp:
             return None
         td, ts = dts
         d, s = ops[0], ops[1]
-        mode = CVT_MODE.get(head[4]) if len(head) == 5 else ("rint" if head == "vcvtr" else None)
+        mode = "rint" if head == "vcvtr" else (CVT_MODE.get(head[4]) if len(head) == 5 else None)
         fd, fs = td in ("f32", "f64"), ts in ("f32", "f64")
         if fd and fs:                                                         # float ↔ double
             sd, ss = (4 if td == "f32" else 8), (4 if ts == "f32" else 8)

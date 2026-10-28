@@ -231,9 +231,17 @@ FN long double ld_calls(long double a, long double b) { return ld_add(a, b) * ld
 FN STD int std_add(int a, int b) { return a * 2 + b; }
 FN STD int std_three(int a, int b, int c) { return a - b + c * 3; }
 FN int std_calls(int a, int b) { int x = std_add(a, b); int y = std_three(x, a, b); return x + y + std_add(y, x); }
+#ifndef NO_FP
+FN double bf_mix(float a, double b, float c) { return a * 2.0 + b - c; }                  /* ARM 하드 플로트: a=s0, b=d1, c=s1 (뒷칸 채우기). (float, float, double) 과 레지스터 배정이 같아 선언 순서는 복원할 수 없다 */
+FN float ff_mix(float a, float b, float c, float d) { return a * b - c * d; }
+#ifndef MS_ABI                                  /* Windows x64 는 위치가 레지스터를 정해서, 정수보다 앞선 실수 인자의 선언 순서를 아직 복원하지 못한다 */
+FN double fd_mix(float a, double b, int n) { return a + b * n; }
+#endif
+#endif
+
 #if defined(__i386__) && !defined(NO_FP)         /* 스택 인자는 순서가 남는다. 레지스터 규약(x64·ARM)은 정수/실수 레지스터 종류별로만 번호가 매겨져 (double, int, double) 순서를 복원할 수 없다 */
 FN STD double std_dmix(double a, int n, double b) { return a * n + b; }
-FN double std_dcalls(double a, double b) { return std_dmix(a, 3, b) + std_dmix(b, 2, a); }
+FN double std_dcalls(double a, double b) { return std_dmix(a, 3, b) * std_dmix(b, 2, a); }          /* 곱: 뺄셈의 상쇄로 x87 확장 정밀도 차이가 부풀지 않게 */
 #endif
 
 FN unsigned hash(const unsigned char *s, int n) { unsigned h = 5381; for (int i = 0; i < n; i++) h = h * 33 + s[i]; return h; }
@@ -320,3 +328,68 @@ FN int word_count(const char *s) {
 }
 
 int main(int argc, char **argv) { (void)argv; return add(argc, 1) + fib(3) + (int)sum_to(2); }
+
+#if defined(VFP_TESTS) && defined(__ARM_PCS_VFP)            /* naked 어셈 함수: 컴파일러가 거의 만들지 않는 VFP 명령·피연산자 형태를 직접 시험한다(ARM·Thumb 하드 플로트) */
+#define NK __attribute__((naked, noinline))
+#ifdef __thumb__
+#define IT(c) "it " #c "\n"
+#define ITE(c) "ite " #c "\n"
+#else
+#define IT(c) ""
+#define ITE(c) ""
+#endif
+#define VASM(...) __asm__(".syntax unified\n" __VA_ARGS__ "\nbx lr")
+#define VOP3D(N, OP) NK double N(double a, double b, double c) { VASM(OP " d0, d1, d2"); }
+#define VOP3F(N, OP) NK float N(float a, float b, float c) { VASM(OP " s0, s1, s2"); }
+VOP3D(va_vmla, "vmla.f64") VOP3D(va_vmls, "vmls.f64") VOP3D(va_vnmla, "vnmla.f64") VOP3D(va_vnmls, "vnmls.f64")
+VOP3D(va_vfms, "vfms.f64") VOP3D(va_vfnma, "vfnma.f64") VOP3D(va_vfnms, "vfnms.f64") VOP3D(va_vfma, "vfma.f64")
+VOP3F(vf_vmla, "vmla.f32") VOP3F(vf_vmls, "vmls.f32") VOP3F(vf_vnmla, "vnmla.f32") VOP3F(vf_vnmls, "vnmls.f32")
+VOP3F(vf_vfms, "vfms.f32") VOP3F(vf_vfnma, "vfnma.f32") VOP3F(vf_vfnms, "vfnms.f32") VOP3F(vf_vfma, "vfma.f32")
+NK double va_vnmul(double a, double b) { VASM("vnmul.f64 d0, d0, d1"); }
+NK double va_vabs(double a) { VASM("vabs.f64 d0, d0"); }
+NK double va_vneg(double a) { VASM("vneg.f64 d0, d0"); }
+NK double va_vsqrt(double a) { VASM("vabs.f64 d0, d0\n vsqrt.f64 d0, d0"); }
+NK float vf_vabs(float a) { VASM("vabs.f32 s0, s0"); }
+NK float vf_vneg(float a) { VASM("vneg.f32 s0, s0"); }
+NK float vf_vsqrt(float a) { VASM("vabs.f32 s0, s0\n vsqrt.f32 s0, s0"); }
+NK float vf_vdiv(float a, float b) { VASM("vdiv.f32 s0, s0, s1"); }
+NK double va_cmpsel(double a, double b) { VASM("vcmpe.f64 d0, d1\n vmrs APSR_nzcv, fpscr\n " IT(lt) " vmovlt.f64 d0, d1\n vabs.f64 d0, d0"); }
+NK int va_cmp0(double a) { VASM("vcmp.f64 d0, #0\n vmrs APSR_nzcv, fpscr\n mov r0, #0\n " IT(gt) " movgt r0, #1\n " IT(mi) " mvnmi r0, #0"); }
+NK int vf_cmp(float a, float b) { VASM("vcmp.f32 s0, s1\n vmrs APSR_nzcv, fpscr\n mov r0, #0\n " ITE(eq) " moveq r0, #5\n movne r0, #9\n " IT(mi) " addmi r0, r0, #20"); }
+NK float va_f2f(double a) { VASM("vcvt.f32.f64 s0, d0"); }
+NK double va_f2d(float a) { VASM("vcvt.f64.f32 d0, s0"); }
+NK int va_d2s32(double a) { VASM("vcvt.s32.f64 s0, d0\n vmov r0, s0"); }
+NK unsigned va_d2u32(double a) { VASM("vabs.f64 d0, d0\n vcvt.u32.f64 s0, d0\n vmov r0, s0"); }
+NK int vf_f2s32(float a) { VASM("vcvt.s32.f32 s0, s0\n vmov r0, s0"); }
+NK unsigned vf_f2u32(float a) { VASM("vabs.f32 s0, s0\n vcvt.u32.f32 s0, s0\n vmov r0, s0"); }
+NK double va_s32tod(int a) { VASM("vmov s0, r0\n vcvt.f64.s32 d0, s0"); }
+NK double va_u32tod(unsigned a) { VASM("vmov s0, r0\n vcvt.f64.u32 d0, s0"); }
+NK float vf_s32tof(int a) { VASM("vmov s0, r0\n vcvt.f32.s32 s0, s0"); }
+NK float vf_u32tof(unsigned a) { VASM("vmov s0, r0\n vcvt.f32.u32 s0, s0"); }
+NK int va_vcvtr(double a) { VASM("vcvtr.s32.f64 s0, d0\n vmov r0, s0"); }
+NK float vf_fixed_in(int a) { VASM("vmov s0, r0\n vcvt.f32.s32 s0, s0, #4"); }
+NK int vf_fixed_out(float a) { VASM("vcvt.s32.f32 s0, s0, #4\n vmov r0, s0"); }
+NK double va_movcore(int a, int b) { VASM("vmov d0, r0, r1\n vadd.f64 d0, d0, d0"); }
+NK int va_movcore2(double a) { VASM("vmov r0, r1, d0\n eor r0, r0, r1"); }
+NK int vf_movs(float a) { VASM("vmov r0, s0\n add r0, r0, #1"); }
+NK float vf_movs2(int a) { VASM("vmov s0, r0\n vmov.f32 s1, #1.0\n vadd.f32 s0, s0, s1"); }
+NK int va_lane1(double a) { VASM("vmov.32 r0, d0[1]"); }
+NK int va_lane0(double a) { VASM("vmov.32 r0, d0[0]"); }
+NK double va_setlane(double a, int b) { VASM("vmov.32 d0[1], r0\n vadd.f64 d0, d0, d0"); }
+NK double va_imm(double a) { VASM("vmov.f64 d1, #1.5\n vadd.f64 d0, d0, d1\n vmov.f64 d2, #-0.25\n vmul.f64 d0, d0, d2"); }
+NK float vf_imm(float a) { VASM("vmov.f32 s1, #3.0\n vsub.f32 s0, s0, s1"); }
+NK double va_ldst(double *p, double x) { VASM("vldr d1, [r0, #8]\n vadd.f64 d0, d0, d1\n vstr d0, [r0]"); }
+NK double va_ldm(double *p, double x) { VASM("vldmia r0!, {d1, d2}\n vadd.f64 d0, d0, d1\n vsub.f64 d0, d0, d2\n vstr d0, [r0]"); }
+NK void va_stm(double *p, double x, double y) { VASM("vstmia r0!, {d0, d1}\n vadd.f64 d2, d0, d1\n vstmia r0, {d2}"); }
+NK void va_stmdb(double *p, double x, double y) { VASM("add r0, r0, #32\n vstmdb r0!, {d0, d1}"); }
+NK float vf_ldm(float *p, float x) { VASM("vldmia r0!, {s2, s3, s4}\n vadd.f32 s0, s0, s2\n vsub.f32 s0, s0, s3\n vmla.f32 s0, s3, s4"); }
+NK double va_pushpop(double a, double b) { VASM("vpush {d8, d9}\n vmov.f64 d8, d0\n vmov.f64 d9, d1\n vadd.f64 d0, d8, d9\n vmul.f64 d0, d0, d8\n vpop {d8, d9}"); }
+NK float vf_pushpop(float a, float b) { VASM("vpush {s16, s17}\n vmov.f32 s16, s0\n vmov.f32 s17, s1\n vsub.f32 s0, s16, s17\n vpop {s16, s17}"); }
+NK double va_lit(double a) { __asm__(".syntax unified\n vldr d1, 1f\n vadd.f64 d0, d0, d1\n bx lr\n .balign 8\n 1: .double 2.5"); }
+NK double va_hiregs(double a, double b) { VASM("vmov.f64 d16, d0\n vmov.f64 d17, d1\n vmul.f64 d18, d16, d17\n vadd.f64 d0, d18, d16"); }
+NK double va_alias_sd(float a) { VASM("vcvt.f64.f32 d1, s0\n vadd.f64 d0, d1, d1"); }
+NK float va_alias_ds(double a) { VASM("vcvt.f32.f64 s2, d0\n vadd.f32 s0, s2, s2"); }
+NK float va_alias3(float a, float b) { VASM("vmov.f32 s2, s1\n vsub.f32 s0, s0, s2"); }
+NK double fp9(double a, double b, double c, double d, double e, double f, double g, double h, double i) {
+    VASM("vadd.f64 d0, d0, d1\n vsub.f64 d0, d0, d2\n vmla.f64 d0, d3, d4\n vadd.f64 d0, d0, d5\n vmls.f64 d0, d6, d7\n vldr d1, [sp]\n vadd.f64 d0, d0, d1"); }
+#endif

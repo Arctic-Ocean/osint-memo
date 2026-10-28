@@ -19,7 +19,7 @@ _SUF = {4: "f", 8: "", 10: "l"}                                                 
 _MATH = {"fsin": "sin", "fcos": "cos", "ftan": "tan", "flog2": "log2", "fexp2": "exp2", "fatan2": "atan2", "fmod": "fmod", "fremainder": "remainder"}
 _BIN = {"fadd": ("+", "add"), "fsub": ("-", "add"), "fmul": ("*", "mul"), "fdiv": ("/", "mul")}
 _CMP = {"feq": ("==", "eq"), "fne": ("!=", "eq"), "flt": ("<", "rel"), "fle": ("<=", "rel"), "fgt": (">", "rel"), "fge": (">=", "rel")}
-FP_VALUE_OPS = ir.FOPS2 | ir.FOPS1 | ir.FOPS3 | {"i2f", "f2f"}          # 부동소수점 값을 만드는 연산
+FP_VALUE_OPS = ir.FOPS2 | ir.FOPS1 | ir.FOPS3 | {"i2f", "f2f", "vlanef", "vredf"}          # 부동소수점 값을 만드는 연산
 
 
 def _ext_literal(bits: int) -> str:
@@ -102,10 +102,14 @@ class FpRender:
         fpmem: set = set()
         webs = self.webs
 
+        core_arg = set(fd.abi.arg_regs) if (fd.arch in ("x64", "arm64") or (fd.arch == "arm" and fd.abi.hardfp)) else set()
+
         def put(w, kind):
             if w in fk:
                 return False
             if webs[w].sz != kind:
+                return False
+            if webs[w].entry and webs[w].loc in core_arg:                  # 정수 레지스터로 들어온 비트를 그대로 옮겨 쓴 것(vmov s0, r0)일 뿐, 인자 종류는 레지스터가 정한다
                 return False
             fk[w] = kind
             return True
@@ -281,6 +285,8 @@ class FpRender:
             return f"*({ty} *){self.addr_text(addr)}", PREC["unary"]
         if op == "call" and (e.aux or {}).get("ret_fp") == kind:
             return self.call_text(e), PREC["prim"]
+        if op in ("vlanef", "vredf") and e.sz == kind:
+            return self.lane_text(e)[0], PREC["prim"]
         if op == "ite" and e.sz == kind:
             c = self.cond(e.args[0], PREC["cond"] + 1)
             ta, pa = self.PF(e.args[1], kind)

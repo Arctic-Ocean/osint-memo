@@ -12,6 +12,7 @@ from . import ptrtype
 from . import tables
 from . import protos
 from .render_fp import FpRender, FTYPE as FTYPE_
+from .render_vec import VecRender, TN as VTN_
 from .ir import X, to_signed, mask
 
 PREC = {"prim": 16, "unary": 14, "mul": 13, "add": 12, "shift": 11, "rel": 10, "eq": 9, "band": 8, "bxor": 7,
@@ -45,7 +46,7 @@ def c_escape(s: str) -> str:
     return "".join(out)
 
 
-class Renderer(FpRender):
+class Renderer(FpRender, VecRender):
     def __init__(self, fd, ast, params, ret_info):
         self.fd = fd
         self.prog = fd.prog
@@ -279,6 +280,7 @@ class Renderer(FpRender):
 
         collect(self.ast)
         self.fp_prepare(exprs, asgs)
+        self.vec_prepare(exprs, asgs)
         induction = set()
         for e0 in self._all_stmts():
             if e0.k == "asg" and e0.dst.op == "var" and e0.src.op in ("add", "sub") and e0.src.args[0] == e0.dst \
@@ -400,6 +402,8 @@ class Renderer(FpRender):
             return self.pointee(self.ptypes[w]) + " *"
         if w in self.fkind:
             return FTYPE_[self.fkind[w]] + " "
+        if w in self.vkind:
+            return VTN_[self.vkind[w]] + " "
         return itype(self.webs[w].sz, self.vsign[w]) + " "
 
     def fit(self, e: X, want, prec=0) -> str:
@@ -432,6 +436,8 @@ class Renderer(FpRender):
                 return f"(uint64_t){self.vname(e.aux)}", "u", PREC["unary"]
             if e.aux in self.fkind:
                 return self.bits_of_fp(e)
+            if e.aux in self.vkind:
+                return f"__builtin_bit_cast(uint64_t, {self.vname(e.aux)})", "u", PREC["prim"]
             return self.vname(e.aux), self.vsign[e.aux], PREC["prim"]
         if op in ir.FCMP_OPS:
             return self.fp_cmp_text(e)
@@ -441,6 +447,13 @@ class Renderer(FpRender):
             return f"({itype(sz, sg)}){self._paren(t, p, PREC['unary'])}", sg, PREC["unary"]
         if op in ir.FOPS:
             return self.bits_of_fp(e)
+        if op in ir.VEC_OPS:
+            return self.bits_of_vec(e)
+        if op in ir.VEC_LANE_OPS:
+            t, cls = self.lane_text(e)
+            if cls == "f":
+                return f"__builtin_bit_cast(uint32_t, {t})", "u", PREC["prim"]
+            return t, cls, PREC["prim"]
         if op == "stk":
             return self.stk_addr(e), "u", PREC["add"] if "+" in self.stk_addr(e) else PREC["unary"]
         if op == "mem":
@@ -806,6 +819,9 @@ class Renderer(FpRender):
         self.lines.append({"addr": addr if addr is not None else self.cur_addr, "indent": indent, "text": text, "kind": kind})
 
     def assign_text(self, dst: X, src: X) -> str:
+        vt_ = self.vec_assign_text(dst, src)
+        if vt_ is not None:
+            return vt_
         if dst.op == "var" and dst.aux in self.fkind and dst.aux not in self.ptypes:
             t, p = self.PF(src, self.fkind[dst.aux])
             return f"{self.vname(dst.aux)} = {t};"

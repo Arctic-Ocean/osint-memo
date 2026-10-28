@@ -584,6 +584,78 @@ def pair(lo: X, hi: X) -> X:
     return X("pair", (lo, hi), sz)
 
 
+# ---- SIMD(NEON) 벡터 -----------------------------------------------------------------
+# 128비트 벡터 레지스터는 64비트 두 조각(8바이트 값)으로 다룬다. 한 조각은 폭 esz 바이트인 원소 8/esz 개를 담은 벡터 값이다.
+# 원소별 연산만 'vop' 로 두고(aux=(이름, esz, 's'|'u'|'f')), 원소 재배치는 vshuf·vdup·vpack·vsetlane, 원소 꺼내기는 vlane(정수)·vlanef(float) 이다.
+# 비트 연산(and/or/xor/not)과 폭 8 원소(= 조각 전체)의 연산은 평범한 정수·실수 연산이다.
+VEC_OPS = {"vop", "vshuf", "vdup", "vpack", "vsetlane"}                         # 8바이트 벡터 값을 만드는 연산
+VEC_LANE_OPS = {"vlane", "vlanef", "vred", "vredf"}                             # 벡터에서 스칼라를 꺼내는 연산
+
+
+def _lane_const(v: int, i: int, esz: int) -> int:
+    return (v >> (8 * esz * i)) & mask(esz)
+
+
+def vlane(v: X, idx: int, esz: int, cls: str) -> X:
+    """벡터 v 의 idx 번째 원소(폭 esz). cls 가 'f' 이면 실수 원소."""
+    if v.op == "c":
+        return C(_lane_const(v.aux, idx, esz), esz)
+    if v.op == "vdup":
+        return v.args[0]
+    if v.op == "vpack" and len(v.args) == 8 // esz:
+        return v.args[idx]
+    return X("vlanef" if cls == "f" else "vlane", (v,), esz, (idx, esz, cls))
+
+
+def vpack(xs, esz: int, cls: str) -> X:
+    """스칼라 원소들(폭 esz)로 벡터 한 조각을 만든다."""
+    xs = tuple(xs)
+    if all(x.op == "c" for x in xs):
+        return C(sum(x.aux << (8 * esz * i) for i, x in enumerate(xs)), 8)
+    v0 = xs[0]
+    if v0.op in ("vlane", "vlanef") and v0.args[0].sz == 8 and all(
+            x.op in ("vlane", "vlanef") and x.args[0] == v0.args[0] and x.aux[0] == i for i, x in enumerate(xs)):
+        return v0.args[0]                                                       # 제자리 다시 묶기
+    if all(x == v0 for x in xs):
+        return vdup(v0, esz, cls)
+    return X("vpack", xs, 8, (esz, cls))
+
+
+def vdup(x: X, esz: int, cls: str) -> X:
+    if x.op == "c":
+        return C(sum(x.aux << (8 * esz * i) for i in range(8 // esz)), 8)
+    return X("vdup", (x,), 8, (esz, cls))
+
+
+def vshuf(a: X, b: X, idx, esz: int, cls: str) -> X:
+    """두 벡터(a, b 의 원소를 이어 붙인 것)에서 idx 번호의 원소들을 고른다(__builtin_shufflevector)."""
+    n = 8 // esz
+    idx = tuple(idx)
+    if idx == tuple(range(n)):
+        return a
+    if idx == tuple(range(n, 2 * n)):
+        return b
+
+    def src_lane(i):
+        s = a if i < n else b
+        return vlane(s, i % n, esz, cls)
+
+    if all((a if i < n else b).op in ("c", "vdup", "vpack") for i in idx):          # 원소를 알 수 있는 입력이면 그냥 다시 묶는다
+        return vpack([src_lane(i) for i in idx], esz, cls)
+    return X("vshuf", (a, b), 8, (idx, esz, cls))
+
+
+def vsetlane(v: X, x: X, idx: int, esz: int, cls: str) -> X:
+    n = 8 // esz
+    if v.op in ("c", "vdup", "vpack"):
+        return vpack([x if i == idx else vlane(v, i, esz, cls) for i in range(n)], esz, cls)
+    return X("vsetlane", (v, x), 8, (idx, esz, cls))
+
+
+def vop(name: str, args, esz: int, cls: str) -> X:
+    return X("vop", tuple(args), 8, (name, esz, cls))
+
+
 # ---- 플래그 -----------------------------------------------------------------------
 def flags(kind: str, args, sz: int) -> X:
     return X("fl", tuple(args), sz, kind)
@@ -858,6 +930,16 @@ def rebuild(e: X, args) -> X:
         return insert(args[0], args[1])
     if op == "pair":
         return pair(args[0], args[1])
+    if op in ("vlane", "vlanef"):
+        return vlane(args[0], e.aux[0], e.aux[1], e.aux[2])
+    if op == "vpack":
+        return vpack(args, e.aux[0], e.aux[1])
+    if op == "vdup":
+        return vdup(args[0], e.aux[0], e.aux[1])
+    if op == "vshuf":
+        return vshuf(args[0], args[1], e.aux[0], e.aux[1], e.aux[2])
+    if op == "vsetlane":
+        return vsetlane(args[0], args[1], e.aux[0], e.aux[1], e.aux[2])
     if op == "cc":
         fl = args[0]
         if fl.op == "fl" or (fl.op == "ite" and is_flagsrc(fl)):

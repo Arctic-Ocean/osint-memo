@@ -8,6 +8,8 @@
 """
 from __future__ import annotations
 
+import re
+
 from collections import defaultdict
 
 from . import ir
@@ -328,7 +330,8 @@ class Prop:
             if k < w.sz:
                 cand[v] = k
         for v, w in self.webs.items():                  # 정의 문장이 없는 진입 변수(매개변수)
-            if v not in def_sites and v not in bad and v in consumed and w.loc != "F" and consumed[v] < w.sz and w.entry:
+            if v not in def_sites and v not in bad and v in consumed and w.loc != "F" and consumed[v] < w.sz and w.entry \
+                    and not re.fullmatch(r"d\d+", w.loc):          # ARM VFP d 레지스터 인자는 아래 절반만 써도 double 인자다(레지스터 종류가 호출 규약을 정한다)
                 cand[v] = consumed[v]
         if not cand:
             return False

@@ -77,6 +77,12 @@ void *memcpy(void *d, const void *s, unsigned long n) { char *a = d; const char 
 void *memset(void *d, int c, unsigned long n) { char *a = d; while (n--) *a++ = (char)c; return d; }
 """
 
+# VFP 시험 지원: ARMv7 의 VFP 에는 반올림 명령(vrint*)이 없어 rint 계열이 라이브러리 호출로 남는다 — 2^52(2^23) 더했다 빼기로 가장 가까운 짝수로 돌린다
+SUPPORT_VFP = r"""
+double rint(double x) { volatile double big = 4503599627370496.0; double ax = x < 0 ? -x : x; if (!(ax < big)) return x; double r = (ax + big) - big; return x < 0 ? -r : r; }
+float rintf(float x) { volatile float big = 8388608.0f; float ax = x < 0 ? -x : x; if (!(ax < big)) return x; float r = (ax + big) - big; return x < 0 ? -r : r; }
+"""
+
 # x87 시험 지원: 컴파일러가 라이브러리 호출로 남기는 초월함수를 x87 명령으로 구현한다(인라인한 쪽과 같은 명령이라 결과가 같다)
 SUPPORT_X87 = r"""
 double sin(double x) { double r; __asm__(".intel_syntax noprefix; fsin; .att_syntax" : "=t"(r) : "0"(x)); return r; }
@@ -128,9 +134,9 @@ ARCH = {
     "thumb": dict(target="thumbv7-linux-gnueabi", cflags=["-mcpu=cortex-a15", "-mthumb", "-mfloat-abi=soft", "-DNO_FP"],
                   uc=(UC_ARCH_ARM, UC_MODE_THUMB), ptr=4, long=4, abi="aapcs", thumb=True),
     # VFP: armhf 는 하드 플로트(실수 인자·반환을 s/d 레지스터로), armsf 는 softfp(VFP 명령을 쓰되 실수 인자·반환은 r0–r3)
-    "armhf": dict(target="armv7-linux-gnueabihf", cflags=["-mcpu=cortex-a15", "-marm", "-mfloat-abi=hard", "-mfpu=vfpv4"],
+    "armhf": dict(target="armv7-linux-gnueabihf", cflags=["-mcpu=cortex-a15", "-marm", "-mfloat-abi=hard", "-mfpu=vfpv4", "-DVFP_TESTS"],
                   uc=(UC_ARCH_ARM, UC_MODE_ARM), ptr=4, long=4, abi="aapcs", hard=True, vfp=True),
-    "thumbhf": dict(target="thumbv7-linux-gnueabihf", cflags=["-mcpu=cortex-a15", "-mthumb", "-mfloat-abi=hard", "-mfpu=vfpv4"],
+    "thumbhf": dict(target="thumbv7-linux-gnueabihf", cflags=["-mcpu=cortex-a15", "-mthumb", "-mfloat-abi=hard", "-mfpu=vfpv4", "-DVFP_TESTS"],
                     uc=(UC_ARCH_ARM, UC_MODE_THUMB), ptr=4, long=4, abi="aapcs", thumb=True, hard=True, vfp=True),
     "armsf": dict(target="armv7-linux-gnueabi", cflags=["-mcpu=cortex-a15", "-marm", "-mfloat-abi=softfp", "-mfpu=vfpv4"],
                   uc=(UC_ARCH_ARM, UC_MODE_ARM), ptr=4, long=4, abi="aapcs", vfp=True),
@@ -562,6 +568,8 @@ XFAIL = {
     ("i386sse", "u2d"): "SSE 로 unsigned → double 변환을 하는 2^52 매직 상수 기법(orpd·subsd)을 아직 해석하지 않는다",
     ("armsf", "d_neg"): "softfp 에서 VFP 명령 없이 정수 `eor r1, r1, #0x80000000` 만으로 r0:r1 의 double 부호를 뒤집는다 — r0 를 건드리지 않으므로 반환값이 있는 함수로도, double 로도 보이지 않는다(정수 연산뿐이라 실수라는 증거가 없다)",
     ("thumbsf", "d_neg"): "위와 같음",
+    ("armhf", "fp9"): "하드 플로트에서 d0–d7 을 다 쓰고 스택으로 넘어오는 아홉째 double — 스택 인자를 정수 매개변수로 보고 앞에 둬서 선언 순서가 어긋난다",
+    ("thumbhf", "fp9"): "위와 같음",
 }
 TOL = {"used": 0}
 
@@ -575,6 +583,8 @@ def run_level(arch, opt, only, verbose, seed=1, iterations=30):
     src_text += SUPPORT                                           # 독립 실행 환경에는 libc 가 없으므로 컴파일러가 만들어 내는 memcpy·memset 호출을 받아 준다
     if "-DX87_TESTS" in a["cflags"]:
         src_text += SUPPORT_X87
+    if a.get("vfp"):
+        src_text += SUPPORT_VFP
         if a.get("cc") == "gcc":
             src_text += SUPPORT_I386_GCC
     corpus_path = os.path.join(WORK, f"corpus_{arch}.c")
@@ -618,8 +628,9 @@ def run_level(arch, opt, only, verbose, seed=1, iterations=30):
             t = "__attribute__((ms_abi)) " + t
         dec_texts.append(t)
     with open(allc, "w") as fh:
-        fh.write("#define main corpus_main\n#include \"decomp_corpus.c\"\n#undef main\n" + HELPERS + "\n" + "\n\n".join(dec_texts)
-                 + "\nint main(void){return 0;}\n")
+        fh.write("#define main corpus_main\n#include \"decomp_corpus.c\"\n#undef main\n" + HELPERS + "\n"
+                 + "#ifdef __clang__\n#pragma clang fp contract(off)\n#endif\n"           # 의사코드의 `a + b * c` 를 컴파일러가 멋대로 융합하지 못하게(융합은 `fma()` 로 명시한다)
+                 + "\n\n".join(dec_texts) + "\nint main(void){return 0;}\n")
     # 함수별로 컴파일 가능 여부를 확인
     good = []
     for e, t in zip(entries, dec_texts):
@@ -635,8 +646,9 @@ def run_level(arch, opt, only, verbose, seed=1, iterations=30):
         else:
             good.append((e, t))
     with open(allc, "w") as fh:
-        fh.write("#define main corpus_main\n#include \"decomp_corpus.c\"\n#undef main\n" + HELPERS + "\n" + "\n\n".join(t for _, t in good)
-                 + "\nint main(void){return 0;}\n")
+        fh.write("#define main corpus_main\n#include \"decomp_corpus.c\"\n#undef main\n" + HELPERS + "\n"
+                 + "#ifdef __clang__\n#pragma clang fp contract(off)\n#endif\n"           # 의사코드의 `a + b * c` 를 컴파일러가 멋대로 융합하지 못하게(융합은 `fma()` 로 명시한다)
+                 + "\n\n".join(t for _, t in good) + "\nint main(void){return 0;}\n")
     exe = os.path.join(WORK, f"all_{arch}_{opt.strip('-')}")
     cc(arch, opt, allc, exe, extra=["-I", WORK])
     m = Machine(arch, exe)
