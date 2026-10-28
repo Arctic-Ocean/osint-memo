@@ -60,7 +60,7 @@ SPECS = {
     "xa_near": ("D", "d"), "xa_fist_near": ("i", "d"), "xa_fist_down": ("i", "d"),
     "ld_add": ("X", "XX"), "ld_mix": ("X", "Xdi"), "ld2d": ("D", "X"), "d2ld": ("X", "d"), "ld_cmp": ("i", "XX"), "ld_sum": ("X", "Yn"),
     "ld_scale": ("v", "YnX"), "ld2i": ("i", "X"), "ld_sqrt": ("X", "X"), "ld_poly": ("X", "X"), "ld_calls": ("X", "XX"),
-    "std_add": ("i", "ii"), "std_three": ("i", "iii"), "std_calls": ("i", "ii"),
+    "std_add": ("i", "ii"), "std_three": ("i", "iii"), "std_calls": ("i", "ii"), "std_dmix": ("D", "did"), "std_dcalls": ("D", "dd"),
     "bit_test": ("i", "un"), "bit_flag": ("i", "Ln"), "bit_set": ("u", "un"), "bswap32": ("u", "u"), "bswap64": ("l", "L"),
 }
 # 인자 이름이 겹치는 특수 처리: bsearch_(const int *a, int n, int key) → Q(정렬 배열), n(<=16), i(키)

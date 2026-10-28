@@ -231,6 +231,10 @@ FN long double ld_calls(long double a, long double b) { return ld_add(a, b) * ld
 FN STD int std_add(int a, int b) { return a * 2 + b; }
 FN STD int std_three(int a, int b, int c) { return a - b + c * 3; }
 FN int std_calls(int a, int b) { int x = std_add(a, b); int y = std_three(x, a, b); return x + y + std_add(y, x); }
+#if defined(__i386__) && !defined(NO_FP)         /* 스택 인자는 순서가 남는다. 레지스터 규약(x64·ARM)은 정수/실수 레지스터 종류별로만 번호가 매겨져 (double, int, double) 순서를 복원할 수 없다 */
+FN STD double std_dmix(double a, int n, double b) { return a * n + b; }
+FN double std_dcalls(double a, double b) { return std_dmix(a, 3, b) + std_dmix(b, 2, a); }
+#endif
 
 FN unsigned hash(const unsigned char *s, int n) { unsigned h = 5381; for (int i = 0; i < n; i++) h = h * 33 + s[i]; return h; }
 FN int bsearch_(const int *a, int n, int key) {
