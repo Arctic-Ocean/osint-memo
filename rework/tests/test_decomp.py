@@ -265,6 +265,9 @@ def make_driver(entries, seed, iterations=40):
 
 HELPERS = """#include <stdint.h>
 #include <math.h>
+#if defined(__ARM_NEON) || defined(__aarch64__)
+#include <arm_neon.h>
+#endif
 #if !defined(__clang__)
 #define __builtin_bit_cast(T, x) ({ __typeof__(x) _bcs = (x); T _bcd; __builtin_memcpy(&_bcd, &_bcs, sizeof _bcd); _bcd; })
 #endif

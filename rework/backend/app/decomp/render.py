@@ -625,6 +625,13 @@ class Renderer(FpRender, VecRender):
         sign = want or ("s" if sz >= 4 else "u")
         if addr.op == "stk":
             return self.mem_slot(addr.aux, sz, sign)
+        if addr.op == "c" and sz in (4, 8) and getattr(self, "has_vec", False):                      # 벡터 상수를 정수 조각으로 옮겨 읽은 값: 읽기 전용 구역이면 값 자체로
+            sec = self.fd.model.section_for(addr.aux)
+            if sec is not None and not sec.is_code and not sec.writable:
+                data = self.fd.prog.dis.read(addr.aux, sz)
+                if data and len(data) == sz:
+                    v = int.from_bytes(data, "little" if self.fd.model.endian != "big" else "big")
+                    return self.lit(v, sz, sign), sign, PREC["prim"]
         tb = self.table_load(e, sign)
         if tb is not None:
             return tb

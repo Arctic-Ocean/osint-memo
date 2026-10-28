@@ -56,12 +56,15 @@ class A64Fp:
         scalar = all(o.vas == 0 and o.vector_index < 0 for o in ops if o.type == OP_REG)
         if m in ("ldr", "str", "ldur", "stur", "ldp", "stp", "ldnp", "stnp") and self.is_fpop(ops[0]):
             return self._fp_memop(insn, m, ops, a)
-        if m == "fmov":
+        if m == "fmov" and not (self.is_fpop(ops[0]) and ops[0].vas != 0):        # 벡터 배열에 즉값을 채우는 fmov v.2d, #1.0 은 벡터 쪽
             return self._fmov(insn, ops, a)
         if scalar:
             r = self._fp_scalar(insn, m, ops, a)
             if r is not None:
                 return r
+        r = self._neon(insn, m, ops, a)
+        if r is not None:
+            return r
         return self._simd(insn, m, ops, a)
 
     # ---- 스칼라 --------------------------------------------------------------------------

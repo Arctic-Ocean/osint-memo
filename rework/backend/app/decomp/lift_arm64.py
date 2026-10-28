@@ -14,6 +14,7 @@ from capstone.arm64 import (ARM64_OP_REG as OP_REG, ARM64_OP_IMM as OP_IMM, ARM6
 from . import ir
 from .ir import C, X, S, loc, mem, add, sub, binop, unop, zext, sext, trunc, cmp, ite, flags, cc, mask
 from .lift_arm64_fp import A64Fp
+from .lift_neon64 import A64Neon
 
 FLAGS = "F"
 ARM_CC = {1: "eq", 2: "ne", 3: "hs", 4: "lo", 5: "mi", 6: "pl", 7: "vs", 8: "vc", 9: "hi", 10: "ls", 11: "ge", 12: "lt",
@@ -26,7 +27,7 @@ class Unsupported(Exception):
     pass
 
 
-class A64Lifter(A64Fp):
+class A64Lifter(A64Fp, A64Neon):
     full = 8
     SP = "sp"
 

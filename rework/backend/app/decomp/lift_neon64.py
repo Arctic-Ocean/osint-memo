@@ -126,11 +126,23 @@ class A64Neon:
         if m in ("movi", "mvni", "fmov") and n == 2:
             return self._neon_imm(insn, m, ops, a, esz, total)
         # ---- 원소별 정수 이항 ----
-        if m in INT_BIN and n == 3:
+        if m in INT_BIN and n == 3 and ops[2].type == OP_REG:
             nm, cls = INT_BIN[m]
             return self._neon_bin(a, d, ops, esz, total, nm, cls, flt=False)
-        if m in FLT_BIN and n == 3:
+        if m in FLT_BIN and n == 3 and ops[2].type == OP_REG:
             return self._neon_bin(a, d, ops, esz, total, FLT_BIN[m], "f", flt=True)
+        if m in ("fcmeq", "fcmgt", "fcmge", "fcmle", "fcmlt") and n == 3 and ops[2].type in (OP_FP, OP_IMM):         # 0.0 과 비교
+            nm = {"fcmeq": "fceq", "fcmgt": "fcgt", "fcmge": "fcge", "fcmle": "fcge", "fcmlt": "fcgt"}[m]
+            src = self.vhalves(ops[1], total)
+            swap = m in ("fcmle", "fcmlt")
+            zero = C(0, 8)
+
+            def fz(x):
+                if esz == 8:
+                    c = {"fceq": "feq", "fcgt": "fgt", "fcge": "fge"}[nm]
+                    return unop("neg", zext(X(c, (zero, x[0]) if swap else (x[0], zero), 1), 8))
+                return vop(nm, (zero, x[0]) if swap else (x[0], zero), esz, "f")
+            return self.lanewise(a, d, fz, [src], esz, total)
         if m in CMP_ZERO and n == 3 and ops[2].type == OP_IMM:
             nm, cls = CMP_ZERO[m]
             src = self.vhalves(ops[1], total)
@@ -420,11 +432,111 @@ class A64Neon:
         return self.vout(a, d, outs[0], outs[1] if len(outs) > 1 else None, total)
 
     # ---- 폭 바꾸기 --------------------------------------------------------------------------
+    def _pack_halves(self, lanes, esz):
+        """원소 스칼라 목록(폭 esz) → 벡터 조각 (하위, 상위 또는 None). 원소가 조각 하나를 채우는 폭(8)이면 각각이 조각이다."""
+        per = 8 // esz
+        if esz == 8:
+            return lanes[0], (lanes[1] if len(lanes) > 1 else None)
+        halves = [vpack(lanes[i:i + per], esz, "s") for i in range(0, len(lanes), per)]
+        return halves[0], (halves[1] if len(halves) > 1 else None)
+
+    def _src_lanes(self, op, esz, total, upper):
+        """벡터 피연산자의 (사용할) 원소 스칼라들: 128비트 배열이면 upper 에 따라 상위/하위 조각만, 64비트 배열이면 그 조각."""
+        lo, hi = self.vhalves(op, total)
+        piece = hi if (upper and hi is not None) else lo
+        return [vlane(piece, j, esz, "s") for j in range(8 // esz)]
+
     def _neon_widen(self, insn, m, ops, a):
+        d = ops[0]
+        n = len(ops)
+        upper = m.endswith("2")
+        base = m[:-1] if upper else m
+        if base in ("xtn", "shrn"):
+            ds = self.vshape(d)
+            ss = self.vshape(ops[1])
+            if ds is None or ss is None:
+                raise NeonUnsupported(m)
+            esz_d, _ = ds
+            esz_s, total_s = ss
+            lo, hi = self.vhalves(ops[1], total_s)
+            lanes = []
+            for piece in (lo, hi):
+                if piece is None:
+                    continue
+                for j in range(8 // esz_s):
+                    v = vlane(piece, j, esz_s, "s")
+                    if base == "shrn":
+                        v = binop("shr", v, C(ops[2].imm, 1), esz_s)
+                    lanes.append(trunc(v, esz_d))
+            half = self._pack_halves(lanes, esz_d)[0]
+            k, nn = self.fp_info(d.reg)
+            if upper:
+                return [S("asg", a, loc(f"v{nn}h", 8), half)]
+            return [S("asg", a, loc(f"v{nn}", 8), half), S("asg", a, loc(f"v{nn}h", 8), C(0, 8))]
+        if base in ("saddlp", "uaddlp"):
+            raise NeonUnsupported(m)
+        # 넓히는 연산: 목적지 원소 폭 = 원본의 두 배
+        ds = self.vshape(d)
+        if ds is None:
+            raise NeonUnsupported(m)
+        esz_d, total_d = ds
+        esz_s = esz_d // 2
+        sg = "u" if base.startswith("u") else "s"
+        ext = sext if sg == "s" else zext
+
+        def wide(op, upper_):
+            """좁은 피연산자의 넓힌 원소 스칼라들."""
+            if op.vector_index >= 0:                                                         # by-element: 한 원소를 모두에
+                half, i = self.velem(op, esz_s)
+                one = ext(vlane(half, i, esz_s, "s"), esz_d)
+                return [one] * (8 // esz_s)
+            total = VAS[op.vas][1]
+            return [ext(l, esz_d) for l in self._src_lanes(op, esz_s, total, upper_)]
+        if base in ("sshll", "ushll", "sxtl", "uxtl"):
+            sh = ops[2].imm if n > 2 else 0
+            lanes = [binop("shl", w, C(sh, 1), esz_d) if sh else w for w in wide(ops[1], upper)]
+            lo, hi = self._pack_halves(lanes, esz_d)
+            return self.vout(a, d, lo, hi, 16)
+        if base in ("saddl", "uaddl", "ssubl", "usubl", "smull", "umull"):
+            wa, wb = wide(ops[1], upper), wide(ops[2], upper)
+            f = {"saddl": "add", "uaddl": "add", "ssubl": "sub", "usubl": "sub", "smull": "mul", "umull": "mul"}[base]
+            lanes = [binop(f, x, y, esz_d) for x, y in zip(wa, wb)]
+            lo, hi = self._pack_halves(lanes, esz_d)
+            return self.vout(a, d, lo, hi, 16)
+        if base in ("saddw", "uaddw"):
+            wb = wide(ops[2], upper)
+            lanes_hi = self.vhalves(ops[1], 16)
+            lo, hi = self._pack_halves(wb, esz_d)
+            return self.vout(a, d, self._vadd(lanes_hi[0], lo, esz_d), self._vadd(lanes_hi[1], hi, esz_d), 16)
+        if base in ("smlal", "umlal", "smlsl", "umlsl"):
+            wa, wb = wide(ops[1], upper), wide(ops[2], upper)
+            prod = [binop("mul", x, y, esz_d) for x, y in zip(wa, wb)]
+            plo, phi = self._pack_halves(prod, esz_d)
+            acc = self.vhalves(d, 16)
+            f = self._vadd if base.endswith("lal") else self._vsub
+            return self.vout(a, d, f(acc[0], plo, esz_d), f(acc[1], phi, esz_d), 16)
         raise NeonUnsupported(m)
 
+    def _vadd(self, x, y, esz):
+        return binop("add", x, y, 8) if esz == 8 else vop("add", (x, y), esz, "s")
+
+    def _vsub(self, x, y, esz):
+        return binop("sub", x, y, 8) if esz == 8 else vop("sub", (x, y), esz, "s")
+
     def _neon_pairwise(self, a, d, ops, m, esz, total):
-        raise NeonUnsupported(m)
+        flt = m.startswith("f")
+        nm = {"addp": "padd", "smaxp": "pmax", "umaxp": "pmax", "sminp": "pmin", "uminp": "pmin", "faddp": "fpadd",
+              "fmaxp": "fpmax", "fminp": "fpmin", "fmaxnmp": "fpmax", "fminnmp": "fpmin"}[m]
+        cls = "f" if flt else ("u" if m.startswith("u") else "s")
+        x, y = self.vhalves(ops[1], total), self.vhalves(ops[2], total)
+        if esz == 8:
+            op2 = {"addp": lambda p, q: binop("add", p, q, 8), "faddp": lambda p, q: X("fadd", (p, q), 8)}.get(m)
+            if op2 is None:
+                raise NeonUnsupported(m)
+            return self.vout(a, d, op2(x[0], x[1]), op2(y[0], y[1]) if total == 16 else None, total)
+        if total == 16:                                                                      # 128비트: 하위 결과는 첫 입력의 두 조각, 상위 결과는 둘째 입력의 두 조각
+            return self.vout(a, d, vop(nm, (x[0], x[1]), esz, cls), vop(nm, (y[0], y[1]), esz, cls), 16)
+        return self.vout(a, d, vop(nm, (x[0], y[0]), esz, cls), None, 8)
 
     # ---- 스칼라 결과(벡터 → GPR/스칼라 FP 레지스터) -------------------------------------------
     def _neon_scalar_dest(self, insn, m, ops, a):
@@ -443,6 +555,12 @@ class A64Neon:
             else:
                 v = zext(sc, dsz) if sc.sz < dsz else sc
             return [self.write_reg(d.reg, v, a)]
+        if m in ("mov", "dup") and n == 2 and s is not None and self.is_fpop(d) and self.is_fpop(s) and s.vector_index >= 0 and d.vector_index < 0:
+            esz = self._elem_size(s)                                                       # mov s3, v1.s[1]: 원소를 스칼라 FP 레지스터로
+            if esz is None:
+                return None
+            half, i = self.velem(s, esz)
+            return self.fwrite(a, d, vlane(half, i, esz, "s"))
         if m in ("addv", "smaxv", "sminv", "umaxv", "uminv", "saddlv", "uaddlv", "fmaxv", "fminv", "fmaxnmv", "fminnmv") and n == 2 and self.vshape(s):
             return self._reduce(a, d, s, m)
         if m in ("addp", "faddp", "fmaxp", "fminp", "fmaxnmp", "fminnmp") and n == 2 and self.vshape(s):

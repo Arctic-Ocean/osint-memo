@@ -598,6 +598,8 @@ def _lane_const(v: int, i: int, esz: int) -> int:
 
 def vlane(v: X, idx: int, esz: int, cls: str) -> X:
     """벡터 v 의 idx 번째 원소(폭 esz). cls 가 'f' 이면 실수 원소."""
+    if esz == 8:                                                               # 조각 하나가 원소 하나
+        return v
     if v.op == "c":
         return C(_lane_const(v.aux, idx, esz), esz)
     if v.op == "vdup":

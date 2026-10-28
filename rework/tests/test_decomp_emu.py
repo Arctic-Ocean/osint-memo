@@ -28,6 +28,9 @@ from app.decomp.x87 import float_to_ext             # noqa: E402
 from test_decomp import SPECS, CORPUS, c_param_list, HELPERS as _H   # noqa: E402
 
 HELPERS = """#include <stdint.h>
+#if defined(__ARM_NEON) || defined(__aarch64__)
+#include <arm_neon.h>
+#endif
 #if !defined(__clang__)
 #define __builtin_bit_cast(T, x) ({ __typeof__(x) _bcs = (x); T _bcd; __builtin_memcpy(&_bcd, &_bcs, sizeof _bcd); _bcd; })
 #endif

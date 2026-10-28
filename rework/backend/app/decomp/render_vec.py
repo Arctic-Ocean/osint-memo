@@ -89,6 +89,7 @@ class VecRender:
     def vec_prepare(self, roots, asgs):
         self.vkind = {}                                    # 웹 → (esz, cls)
         self.vmem = {}                                     # 8바이트 메모리 접근 → (esz, cls)
+        self.has_vec = False                               # 이 함수에 벡터 연산이 있는가
         webs = self.webs
         used = False
         for r in roots:
@@ -97,6 +98,7 @@ class VecRender:
                 break
         if not used:
             return
+        self.has_vec = True
 
         def concrete(vt, default="s"):
             if vt is None:
@@ -236,7 +238,12 @@ class VecRender:
                 return f"vdup_n_{SF[vt]}({lit[0]})", PREC["prim"]
             return f"({ty}){{{', '.join(lit)}}}", PREC["prim"]
         if op == "mem" and e.sz == 8:
-            return f"vld1_{SF[vt]}(({SC[vt]} *){self.addr_text(e.args[0])})", PREC["prim"]
+            addr = e.args[0]
+            if addr.op == "c":                                                   # 읽기 전용 데이터의 상수 벡터는 값으로
+                v = self._const_load(addr.aux)
+                if v is not None:
+                    return self.PV(ir.C(v, 8), vt)
+            return f"vld1_{SF[vt]}(({SC[vt]} *){self.addr_text(addr)})", PREC["prim"]
         t, s, p = self.P(e if e.sz == 8 else (ir.trunc(e, 8) if e.sz > 8 else ir.zext(e, 8)), "u")
         return f"__builtin_bit_cast({ty}, (uint64_t){self._paren(t, p, PREC['unary'])})", PREC["prim"]
 
@@ -296,6 +303,15 @@ class VecRender:
         if t.endswith(")") and "(" in t and t.index("(") > 0 and t[:t.index("(")].replace("_", "").isalnum():
             return t
         return f"({t})"
+
+    def _const_load(self, addr: int):
+        sec = self.fd.model.section_for(addr)
+        if sec is None or sec.is_code or sec.writable:
+            return None
+        data = self.fd.prog.dis.read(addr, 8)
+        if not data or len(data) < 8:
+            return None
+        return int.from_bytes(data, "little" if self.fd.model.endian != "big" else "big")
 
     def bits_of_vec(self, e: X):
         """벡터 식을 정수 문맥에서 쓸 때: 비트를 그대로 옮긴다."""
