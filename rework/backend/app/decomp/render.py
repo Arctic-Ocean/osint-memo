@@ -760,7 +760,12 @@ class Renderer(FpRender):
         fk = info.get("fp_kinds") or []
         call_args = e.args[1:len(e.args) - len(fk)] if fk else e.args[1:]
         fp_args = e.args[len(e.args) - len(fk):] if fk else ()
+        akinds = info.get("arg_kinds") or ()
         for i, a in enumerate(call_args):
+            if i < len(akinds) and akinds[i]:                                   # x86-32: 스택으로 넘기는 float·double 인자
+                t, p = self.PF(a, akinds[i])
+                args.append(self._paren(t, p, PREC["cond"]))
+                continue
             if a.op == "zext" and a.args[0].sz >= 4:
                 a = a.args[0]
             want_ptr = i < len(ptypes_) and "*" in ptypes_[i]

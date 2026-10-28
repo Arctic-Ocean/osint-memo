@@ -77,8 +77,10 @@ def abi_for(arch: str, bits: int, fmt: str, thumb: bool = False) -> Abi:
         return Abi(["r0", "r1", "r2", "r3"], "r0", {"r0", "r1", "r2", "r3", "r12", "lr", FLAGS}, 4, "aapcs",
                    sp="sp", fps=("r7",) if thumb else ("r11",), callee_saved={f"r{i}" for i in range(4, 12)} | {"sp"}, stack_arg_base=0,
                    ret_reads=("r0",), call_mn=("bl", "blx"), ret_mn=("bx", "pop", "ldm"), branch_prefix=("b",))
-    return Abi([], "eax", {"eax", "ecx", "edx", FLAGS} | xmm_lanes(0, 8), 4, "cdecl", sp="esp", fps=("ebp",),
-               callee_saved=("ebx", "ebp", "esi", "edi", "esp"), stack_arg_base=4, ret_reads=("eax", "ax", "al", "ah"))
+    abi = Abi([], "eax", {"eax", "ecx", "edx", FLAGS} | xmm_lanes(0, 8), 4, "cdecl", sp="esp", fps=("ebp",),
+              callee_saved=("ebx", "ebp", "esi", "edi", "esp"), stack_arg_base=4, ret_reads=("eax", "ax", "al", "ah"))
+    abi.fp_ret = "x87ret"                       # x86-32 는 부동소수점 반환값이 st(0) 에 남는다(리프터가 ret 직전에 이 위치에 대입해 준다)
+    return abi
 
 
 class Def:
@@ -129,11 +131,12 @@ def bits_of(m: int):
 class Flow:
     """도달 정의 분석."""
 
-    def __init__(self, blocks: dict, graph, abi: Abi, promoted: dict | None = None):
+    def __init__(self, blocks: dict, graph, abi: Abi, promoted: dict | None = None, slot_sizes: dict | None = None):
         self.blocks = blocks
         self.graph = graph
         self.abi = abi
         self.promoted = promoted or {}          # 승격 슬롯 오프셋 → 크기(호출이 바깥 인자 영역을 소비한다고 모델링)
+        self.slot_sizes = slot_sizes or {}      # 모든 승격 슬롯의 크기(진입 값을 가진 인자 칸이 8바이트일 수 있다)
 
     def run(self):
         blocks, rpo, abi = self.blocks, self.graph.rpo, self.abi
@@ -160,6 +163,8 @@ class Flow:
         self.entry_def = {}
         for l in sorted(locs):
             sz = loc_size(l, abi)
+            if l.startswith("slot:") and int(l[5:]) in self.slot_sizes:
+                sz = self.slot_sizes[int(l[5:])]
             d = Def(len(self.defs), l, "entry", None, sz)
             self.defs.append(d)
             self.entry_def[l] = d

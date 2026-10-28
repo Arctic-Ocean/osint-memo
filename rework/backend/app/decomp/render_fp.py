@@ -98,6 +98,9 @@ class FpRender:
                     if nfp:
                         for a, k in zip(n.args[len(n.args) - nfp:], kinds):
                             mark(a, k)
+                    for a, k in zip(n.args[1:], (n.aux or {}).get("arg_kinds") or ()):          # x86-32: 스택 실수 인자
+                        if k:
+                            mark(a, k)
         changed = True
         rounds = 0
         while changed and rounds < 8:

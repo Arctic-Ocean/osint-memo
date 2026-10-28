@@ -12,6 +12,7 @@ from capstone import x86 as cx
 
 from . import ir
 from .ir import C, X, S, loc, mem, add, sub, binop, unop, zext, sext, trunc, cmp, ite, insert, flags, cc, mask
+from .x87 import X87Mixin, is_x87
 
 FLAGS = "F"
 CC_NAMES = {"o", "no", "b", "c", "nae", "ae", "nb", "nc", "e", "z", "ne", "nz", "be", "na", "a", "nbe", "s", "ns", "p", "pe",
@@ -64,7 +65,7 @@ def cc_of(mnem: str, prefix: str) -> str | None:
     return s if s in CC_NAMES else None
 
 
-class X86Lifter:
+class X86Lifter(X87Mixin):
     def __init__(self, cs, bits: int, read=None, is_const=None, imports=None):
         self.cs = cs
         self.imports = imports or ()     # 임포트 주소 표(IAT 칸): `call [IAT]` 를 이름 있는 호출로 본다
@@ -450,12 +451,33 @@ class X86Lifter:
 
     # ---- 진입점 -------------------------------------------------------------------
     def lift(self, insn) -> list:
+        if self.x87 is not None:
+            self.x87_note_int_insn(insn)
         try:
             out = self._lift(insn)
         except (Unsupported, KeyError, IndexError):
             out = [self.unknown(insn)]
         self._track_div(insn)
+        if self.x87 is not None:
+            self._x87_post(insn)
         return out
+
+    def _x87_post(self, insn):
+        """fnstsw 뒤 ah 시뮬레이션의 유효 범위를 지킨다: ax/ah 를 다른 방식으로 쓰면 버리고, 시뮬레이션이 모르는 플래그 갱신이면 플래그 조건만 버린다."""
+        sim = self.ahsim
+        if sim is None or insn.mnemonic in ("fnstsw", "fstsw"):
+            return
+        written = set()
+        try:
+            written = {self.cs.reg_name(r) for r in insn.regs_write}
+        except Exception:                                               # noqa: BLE001
+            pass
+        m = insn.mnemonic
+        recognized = m in ("sahf", "test", "and", "cmp") and len(insn.operands) <= 2 and sim.flags is not None
+        if written & {"ah", "ax", "eax"} and not (m == "and" and recognized):
+            self.ahsim = None
+        elif "eflags" in written and not recognized and not m.startswith(("j", "set", "cmov")):
+            sim.flags = None
 
     def unknown(self, insn) -> S:
         """해석하지 못한 명령어: 읽고 쓰는 레지스터만 접근 속성(op.access)과 암묵 레지스터로 보존한다."""
@@ -534,6 +556,14 @@ class X86Lifter:
         n = len(ops)
         out = []
         asg = lambda d, s: out.append(S("asg", a, d, s))
+
+        if self.x87 is not None:
+            if is_x87(m):
+                return self.x87_lift(insn)
+            if self.ahsim is not None:
+                r = self.x87_ah_op(insn, m, ops)
+                if r is not None:
+                    return r
 
         if m in ("nop", "endbr64", "endbr32", "fnop", "pause", "ud2", "int3", "hlt", "lfence", "mfence", "sfence", "prefetcht0",
                  "prefetchnta", "prefetcht1", "prefetcht2", "prefetchw", "cld", "std", "nopw", "nopl", "data16", "xgetbv"):
@@ -696,22 +726,24 @@ class X86Lifter:
             code = cc_of(m, "set")
             if code is None:
                 raise Unsupported(m)
-            return [self.write_op(insn, ops[0], cc(code, loc(FLAGS, 1)))]
+            return [self.write_op(insn, ops[0], self._cond(code))]
         if m.startswith("cmov"):
             code = cc_of(m, "cmov")
             if code is None:
                 raise Unsupported(m)
             sz = ops[0].size
             old = self.read_op(insn, ops[0])
-            return [self.write_op(insn, ops[0], ite(cc(code, loc(FLAGS, 1)), self.read_op(insn, ops[1], sz), old))]
+            return [self.write_op(insn, ops[0], ite(self._cond(code), self.read_op(insn, ops[1], sz), old))]
 
         # -- 제어 흐름 --
         if m == "call":
-            return [self._call(insn, ops[0])]
+            c = self._call(insn, ops[0])
+            return [c] + (self.x87_after_call(insn, c) if self.x87 is not None else [])
         if m == "ret" or m == "retf":
+            pre = self.x87_ret(insn) if self.x87 is not None else []
             if n == 1 and ops[0].type == CS_OP_IMM and ops[0].imm:                  # ret N: 호출된 쪽이 인자 N 바이트를 치운다(stdcall·thiscall)
-                return [S("ret", a, extra={"pop": ops[0].imm})]
-            return [S("ret", a)]
+                return pre + [S("ret", a, extra={"pop": ops[0].imm})]
+            return pre + [S("ret", a)]
         if m == "jmp":
             if ops[0].type == CS_OP_IMM:
                 return [S("jmp", a, t=ops[0].imm & ir.mask(self.full))]
@@ -723,7 +755,7 @@ class X86Lifter:
             code = cc_of(m, "j")
             if code is None:
                 raise Unsupported(m)
-            return [S("cj", a, src=cc(code, loc(FLAGS, 1)), t=ops[0].imm & ir.mask(self.full), f=a + insn.size)]
+            return [S("cj", a, src=self._cond(code), t=ops[0].imm & ir.mask(self.full), f=a + insn.size)]
         if m in ("loop", "loope", "loopne"):
             c = "rcx" if self.bits == 64 else "ecx"
             cl = loc(c, self.full)
@@ -733,6 +765,12 @@ class X86Lifter:
         raise Unsupported(m)
 
     # ---- 보조 ---------------------------------------------------------------------
+    def _cond(self, code: str) -> X:
+        """조건 코드의 불리언 식: 보통은 플래그에서 풀지만, x87 상태 워드를 ah 로 검사한 직후면 비교 결과별 직접 비교로."""
+        if self.x87 is not None:
+            return self.x87_cond(code)
+        return cc(code, loc(FLAGS, 1))
+
     def rn(self, name: str) -> X:
         canon, sz, shift = self.regs[name]
         full = loc(canon, self.full)

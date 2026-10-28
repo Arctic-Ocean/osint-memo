@@ -12,6 +12,7 @@ from .lift_x86 import X86Lifter
 from . import stack as stk_mod
 from .stack import stmt_exprs as stmt_exprs_
 from . import protos
+from . import x87 as x87_mod
 from .dataflow import Flow, build_webs, abi_for, bits_of, FLAGS
 from .propagate import Prop, used_vars
 from . import structure as st_mod
@@ -117,11 +118,15 @@ class FuncDecomp:
         else:
             raise Unsupported(self.arch)
         self.lifter = lifter
+        if self.arch in ("x86", "x64") and any(x87_mod.is_x87(i.mnemonic) for i in insns):
+            lifter.x87_setup(x87_mod.analyze(insns, f.vaddr, self._callee_fp))          # x87 스택 깊이를 명령마다 미리 구해 둔다
         lifted = []
         leaders = self._leader_addrs(insns)
         for ins in (insns if self.arch != "arm" else ()):
             if ins.address in leaders:
                 lifter.div_state = None
+                if lifter.x87 is not None:
+                    lifter.x87_reset()
             stmts = lifter.lift(ins)
             parts = [(ins.address, ins.size, stmts)]
             if stmts and stmts[0].k == "split":
@@ -148,6 +153,18 @@ class FuncDecomp:
             raise Thunk(eb.term.src.args[0].aux)
         self.graph = Graph(self.blocks, self.entry)
         self.sp = self.abi.sp
+
+    def _callee_fp(self, addr):
+        """호출 대상이 st(0) 에 부동소수점 값을 남기는 함수인가(True·False), 알 수 없으면 None."""
+        t = C(addr, self.full)
+        name = self.callee_name(t)
+        pr = protos.proto(name) if name else None
+        if pr is not None:
+            return pr[0] in protos.FP_TYPES
+        ci = self.callee_info(t)
+        if ci is not None:
+            return bool(ci.get("ret_fp"))
+        return None
 
     def _leader_addrs(self, insns):
         s = set()
@@ -305,7 +322,23 @@ class FuncDecomp:
         pop = max((b.term.extra.get("pop", 0) for b in self.blocks.values() if b.term.k == "ret" and isinstance(b.term.extra, dict)), default=0)
         nparams = max(len(self.params), pop // self.full) if pop else len(self.params)
         return {"nparams": nparams, "pop": pop, "returns": self.returns_value and not self.ret_fp, "noreturn": has_noret and not has_ret,
-                "clobbers": sorted(written), "fp_params": [(k, kind) for _w, k, kind in self.fp_params], "ret_fp": self.ret_fp}
+                "clobbers": sorted(written), "fp_params": [(k, kind) for _w, k, kind in self.fp_params], "ret_fp": self.ret_fp,
+                "layout": self._stack_layout()}
+
+    def _stack_layout(self):
+        """x86-32 의 스택 인자 배치: [(바이트 폭, 실수 폭 또는 None)] — 호출하는 쪽이 double 은 8바이트 하나로 넘기도록."""
+        if self.arch != "x86":
+            return None
+        kinds = self.fp_operand_kinds()
+        lay = []
+        for w, idx in self.params:
+            if w is None:
+                sz = self.mem_params[idx][1] if idx in self.mem_params else 4
+                lay.append((sz if sz in (4, 8) else 4, None))
+            else:
+                sz = self.webs[w].sz
+                lay.append((sz if sz in (4, 8) else 4, kinds.get(w) if kinds.get(w) == sz else None))
+        return lay
 
     def _real(self, defs) -> bool:
         return any(d.kind in ("asg", "call", "unk") for d in defs)
@@ -423,7 +456,11 @@ class FuncDecomp:
                 else:
                     total = self._arity(flow, s, name, pr, sp)
                 ci = self.callee_info(tgt) if pr is None else None
+                lay = None if (s.src.aux or {}).get("tail") else self._x86_layout(flow, s, name, pr, ci, sp)
                 fp, rk = ([], None) if (s.src.aux or {}).get("tail") else self._fp_plan(flow, s, self.blocks[a], name, pr, ci)
+                x87w = (s.extra or {}).get("x87ret")                      # x87: 호출이 st(0) 에 남긴 값(리프터가 호출 뒤에 새 꼭대기 칸으로 옮겨 둔다)
+                if x87w:
+                    rk = rk or (pr and protos.FP_TYPES.get(pr[0])) or (ci or {}).get("ret_fp") or x87w
                 fp_pos = {k for k, _ in fp} if abi.name == "win64" else set()
                 args = []
                 pos = 0
@@ -446,10 +483,58 @@ class FuncDecomp:
                 info = dict(s.src.aux or {})
                 info.update(name=name, proto=pr, nargs=len(args), callee=ci, fp_kinds=fkinds, ret_fp=rk)
                 if rk:
-                    s.dst = loc(abi.fp_ret, 8)
+                    s.dst = loc(abi.fp_ret, x87w or 8)
                     fp_ret = True
+                if lay is not None:                                          # x86-32: 실수·8바이트 인자가 섞인 호출은 호출 규약대로 폭을 지켜 인자를 만든다
+                    args, akinds, k = [], [], 0
+                    for size, kind in lay:
+                        args.append(self._stack_arg(sp + k * full, size))
+                        akinds.append(kind)
+                        k += size // full
+                    info.update(nargs=len(args), arg_kinds=akinds)
                 s.src = X("call", (tgt,) + tuple(args) + tuple(fargs), full, info)
         return fp_ret
+
+    @staticmethod
+    def _slot_of(ctype: str):
+        """C 형 이름 → (스택 폭, 실수 폭 또는 None). float 인자는 가변 인자가 아니면 4바이트 그대로 넘어간다."""
+        t = ctype.strip()
+        if t == "double":
+            return 8, 8
+        if t == "float":
+            return 4, 4
+        if t in ("long long", "unsigned long long", "int64_t", "uint64_t", "intmax_t", "uintmax_t", "off64_t"):
+            return 8, None
+        return 4, None
+
+    def _x86_layout(self, flow, s, name, pr, ci, sp):
+        """x86-32 호출의 스택 인자 배치. 실수·8바이트 인자가 없으면 None(기존 방식: 4바이트씩)."""
+        if self.arch != "x86" or sp is None:
+            return None
+        lay = None
+        if pr is not None:
+            lay = [self._slot_of(t) for t in pr[1]]
+            if pr[2]:                                                       # 가변 인자: 형식 문자열이 상수면 그 뒤 인자의 종류를 안다
+                fixed = len(pr[1])
+                fmt = None
+                if fixed and pr[1][-1].startswith("const char *"):
+                    ds = flow.reaching_at(s, stk_mod.slot_name(sp + (fixed - 1) * self.full))
+                    if len(ds) == 1 and ds[0].kind == "asg" and ds[0].stmt.src.op == "c":
+                        fmt = self.const_string(ds[0].stmt.src.aux)
+                if fmt is not None and any(k in (name or "") for k in ("printf", "scanf", "syslog", "warn", "err")):
+                    lay += [(8, 8) if k == "d" else (4, None) for k in protos.printf_kinds(fmt) if k in ("i", "d")]
+                else:
+                    return None
+        elif ci is not None and ci.get("layout"):
+            lay = list(ci["layout"])
+        if not lay or not any(sz == 8 or kind for sz, kind in lay):
+            return None
+        for k, (size, _kind) in enumerate(lay):                              # 승격된 칸의 크기가 인자 폭과 어긋나면 기존 방식에 맡긴다
+            off = sp + sum(z for z, _ in lay[:k])
+            pm = self.slots["promoted"].get(off)
+            if pm is not None and pm != size:
+                return None
+        return lay
 
     def _tail_arity(self, flow, s):
         n = 0
@@ -490,6 +575,12 @@ class FuncDecomp:
                 rv = False
         self.returns_value = rv
         self.ret_fp = None
+        x87 = getattr(self.lifter, "x87_used", False)
+        if self.arch == "x86" and x87:                         # x87: ret 직전 스택 깊이가 1 이면 반환값이 부동소수점이라고 확정(리프터가 x87ret 에 대입해 둔다)
+            fpk = self._fp_return_kind(flow)
+            if fpk:
+                self.ret_fp = fpk
+                self.returns_value = rv = True
         if self.arch in ("x64", "arm64"):
             fpk = self._fp_return_kind(flow)
             if fpk:
@@ -521,6 +612,9 @@ class FuncDecomp:
         for b in self.blocks.values():
             if b.term.k == "ret":
                 if self.ret_fp:
+                    if self.arch == "x86":
+                        b.term.src = loc(self.abi.fp_ret, self.lifter.W)
+                        continue
                     x0 = loc(self.abi.fp_ret, 8)
                     b.term.src = x0 if self.ret_fp == 8 else ir.trunc(x0, 4)
                 else:
@@ -595,6 +689,8 @@ class FuncDecomp:
             return None
         if kind:
             return kind
+        if self.arch == "x86":
+            return self.lifter.W                                                   # x87: ret 직전 스택에 값이 있으면 반환값이다
         return 8 if self.callers_use_fp_result() is True else None                  # 증거가 없으면 호출자가 xmm0 을 읽을 때만
 
     def _fp_def_width(self, flow, d, depth):
@@ -721,18 +817,18 @@ class FuncDecomp:
     def dataflow_pass(self):
         self.abi = abi_for(self.arch, self.bits, self.model.fmt, getattr(self, "thumb", False))
         self.prebind_calls()
-        flow = Flow(self.blocks, self.graph, self.abi, self.out_slots)
+        flow = Flow(self.blocks, self.graph, self.abi, self.out_slots, self.slots["promoted"])
         flow.run()
         if self.bind_calls(flow):                                 # 호출 반환값이 xmm0 으로 바뀌었으면 반환 판정이 새 분석을 보게 한다
-            flow = Flow(self.blocks, self.graph, self.abi, self.out_slots)
+            flow = Flow(self.blocks, self.graph, self.abi, self.out_slots, self.slots["promoted"])
             flow.run()
         self.bind_rets(flow)
-        flow = Flow(self.blocks, self.graph, self.abi, self.out_slots)
+        flow = Flow(self.blocks, self.graph, self.abi, self.out_slots, self.slots["promoted"])
         flow.run()
         again = self.drop_dead_flag_defs(flow)
         again = self.fold_partial_defs(flow) or again          # 부분 레지스터 쓰기가 옛 값을 읽는 것처럼 보이는 문제를 풀고 다시 분석
         if again:
-            flow = Flow(self.blocks, self.graph, self.abi, self.out_slots)
+            flow = Flow(self.blocks, self.graph, self.abi, self.out_slots, self.slots["promoted"])
             flow.run()
         self.flow = flow
         self.webs = build_webs(flow)
@@ -898,6 +994,9 @@ class FuncDecomp:
                 params.append((w, i))
             else:
                 params.append((None, i))
+        if self.full == 4:                                  # 32비트에서 8바이트 스택 인자(double·long long)는 4바이트 칸 둘을 차지한다: 뒤 칸의 자리표시는 매개변수가 아니다
+            covered = {i + 1 for w, i in params if w is not None and webs[w].sz == 8}
+            params = [(w, i) for w, i in params if not (w is None and i in covered and i not in self.mem_params)]
         self.params = params
         self.infer_fp_params(used)
 
@@ -931,11 +1030,15 @@ class FuncDecomp:
         """웹 → 그 웹이 부동소수점 연산의 피연산자로 쓰인 폭(4·8). 연산에 안 쓰이면 들어 있지 않다."""
         kinds: dict = {}
 
+        fmem: set = set()                                  # 부동소수점으로 읽고 쓰이는 메모리 칸
+
         def mark(e, k):
             if e.op == "trunc" and e.args[0].op == "var":
                 kinds.setdefault(e.args[0].aux, e.sz)
             elif e.op == "var":
                 kinds.setdefault(e.aux, k)
+            elif e.op == "mem":
+                fmem.add(e)
 
         for b in self.blocks.values():
             for s in b.stmts + [b.term]:
@@ -952,6 +1055,15 @@ class FuncDecomp:
                                 mark(a_, n.sz)
                         elif n.op in ("f2i", "f2f"):
                             mark(n.args[0], n.args[0].sz)
+                        elif n.op == "call":
+                            ak = (n.aux or {}).get("arg_kinds") or ()
+                            for a_, k_ in zip(n.args[1:], ak):          # x86-32: 스택으로 넘기는 실수 인자
+                                if k_:
+                                    mark(a_, k_)
+        for b in self.blocks.values():                       # 인자를 메모리 칸에 복사해 두었다가 그 칸을 실수로 쓰는 경우(-O0): 복사원도 실수
+            for s in b.stmts:
+                if s.k == "asg" and s.dst.op == "mem" and s.src.op == "var" and s.dst in fmem:
+                    kinds.setdefault(s.src.aux, s.dst.sz)
         return kinds
 
     def infer_fp_params(self, used):
@@ -1276,6 +1388,8 @@ class FuncDecomp:
         inc = list(dict.fromkeys(r.incomplete))
         if inc:
             note = f"일부 명령어를 해석하지 못해 이 의사코드는 부정확할 수 있습니다({', '.join(inc[:3])}{' 등' if len(inc) > 3 else ''}). " + note
+        if getattr(self.lifter, "x87_used", False):
+            note = ("x87 부동소수점 연산은 80비트 확장 정밀도로 계산되므로, 이 의사코드를 SSE 로 컴파일하면 double 연산과 마지막 자리에서 달라질 수 있습니다. " + note)
         if self._uses_wide():
             note = "64비트 정수 연산(자리올림 연쇄·64비트 곱셈 도우미 호출)이 있어, 의사코드에는 하위 32비트만 나타날 수 있습니다. " + note
             inc.append("64비트 연산")

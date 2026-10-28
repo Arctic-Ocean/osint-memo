@@ -128,6 +128,25 @@ class Machine:
         self.uc.mem_map(DATA_BASE, DATA_SIZE, UC_PROT_ALL)
         self.syms = {s.name: s.value for s in lb.symbols if s.name}
 
+    def _x87_result(self, ret_size):
+        """ST(0) 을 `fstp tbyte` 스텁으로 메모리에 꺼내 float(4)·double(8) 비트 패턴으로 바꾼다. 스택이 비어 있으면 None."""
+        uc = self.uc
+        tag = uc.reg_read(X.UC_X86_REG_FPTAG)
+        stub, res = DATA_BASE + DATA_SIZE - 0x100, DATA_BASE + DATA_SIZE - 0x80
+        uc.mem_write(stub, bytes([0xdb, 0x3d]) + res.to_bytes(4, "little"))              # fstp tbyte ptr [res]
+        uc.emu_start(stub, stub + 6)
+        raw = bytes(uc.mem_read(res, 10))
+        mant, se = int.from_bytes(raw[:8], "little"), int.from_bytes(raw[8:], "little")
+        sign, exp = se >> 15, se & 0x7FFF
+        if exp == 0x7FFF:
+            v = float("nan") if mant << 1 & ((1 << 64) - 1) else float("-inf" if sign else "inf")
+        elif exp == 0 and mant == 0:
+            v = -0.0 if sign else 0.0
+        else:
+            import math
+            v = math.ldexp(mant, exp - 16383 - 63) * (-1 if sign else 1)
+        return struct.unpack("<Q", struct.pack("<d", v))[0] if ret_size == 8 else struct.unpack("<I", struct.pack("<f", v))[0]
+
     def reset_stack(self):
         self.uc.mem_write(STACK_BASE + STACK_SIZE - 0x4000, b"\x00" * 0x4000)
 
@@ -138,12 +157,25 @@ class Machine:
         sp = STACK_BASE + STACK_SIZE - 0x1000
         mask_ = lambda v, n: v & ((1 << (8 * n)) - 1)
         if a["abi"] == "cdecl":
-            uc.reg_write(X.UC_X86_REG_ESP, sp - 4 * len(args) - 4)
-            for i, (v, n) in enumerate(args):
-                uc.mem_write(sp - 4 * len(args) - 4 + 4 + 4 * i, mask_(v, 4).to_bytes(4, "little"))
-            uc.mem_write(sp - 4 * len(args) - 4, SENTINEL.to_bytes(4, "little"))
+            words = []                                          # 스택에 쌓이는 4바이트 단위(실수 인자: float 1칸 · double 2칸)
+            for arg in args:
+                if arg[0] == "fp":
+                    raw = arg[2] & ((1 << (8 * arg[1])) - 1)
+                    words += [(raw >> (32 * k)) & 0xFFFFFFFF for k in range(arg[1] // 4)]
+                else:
+                    words.append(mask_(arg[0], 4))
+            top = sp - 4 * len(words) - 4
+            uc.reg_write(X.UC_X86_REG_ESP, top)
+            for i, w in enumerate(words):
+                uc.mem_write(top + 4 + 4 * i, w.to_bytes(4, "little"))
+            uc.mem_write(top, SENTINEL.to_bytes(4, "little"))
+            uc.reg_write(X.UC_X86_REG_FPCW, 0x37F)               # Unicorn 은 FPU 제어 워드를 0(단정밀도·예외 해제)으로 시작한다: 리눅스 기본(확장 정밀도·예외 가림)으로
+            uc.reg_write(X.UC_X86_REG_FPSW, 0)
+            uc.reg_write(X.UC_X86_REG_FPTAG, 0xFFFF)             # x87 스택 비어 있음
             uc.emu_start(addr, SENTINEL, count=3_000_000)
             r = uc.reg_read(X.UC_X86_REG_EAX)
+            if ret_fp:
+                r = self._x87_result(ret_size)
         elif a["abi"] in ("sysv", "win64"):
             regs = ([X.UC_X86_REG_RDI, X.UC_X86_REG_RSI, X.UC_X86_REG_RDX, X.UC_X86_REG_RCX, X.UC_X86_REG_R8, X.UC_X86_REG_R9]
                     if a["abi"] == "sysv" else [X.UC_X86_REG_RCX, X.UC_X86_REG_RDX, X.UC_X86_REG_R8, X.UC_X86_REG_R9])
@@ -320,6 +352,60 @@ def run_one(m, addr, kinds_vals, ret, a, buf_slots):
     return r, outs
 
 
+def _ord(bits, n):
+    """부동소수점 비트 패턴을 크기 순서와 같은 정수로(두 값 사이의 ULP 거리를 재기 위해)."""
+    sign = bits >> (8 * n - 1)
+    mag = bits & ((1 << (8 * n - 1)) - 1)
+    return -mag if sign else mag
+
+
+def fp_close(a, b, n, ulps):
+    """두 비트 패턴이 같거나(NaN 끼리 포함) ULP 거리가 ulps 이하인가."""
+    if a == b:
+        return True
+    fa = struct.unpack("<d" if n == 8 else "<f", a.to_bytes(n, "little"))[0]
+    fb = struct.unpack("<d" if n == 8 else "<f", b.to_bytes(n, "little"))[0]
+    if fa != fa and fb != fb:
+        return True
+    return abs(_ord(a, n) - _ord(b, n)) <= ulps
+
+
+FP_BUF = {"E": ("<d", 8), "G": ("<f", 4), "V": None}
+
+
+def same_result(arch, ret, ro, rd, bo, bd, case):
+    """원본과 의사코드의 결과가 같은가. x87(i386)은 80비트 확장 정밀도로 계산해 double/float 연산과 마지막 자리에서 달라질 수 있어 ULP 허용치를 둔다."""
+    if ro == rd and bo == bd:
+        return True
+    if arch != "i386":
+        return False
+    if ro != rd:
+        if ret not in ("D", "F") or not fp_close(ro, rd, 8 if ret == "D" else 4, ULPS):
+            return False
+    if bo != bd:
+        kinds = [k for k, _v in case if k not in ("i", "n", "m", "p", "u", "l", "L", "b", "h", "C", "d", "a", "k", "f")]
+        for kind, x, y in zip(kinds, bo, bd):
+            if x == y:
+                continue
+            if kind == "E":
+                step = 8
+            elif kind == "G":
+                step = 4
+            elif kind == "V":                                     # struct { double x, y; int k; }: 앞 두 double 만 허용치, 나머지는 그대로
+                if x[16:] != y[16:] or not all(fp_close(int.from_bytes(x[o:o + 8], "little"), int.from_bytes(y[o:o + 8], "little"), 8, ULPS) for o in (0, 8)):
+                    return False
+                continue
+            else:
+                return False
+            if len(x) != len(y) or not all(fp_close(int.from_bytes(x[o:o + step], "little"), int.from_bytes(y[o:o + step], "little"), step, ULPS)
+                                           for o in range(0, len(x) - step + 1, step)):
+                return False
+    return True
+
+
+ULPS = 4
+
+
 def run_level(arch, opt, only, verbose, seed=1, iterations=30):
     a = ARCH[arch]
     orig = os.path.join(WORK, f"orig_{arch}_{opt.strip('-')}")
@@ -348,7 +434,8 @@ def run_level(arch, opt, only, verbose, seed=1, iterations=30):
         lines = d["lines"]
         lits = [int(x, 16) for x in re.findall(r"\b0x[0-9a-f]{4,}\b", "".join(l["text"] for l in lines))]
         if d.get("incomplete") or any(model.section_for(v) for v in lits) or "대체했습니다" in d.get("note", ""):
-            results.append((name, "SKIP", ""))
+            why = "미해석 " + ",".join(d.get("incomplete") or []) if d.get("incomplete") else ("데이터 주소 리터럴" if any(model.section_for(v) for v in lits) else "예전 방식으로 대체")
+            results.append((name, "SKIP", why))
             continue
         sig = lines[0]["text"]
         _, fname, dparams = c_param_list(sig)
@@ -411,9 +498,9 @@ def run_level(arch, opt, only, verbose, seed=1, iterations=30):
                 bad += 1
                 first = first or f"의사코드 실행 오류 {ex}"
                 continue
-            if ro != rd or bo != bd:
+            if not same_result(arch, ret, ro, rd, bo, bd, case):
                 bad += 1
-                first = first or f"it={it} 원본={ro} 의사코드={rd}" + ("" if bo == bd else " (메모리 불일치)")
+                first = first or f"it={it} 입력={[v for _k, v in case]} 원본={ro} 의사코드={rd}" + ("" if bo == bd else " (메모리 불일치)")
         if bad < 0:
             results.append((name, "SKIP", "원본 실행 불가"))
         elif bad:
@@ -453,6 +540,10 @@ def main():
             sk = [n for n, s, _ in res if s == "SKIP"]
             if sk:
                 print("  건너뜀:", ", ".join(sk))
+                if verbose:
+                    for n, s, d in res:
+                        if s == "SKIP":
+                            print(f"    {n}: {d}")
             for n, s, d in res:
                 if s not in ("PASS", "SKIP"):
                     print(f"  {s} {n}: {d}")
