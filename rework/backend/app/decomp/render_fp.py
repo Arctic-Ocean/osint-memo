@@ -14,7 +14,9 @@ from .ir import X, mask
 PREC = {"prim": 16, "unary": 14, "mul": 13, "add": 12, "shift": 11, "rel": 10, "eq": 9, "band": 8, "bxor": 7,
         "bor": 6, "land": 5, "lor": 4, "cond": 3}
 
-FTYPE = {4: "float", 8: "double"}
+FTYPE = {4: "float", 8: "double", 10: "long double"}
+_SUF = {4: "f", 8: "", 10: "l"}                                                            # C 라이브러리 함수 접미사(sinf·sin·sinl)
+_MATH = {"fsin": "sin", "fcos": "cos", "ftan": "tan", "flog2": "log2", "fexp2": "exp2", "fatan2": "atan2", "fmod": "fmod", "fremainder": "remainder"}
 _BIN = {"fadd": ("+", "add"), "fsub": ("-", "add"), "fmul": ("*", "mul"), "fdiv": ("/", "mul")}
 _CMP = {"feq": ("==", "eq"), "fne": ("!=", "eq"), "flt": ("<", "rel"), "fle": ("<=", "rel"), "fgt": (">", "rel"), "fge": (">=", "rel")}
 FP_VALUE_OPS = ir.FOPS2 | ir.FOPS1 | ir.FOPS3 | {"i2f", "f2f"}          # 부동소수점 값을 만드는 연산
@@ -190,6 +192,13 @@ class FpRender:
             sym = "<" if op == "fmin" else ">"
             ta1, tb1 = self._paren(ta, pa, PREC["rel"] + 1), self._paren(tb, pb, PREC["rel"] + 1)
             return f"{ta1} {sym} {tb1} ? {ta1} : {tb1}", PREC["cond"]
+        if op in ir.FMATH1 and e.sz == kind:                                       # x87 초월함수: sin·cos·tan·log2·exp2
+            t, p = self.PF(e.args[0], kind)
+            return f"{_MATH[op]}{_SUF[kind]}({t})", PREC["prim"]
+        if op in ir.FMATH2 and e.sz == kind:
+            ta, pa = self.PF(e.args[0], kind)
+            tb, pb = self.PF(e.args[1], kind)
+            return f"{_MATH[op]}{_SUF[kind]}({ta}, {tb})", PREC["prim"]
         if op == "fsqrt" and e.sz == kind:
             t, p = self.PF(e.args[0], kind)
             return f"{'sqrt' if kind == 8 else 'sqrtf'}({t})", PREC["prim"]

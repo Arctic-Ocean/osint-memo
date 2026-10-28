@@ -301,11 +301,13 @@ def _cc_true(code: str, f) -> bool:
 
 
 class AhSim:
-    """`fnstsw ax` 로 상태 워드를 ax 에 꺼낸 뒤, ah 를 다루는 명령을 네 가지 비교 결과별로 따로 계산해 둔다."""
+    """`fnstsw ax` 로 상태 워드를 ax 에 꺼낸 뒤, ah 를 다루는 명령을 네 가지 비교 결과별로 따로 계산해 둔다.
+    fprem 뒤에는 C2(불완전 나머지)가 0 인 결과 하나만 있다(되풀이 루프를 fmod 한 번으로 접었으므로)."""
 
-    def __init__(self, A, B, W):
+    def __init__(self, A, B, W, done=False):
         self.A, self.B, self.W = A, B, W
-        self.vals = dict(OUTCOMES)
+        self.done = done
+        self.vals = {"done": 0x00} if done else dict(OUTCOMES)
         self.flags = None
 
     def test(self, imm):
@@ -326,6 +328,8 @@ class AhSim:
         """분기 조건: 이 조건이 참이 되는 비교 결과들의 부동소수점 비교를 OR 로 묶은 불리언."""
         if self.flags is None:
             return None
+        if self.done:
+            return C(1 if _cc_true(code, self.flags["done"]) else 0, 1)
         outs = [o for o in OUTCOMES if _cc_true(code, self.flags[o])]
         if len(outs) == 4:
             return C(1, 1)
@@ -563,6 +567,9 @@ class X87Mixin:
         if m in ("fnstsw", "fstsw"):
             if self.fsw is None or not insn.operands or insn.operands[0].type != CS_OP_REG or self.cs.reg_name(insn.operands[0].reg) != "ax":
                 raise Unsupported("fnstsw")
+            if self.fsw == "done":
+                self.ahsim = AhSim(None, None, W, done=True)
+                return [self.write_reg_named("ax", C(0, 2), a)]
             A, B = self.fsw
             self.ahsim = AhSim(A, B, W)
             return [self.write_reg_named("ax", X("fsw", (A, B), 2), a)]
@@ -586,7 +593,45 @@ class X87Mixin:
             i = regs[-1] if regs else 1
             asg(st(0), ite(self.x87_cond(CMOV[m]), st(i), st(0)))
             return out
+        # -- 초월함수: C 라이브러리 함수로 --
+        if m in ("fsin", "fcos", "f2xm1"):
+            x = st(0)
+            asg(x, {"fsin": X("fsin", (st(0),), W), "fcos": X("fcos", (st(0),), W),
+                    "f2xm1": X("fsub", (X("fexp2", (st(0),), W), self._one()), W)}[m])
+            return out
+        if m == "fptan":                                                   # st(0) = tan(st(0)), 그리고 1.0 을 push
+            asg(st(0), X("ftan", (st(0),), W))
+            asg(new_top(), self._one())
+            return out
+        if m == "fsincos":                                                 # st(1) = sin, st(0) = cos (push)
+            t = self.tmp(W)
+            asg(t, st(0))
+            asg(st(0), X("fsin", (t,), W))
+            asg(new_top(), X("fcos", (t,), W))
+            return out
+        if m == "fpatan":                                                  # st(1) = atan2(st(1), st(0)); pop
+            asg(st(1), X("fatan2", (st(1), st(0)), W))
+            return out
+        if m in ("fyl2x", "fyl2xp1"):                                      # st(1) = st(1) * log2(st(0)[+1]); pop
+            arg = st(0) if m == "fyl2x" else X("fadd", (st(0), self._one()), W)
+            asg(st(1), X("fmul", (st(1), X("flog2", (arg,), W)), W))
+            return out
+        if m == "fscale":                                                  # st(0) = st(0) * 2^trunc(st(1))
+            asg(st(0), X("fmul", (st(0), X("fexp2", (X("fround", (st(1),), W, "trunc"),), W)), W))
+            return out
+        if m in ("fprem", "fprem1"):                                       # 나머지가 완전히 줄어들 때까지 되풀이하는 명령 → 한 번에 fmod
+            asg(st(0), X("fmod" if m == "fprem" else "fremainder", (st(0), st(1)), W))
+            self.fsw = "done"
+            return out
+        if m == "ftst":
+            tA = self.tmp(W)
+            asg(tA, st(0))
+            self.fsw = (tA, C(0, W))
+            return out
         raise Unsupported(m)
+
+    def _one(self):
+        return self._x87_const("fld1")
 
     # ---- 제어 워드 추적(주변 일반 명령에서) ----
     def x87_note_int_insn(self, insn):

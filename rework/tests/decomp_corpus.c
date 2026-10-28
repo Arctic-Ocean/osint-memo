@@ -148,6 +148,25 @@ FN double v_len2(const V *v) { return v->x * v->x + v->y * v->y; }
 FN void v_set(V *v, double a) { v->x = a; v->y = a * 2; v->k = 3; }
 #endif
 
+#ifdef X87_TESTS                                /* x87 전용(i386 시험에서만): 초월함수·반올림 모드·long double. 라이브러리 함수는 시험 지원 코드가 x87 어셈으로 제공한다 */
+double sin(double), cos(double), tan(double), atan2(double, double), log2(double), log(double), exp2(double), fmod(double, double),
+       floor(double), ceil(double), trunc(double);
+FN double x_sin(double x) { return __builtin_sin(x) * 2.0; }
+FN double x_cos(double x) { return __builtin_cos(x) + 1.0; }
+FN double x_tan(double x) { return __builtin_tan(x); }
+FN double x_atan2(double y, double x) { return __builtin_atan2(y, x); }
+FN double x_log2(double x) { return __builtin_log2(x) + 0.5; }
+FN double x_log(double x) { return __builtin_log(x); }
+FN double x_exp2(double x) { return __builtin_exp2(x); }
+FN double x_fmod(double a, double b) { return __builtin_fmod(a, b); }
+FN double x_floor(double x) { return __builtin_floor(x); }
+FN double x_ceil(double x) { return __builtin_ceil(x) * 0.5; }
+FN double x_trunc(double x) { return __builtin_trunc(x); }
+FN int x_lrint(double x) { return __builtin_lrint(x); }
+FN int x_floor_i(double x) { return (int)__builtin_floor(x); }
+FN float x_fsin(float x) { return __builtin_sinf(x) + 1.0f; }
+#endif
+
 #if defined(__i386__)
 #define STD __attribute__((stdcall))
 #else

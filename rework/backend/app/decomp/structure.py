@@ -109,8 +109,18 @@ def _relink(blocks):
 
 def simplify_cfg(blocks: dict, entry: int) -> None:
     """내용 없는 jmp 만 있는 블록을 건너뛰고, 한 줄로 이어지는 블록을 합친다(전체를 한 번에 처리해 블록 수에 선형)."""
-    from .cfg import relink
+    from .cfg import relink, prune
     relink(blocks)
+    folded = False                                       # 0) 조건이 상수인 분기(x87 fprem 되풀이 루프 등)는 가는 쪽만 남긴다
+    for a, b in blocks.items():
+        t = b.term
+        if t.k == "cj" and t.src.op == "c":
+            b.term = S("jmp", t.addr, t=t.t if t.src.aux else t.f)
+            folded = True
+    if folded:
+        relink(blocks)
+        prune(blocks, entry)
+        relink(blocks)
     # 1) 내용 없는 jmp 블록 → 최종 목적지로 전달(체인·순환 안전)
     fwd = {}
     for a, b in blocks.items():

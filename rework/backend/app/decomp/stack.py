@@ -175,6 +175,120 @@ def drop_dead_bookkeeping(blocks: dict, abi) -> None:
             return
 
 
+# ---- 1b. 넓은 스택 인자 합치기 ------------------------------------------------------------
+def merge_wide_params(blocks: dict, abi) -> bool:
+    """x86-32 의 gcc -O0 은 double 인자를 `mov eax,[ebp+8]; mov [ebp-8],eax; mov eax,[ebp+12]; mov [ebp-4],eax` 처럼 4바이트씩 지역 칸에 복사한 뒤
+    그 칸을 8바이트(`fld qword [ebp-8]`)로 읽는다. 이 복사 한 쌍을 8바이트 하나(`[ebp-8] = [ebp+8]` 8바이트)로 합쳐, 인자가 double 하나로 보이게 한다.
+    지역 칸이 8바이트로 읽히고, 두 인자 칸이 나란하며, 복사에 쓴 레지스터가 그 뒤에 다시 쓰이지 않을 때만 바꾼다."""
+    if abi.full != 4:
+        return False
+    base = abi.stack_arg_base
+    wide_read = set()
+    for b in blocks.values():
+        for st in b.stmts + [b.term]:
+            for e in stmt_exprs(st):
+                for n in ir.walk(e):
+                    if n.op == "mem" and n.sz == 8 and n.args[0].op == "stk" and n.args[0].aux < 0:
+                        wide_read.add(n.args[0].aux)
+    if not wide_read:
+        return False
+
+    def names_used(st):
+        out = set()
+        for e in stmt_exprs(st):
+            for n in ir.walk(e):
+                if n.op == "loc":
+                    out.add(n.aux)
+        return out
+
+    def exposed_elsewhere(me, reg):
+        """다른 블록이 reg 를 정의하기 전에 읽는 곳이 있나(이 블록 뒤로 값이 살아 있을 수 있다)."""
+        for blk in blocks.values():
+            if blk is me:
+                continue
+            for st in blk.stmts + [blk.term]:
+                if reg in names_used(st):
+                    return True
+                if st.k == "asg" and st.dst.op == "loc" and st.dst.aux == reg:
+                    break
+        return False
+
+    changed = False
+    for b in blocks.values():
+        st = b.stmts
+        i = 0
+        while i < len(st):
+            s1 = st[i]
+            if not (s1.k == "asg" and s1.dst.op == "mem" and s1.dst.sz == 4 and s1.dst.args[0].op == "stk" and s1.src.op == "loc"
+                    and s1.dst.args[0].aux in wide_read):
+                i += 1
+                continue
+            L = s1.dst.args[0].aux
+            r1 = s1.src.aux
+
+            def load_of(upto, reg):
+                """upto 앞쪽에서 reg 를 마지막으로 정의한 문장이 `reg = [인자칸 4바이트]` 이면 (인덱스, 칸 오프셋)."""
+                for k in range(upto - 1, -1, -1):
+                    d = st[k]
+                    if d.k == "asg" and d.dst.op == "loc" and d.dst.aux == reg:
+                        if d.src.op == "mem" and d.src.sz == 4 and d.src.args[0].op == "stk" and d.src.args[0].aux >= base:
+                            return k, d.src.args[0].aux
+                        return None
+                    if d.k in ("call", "unk"):
+                        return None
+                return None
+
+            l1 = load_of(i, r1)
+            if l1 is None:
+                i += 1
+                continue
+            A = l1[1]
+            j = None
+            for k in range(i + 1, len(st)):
+                d = st[k]
+                if d.k in ("call", "unk"):
+                    break
+                if d.k == "asg" and d.dst.op == "mem" and d.dst.sz == 4 and d.dst.args[0].op == "stk" and d.dst.args[0].aux == L + 4 \
+                        and d.src.op == "loc":
+                    j = k
+                    break
+            if j is None:
+                i += 1
+                continue
+            s2 = st[j]
+            r2 = s2.src.aux
+            l2 = load_of(j, r2)
+            if l2 is None or l2[1] != A + 4:
+                i += 1
+                continue
+            # 레지스터가 이 복사 뒤에 다시 읽히지 않는지: 두 적재문은 지우고, 저장문 둘은 8바이트 하나로
+            def dead_after(k0, reg, skip):
+                for k in range(k0 + 1, len(st)):
+                    d = st[k]
+                    if d is skip:
+                        continue
+                    if reg in names_used(d):
+                        return False
+                    if d.k == "asg" and d.dst.op == "loc" and d.dst.aux == reg:
+                        return True
+                    if d.k == "call":
+                        return reg in abi.clobbers                         # 호출이 호출자 보존 레지스터를 덮어쓴다(x86-32 cdecl 은 레지스터로 인자를 넘기지 않는다)
+                    if d.k == "unk":
+                        return False
+                return not exposed_elsewhere(b, reg)
+
+            if not (dead_after(l1[0], r1, s1) and dead_after(l2[0], r2, s2)):
+                i += 1
+                continue
+            s1.dst = ir.mem(ir.stk(L, 4), 8)
+            s1.src = ir.mem(ir.stk(A, 4), 8)
+            drop = {id(s2), id(st[l1[0]]), id(st[l2[0]])}
+            b.stmts = st = [d for d in st if id(d) not in drop]
+            changed = True
+            i = 0
+    return changed
+
+
 # ---- 2. 슬롯 승격 ---------------------------------------------------------------------
 def slot_name(off: int) -> str:
     return f"slot:{off}"

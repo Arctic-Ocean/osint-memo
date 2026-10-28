@@ -196,6 +196,8 @@ class FuncDecomp:
         tr = stk_mod.StackTracker(self.blocks, self.graph, self.entry, self.abi, self._call_pop)
         self.frame = tr.run()
         stk_mod.drop_dead_bookkeeping(self.blocks, self.abi)
+        if self.arch == "x86":
+            stk_mod.merge_wide_params(self.blocks, self.abi)
         self.slots = stk_mod.promote_slots(self.blocks, self.abi, self.frame if self.frame is not None else 0, self.frame is not None, self.entry)
         # 바깥으로 넘기는 인자 칸: 승격된 슬롯 중 어디서도 읽히지 않는 것(저장만 되는 칸)
         read = set()
@@ -344,8 +346,12 @@ class FuncDecomp:
         return any(d.kind in ("asg", "call", "unk") for d in defs)
 
     def _stack_arg(self, off: int, sz: int) -> X:
-        if off in self.slots["promoted"]:
-            return loc(stk_mod.slot_name(off), self.slots["promoted"][off])
+        prom = self.slots["promoted"]
+        if off in prom:
+            v = loc(stk_mod.slot_name(off), prom[off])
+            return ir.trunc(v, sz) if prom[off] > sz and sz == self.full else v            # 8바이트 칸의 아래 4바이트
+        if self.full == 4 and prom.get(off - 4) == 8 and sz == 4:                              # 8바이트 칸의 위 4바이트
+            return ir.trunc(ir.binop("shr", loc(stk_mod.slot_name(off - 4), 8), ir.C(32, 1), 8), 4)
         return ir.mem(ir.stk(off, self.full), sz)
 
     def _arity(self, flow, s, name, pr, sp):
@@ -362,7 +368,10 @@ class FuncDecomp:
             if sp is None:
                 return False
             off = sp + shadow + k * full
-            return off in self.out_slots and self._real(flow.reaching_at(s, stk_mod.slot_name(off)))
+            if off in self.out_slots and self._real(flow.reaching_at(s, stk_mod.slot_name(off))):
+                return True
+            lo = off - full                                                   # 8바이트 칸(double·long long)의 위쪽 절반
+            return full == 4 and self.out_slots.get(lo) == 8 and self._real(flow.reaching_at(s, stk_mod.slot_name(lo)))
 
         def contiguous(start):
             n = start
@@ -456,11 +465,15 @@ class FuncDecomp:
                 else:
                     total = self._arity(flow, s, name, pr, sp)
                 ci = self.callee_info(tgt) if pr is None else None
-                lay = None if (s.src.aux or {}).get("tail") else self._x86_layout(flow, s, name, pr, ci, sp)
-                fp, rk = ([], None) if (s.src.aux or {}).get("tail") else self._fp_plan(flow, s, self.blocks[a], name, pr, ci)
+                tail = bool((s.src.aux or {}).get("tail"))
+                lay = None if tail else self._x86_layout(flow, s, name, pr, ci, sp)
+                fp, rk = ([], None) if tail else self._fp_plan(flow, s, self.blocks[a], name, pr, ci)
+                if tail:                                                  # 꼬리 호출: 인자는 그대로 넘어가지만 반환형은 대상 함수의 것이다
+                    rk = (pr and protos.FP_TYPES.get(pr[0])) or (ci or {}).get("ret_fp") or None
                 x87w = (s.extra or {}).get("x87ret")                      # x87: 호출이 st(0) 에 남긴 값(리프터가 호출 뒤에 새 꼭대기 칸으로 옮겨 둔다)
-                if x87w:
-                    rk = rk or (pr and protos.FP_TYPES.get(pr[0])) or (ci or {}).get("ret_fp") or x87w
+                if self.arch == "x86" and (x87w or (tail and rk)):
+                    x87w = x87w or getattr(self.lifter, "W", 8)           # x86-32 의 부동소수점 반환값은 st(0)(폭 W)에 남는다 — float 를 돌려주는 함수도 W 폭 값으로 다룬다
+                    rk = x87w
                 fp_pos = {k for k, _ in fp} if abi.name == "win64" else set()
                 args = []
                 pos = 0
@@ -492,7 +505,7 @@ class FuncDecomp:
                         akinds.append(kind)
                         k += size // full
                     info.update(nargs=len(args), arg_kinds=akinds)
-                s.src = X("call", (tgt,) + tuple(args) + tuple(fargs), full, info)
+                s.src = X("call", (tgt,) + tuple(args) + tuple(fargs), x87w or full, info)
         return fp_ret
 
     @staticmethod
@@ -575,7 +588,8 @@ class FuncDecomp:
                 rv = False
         self.returns_value = rv
         self.ret_fp = None
-        x87 = getattr(self.lifter, "x87_used", False)
+        x87 = getattr(self.lifter, "x87_used", False) or any(
+            (st.src.aux or {}).get("ret_fp") for b in self.blocks.values() for st in b.stmts if st.k == "call" and st.src.op == "call")
         if self.arch == "x86" and x87:                         # x87: ret 직전 스택 깊이가 1 이면 반환값이 부동소수점이라고 확정(리프터가 x87ret 에 대입해 둔다)
             fpk = self._fp_return_kind(flow)
             if fpk:
@@ -679,6 +693,8 @@ class FuncDecomp:
                 if d.kind == "call":
                     info = d.stmt.src.aux or {}
                     rk = info.get("ret_fp")
+                    if self.arch == "x86" and not info.get("tail"):
+                        continue                         # x87: 호출이 st(0) 에 남긴 값은 곧바로 x87_k 칸으로 옮겨진다 — 반환값은 ret 직전의 대입(또는 꼬리 호출)만
                     if rk:
                         found = True
                         kind = kind or rk

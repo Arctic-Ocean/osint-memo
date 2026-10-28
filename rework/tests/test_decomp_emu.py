@@ -4,7 +4,7 @@
 2) 그 파일의 각 함수를 디컴파일해 C 로 되돌리고, 원본 + 의사코드(dec_*) 를 한 이미지로 다시 컴파일한다.
 3) Unicorn 에뮬레이터로 같은 입력에서 원본과 의사코드 함수를 각각 실행해 반환값과 메모리 결과를 비교한다.
 
-실행:  .venv/bin/python tests/test_decomp_emu.py [i386 arm64 arm thumb win64 x64] [-O0 -O1 -O2] [-k 함수,...] [-v]
+실행:  .venv/bin/python tests/test_decomp_emu.py [i386 i386gcc i386fast arm64 arm thumb win64 x64] [-O0 -O1 -O2] [-k 함수,...] [-v]
 필요: clang · ld.lld · unicorn(pip install unicorn)
 """
 import os, struct, random, re, subprocess, sys, tempfile
@@ -74,8 +74,31 @@ void *memcpy(void *d, const void *s, unsigned long n) { char *a = d; const char 
 void *memset(void *d, int c, unsigned long n) { char *a = d; while (n--) *a++ = (char)c; return d; }
 """
 
+# x87 시험 지원: 컴파일러가 라이브러리 호출로 남기는 초월함수를 x87 명령으로 구현한다(인라인한 쪽과 같은 명령이라 결과가 같다)
+SUPPORT_X87 = r"""
+double sin(double x) { double r; __asm__(".intel_syntax noprefix; fsin; .att_syntax" : "=t"(r) : "0"(x)); return r; }
+double cos(double x) { double r; __asm__(".intel_syntax noprefix; fcos; .att_syntax" : "=t"(r) : "0"(x)); return r; }
+double tan(double x) { double r; __asm__(".intel_syntax noprefix; fptan; fstp st(0); .att_syntax" : "=t"(r) : "0"(x)); return r; }
+float sinf(float x) { double r; __asm__(".intel_syntax noprefix; fsin; .att_syntax" : "=t"(r) : "0"((double)x)); return (float)r; }
+double atan2(double y, double x) { double r; __asm__(".intel_syntax noprefix; fpatan; .att_syntax" : "=t"(r) : "0"(x), "u"(y) : "st(1)"); return r; }
+double log2(double x) { double r; __asm__(".intel_syntax noprefix; fld1; fxch; fyl2x; .att_syntax" : "=t"(r) : "0"(x)); return r; }
+double log(double x) { double r; __asm__(".intel_syntax noprefix; fldln2; fxch; fyl2x; .att_syntax" : "=t"(r) : "0"(x)); return r; }
+double exp2(double x) { double r; __asm__(".intel_syntax noprefix; fld st(0); frndint; fxch; fsub st(0), st(1); f2xm1; fld1; faddp st(1), st(0); fscale; fstp st(1); .att_syntax" : "=t"(r) : "0"(x)); return r; }
+double fmod(double a, double b) { double r; __asm__(".intel_syntax noprefix; 0: fprem; fnstsw ax; sahf; jp 0b; fstp st(1); .att_syntax" : "=t"(r) : "0"(a), "u"(b) : "ax", "cc", "st(1)"); return r; }
+static double round_mode(double x, unsigned short rc) { unsigned short cw, cw2; double r; __asm__ volatile("fnstcw %0" : "=m"(cw)); cw2 = (cw & 0xf3ff) | rc;
+  __asm__ volatile("fldcw %0" :: "m"(cw2)); __asm__("frndint" : "=t"(r) : "0"(x)); __asm__ volatile("fldcw %0" :: "m"(cw)); return r; }
+double rint(double x) { double r; __asm__("frndint" : "=t"(r) : "0"(x)); return r; }
+double floor(double x) { return round_mode(x, 0x400); }
+double ceil(double x) { return round_mode(x, 0x800); }
+double trunc(double x) { return round_mode(x, 0xc00); }
+"""
+
 ARCH = {
-    "i386": dict(target="i386-linux-gnu", cflags=[], uc=(UC_ARCH_X86, UC_MODE_32), ptr=4, long=4, abi="cdecl"),
+    "i386": dict(target="i386-linux-gnu", cflags=["-DX87_TESTS"], uc=(UC_ARCH_X86, UC_MODE_32), ptr=4, long=4, abi="cdecl"),
+    # gcc -m32: clang 과 다른 x87 관용구(fnstsw+sahf·fcmov·fld1 …)를 시험한다. i386fast 는 인라인 초월함수(fsin·fpatan·fprem …)까지 쓰게 한다
+    "i386gcc": dict(target="i386-linux-gnu", cc="gcc", cflags=["-m32", "-march=i686", "-DX87_TESTS"], uc=(UC_ARCH_X86, UC_MODE_32), ptr=4, long=4, abi="cdecl"),
+    "i386fast": dict(target="i386-linux-gnu", cc="gcc", cflags=["-m32", "-march=i686", "-ffast-math", "-mfpmath=387", "-DX87_TESTS"], uc=(UC_ARCH_X86, UC_MODE_32),
+                     ptr=4, long=4, abi="cdecl"),
     "arm64": dict(target="aarch64-linux-gnu", cflags=[], uc=(UC_ARCH_ARM64, UC_MODE_ARM), ptr=8, long=8, abi="aapcs64"),
     "arm": dict(target="armv7-linux-gnueabi", cflags=["-mcpu=cortex-a15", "-marm", "-mfloat-abi=soft", "-DNO_FP"],
                 uc=(UC_ARCH_ARM, UC_MODE_ARM), ptr=4, long=4, abi="aapcs"),
@@ -95,9 +118,17 @@ def sh(cmd, **kw):
     return subprocess.run(cmd, capture_output=True, text=True, **kw)
 
 
+def compiler_cmd(a):
+    """(컴파일러 실행 인자, 형식에 맞는 기본 플래그). gcc 변형은 호스트 gcc -m32 를 쓴다."""
+    if a.get("cc") == "gcc":
+        return ["gcc"] + a["cflags"], ["-no-pie"]
+    return ["clang", f"--target={a['target']}"] + a["cflags"], ["-fuse-ld=lld"]
+
+
 def cc(arch, opt, src, out, extra=()):
     a = ARCH[arch]
-    cmd = ["clang", f"--target={a['target']}"] + a["cflags"] + [opt, "-ffreestanding", "-nostdlib", "-static", "-fuse-ld=lld", "-w",
+    base, link = compiler_cmd(a)
+    cmd = base + [opt, "-ffreestanding", "-nostdlib", "-static"] + link + ["-w",
                                                              "-fno-stack-protector", "-fno-pic", "-fwrapv", "-fno-builtin", "-fno-math-errno", "-o", out, src,
                                                              "-Wl,-e,main", "-Wl,--no-gc-sections"] + list(extra)
     r = sh(cmd)
@@ -413,6 +444,8 @@ def run_level(arch, opt, only, verbose, seed=1, iterations=30):
     if arch == "win64":                                           # ELF 위에서 Windows x64 호출 규약(ms_abi)으로 컴파일한 코퍼스
         src_text = src_text.replace("#define FN __attribute__((noinline, noclone))", "#define FN __attribute__((noinline, noclone, ms_abi))")
     src_text += SUPPORT                                           # 독립 실행 환경에는 libc 가 없으므로 컴파일러가 만들어 내는 memcpy·memset 호출을 받아 준다
+    if "-DX87_TESTS" in a["cflags"]:
+        src_text += SUPPORT_X87
     corpus_path = os.path.join(WORK, f"corpus_{arch}.c")
     with open(corpus_path, "w") as fh:
         fh.write(src_text)
@@ -462,7 +495,7 @@ def run_level(arch, opt, only, verbose, seed=1, iterations=30):
         one = os.path.join(WORK, "one.c")
         with open(one, "w") as fh:
             fh.write("#define main corpus_main\n#include \"decomp_corpus.c\"\n#undef main\n" + HELPERS + "\n" + t + "\n")
-        r = sh(["clang", f"--target={a['target']}"] + a["cflags"] + ["-c", "-w", "-ffreestanding", "-I", WORK, "-o", os.devnull, one])
+        r = sh(compiler_cmd(a)[0] + ["-c", "-w", "-ffreestanding", "-I", WORK, "-o", os.devnull, one])
         if r.returncode:
             err = [l for l in r.stderr.splitlines() if "error" in l][:2]
             results.append((e[0], "COMPILE", " / ".join(err)))
@@ -528,7 +561,7 @@ def main():
         elif x in ARCH:
             archs.append(x)
         i += 1
-    archs = archs or ["i386", "arm64", "arm", "thumb", "x64", "win64"]
+    archs = archs or ["i386", "arm64", "arm", "thumb", "x64", "win64"]          # i386gcc·i386fast 는 이름을 주면 돈다
     levels = levels or ["-O0", "-O1", "-O2"]
     fails = 0
     for arch in archs:

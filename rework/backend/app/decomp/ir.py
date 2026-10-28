@@ -64,8 +64,10 @@ CMP_INV = {"eq": "ne", "ne": "eq", "slt": "sge", "sge": "slt", "sle": "sgt", "sg
 CMP_SWAP = {"eq": "eq", "ne": "ne", "slt": "sgt", "sgt": "slt", "sle": "sge", "sge": "sle",
             "ult": "ugt", "ugt": "ult", "ule": "uge", "uge": "ule"}
 # 부동소수점: 값은 IEEE 비트 패턴(폭 4 = float, 8 = double)으로 정수와 같은 방식으로 들고 다닌다.
-FOPS2 = {"fadd", "fsub", "fmul", "fdiv", "fmin", "fmax", "fcmin", "fcmax"}            # fmin·fmax: SSE(비교 뒤 선택), fcmin·fcmax: C 라이브러리 fmin·fmax
-FOPS1 = {"fsqrt", "fneg", "fabs", "fround"}                                            # fround 의 aux: trunc·floor·ceil·round·rint
+FMATH1 = {"fsin", "fcos", "ftan", "flog2", "fexp2"}                                    # x87 의 초월함수(fsin·fcos·fptan·fyl2x·f2xm1 을 C 라이브러리 함수로)
+FMATH2 = {"fatan2", "fmod", "fremainder"}                                              # fpatan·fprem·fprem1
+FOPS2 = {"fadd", "fsub", "fmul", "fdiv", "fmin", "fmax", "fcmin", "fcmax"} | FMATH2    # fmin·fmax: SSE(비교 뒤 선택), fcmin·fcmax: C 라이브러리 fmin·fmax
+FOPS1 = {"fsqrt", "fneg", "fabs", "fround"} | FMATH1                                   # fround 의 aux: trunc·floor·ceil·round·rint
 FOPS3 = {"ffma"}                                                                       # ffma(a, b, c) = a*b + c (한 번만 반올림)
 FCONV = {"i2f", "f2i", "f2f"}                # i2f: 정수→float(aux 's'|'u' 는 원본 부호) · f2i: float→정수(0 쪽으로 자름, aux 'u' 는 부호 없는 정수) · f2f: float↔double
 FOPS = FOPS2 | FOPS1 | FOPS3 | FCONV
