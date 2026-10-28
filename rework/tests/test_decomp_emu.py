@@ -127,6 +127,15 @@ ARCH = {
                 uc=(UC_ARCH_ARM, UC_MODE_ARM), ptr=4, long=4, abi="aapcs"),
     "thumb": dict(target="thumbv7-linux-gnueabi", cflags=["-mcpu=cortex-a15", "-mthumb", "-mfloat-abi=soft", "-DNO_FP"],
                   uc=(UC_ARCH_ARM, UC_MODE_THUMB), ptr=4, long=4, abi="aapcs", thumb=True),
+    # VFP: armhf 는 하드 플로트(실수 인자·반환을 s/d 레지스터로), armsf 는 softfp(VFP 명령을 쓰되 실수 인자·반환은 r0–r3)
+    "armhf": dict(target="armv7-linux-gnueabihf", cflags=["-mcpu=cortex-a15", "-marm", "-mfloat-abi=hard", "-mfpu=vfpv4"],
+                  uc=(UC_ARCH_ARM, UC_MODE_ARM), ptr=4, long=4, abi="aapcs", hard=True, vfp=True),
+    "thumbhf": dict(target="thumbv7-linux-gnueabihf", cflags=["-mcpu=cortex-a15", "-mthumb", "-mfloat-abi=hard", "-mfpu=vfpv4"],
+                    uc=(UC_ARCH_ARM, UC_MODE_THUMB), ptr=4, long=4, abi="aapcs", thumb=True, hard=True, vfp=True),
+    "armsf": dict(target="armv7-linux-gnueabi", cflags=["-mcpu=cortex-a15", "-marm", "-mfloat-abi=softfp", "-mfpu=vfpv4"],
+                  uc=(UC_ARCH_ARM, UC_MODE_ARM), ptr=4, long=4, abi="aapcs", vfp=True),
+    "thumbsf": dict(target="thumbv7-linux-gnueabi", cflags=["-mcpu=cortex-a15", "-mthumb", "-mfloat-abi=softfp", "-mfpu=vfpv4"],
+                    uc=(UC_ARCH_ARM, UC_MODE_THUMB), ptr=4, long=4, abi="aapcs", thumb=True, vfp=True),
     "x64": dict(target="x86_64-linux-gnu", cflags=["-DLD_TESTS"], uc=(UC_ARCH_X86, UC_MODE_64), ptr=8, long=8, abi="sysv", ld=16),
     "win64": dict(target="x86_64-linux-gnu", cflags=["-DMS_ABI"], uc=(UC_ARCH_X86, UC_MODE_64), ptr=8, long=8, abi="win64"),
 }
@@ -181,6 +190,9 @@ class Machine:
         self.uc.mem_map(STACK_BASE, STACK_SIZE, UC_PROT_ALL)
         self.uc.mem_map(DATA_BASE, DATA_SIZE, UC_PROT_ALL)
         self.syms = {s.name: s.value for s in lb.symbols if s.name}
+        if self.a.get("vfp"):                                    # 코프로세서 10·11 접근 허용(CPACR) + FPEXC.EN: 켜지 않으면 VFP 명령이 undefined 로 떨어진다
+            self.uc.reg_write(A32.UC_ARM_REG_C1_C0_2, 0xF00000)
+            self.uc.reg_write(A32.UC_ARM_REG_FPEXC, 0x40000000)
 
     def _x87_result(self, ret_size):
         """ST(0) 을 `fstp tbyte` 스텁으로 메모리에 꺼내 float(4)·double(8) 비트 패턴으로, 10 이면 80비트 그대로 바꾼다."""
@@ -307,18 +319,66 @@ class Machine:
             uc.emu_start(addr, SENTINEL, count=3_000_000)
             r = uc.reg_read(A64.UC_ARM64_REG_Q0 if ret_fp else A64.UC_ARM64_REG_X0)
         elif a["abi"] == "aapcs":
-            regs = [A32.UC_ARM_REG_R0, A32.UC_ARM_REG_R1, A32.UC_ARM_REG_R2, A32.UC_ARM_REG_R3]
-            stack_args = args[4:]
-            base = (sp - 4 * len(stack_args)) & ~0x7
-            for i, (v, n) in enumerate(args[:4]):
-                uc.reg_write(regs[i], mask_(v, 4))
-            for i, (v, n) in enumerate(stack_args):
-                uc.mem_write(base + 4 * i, mask_(v, 4).to_bytes(4, "little"))
+            # AAPCS: 정수·8바이트 값은 r0–r3(8바이트는 짝수 레지스터부터)과 스택. 하드 플로트(-mfloat-abi=hard)는 실수 인자를 s0–s15/d0–d7 에
+            # (float 은 빈 s 레지스터 중 가장 낮은 것, double 은 빈 짝수 쌍 중 가장 낮은 것) 담는다. softfp·soft 는 실수도 정수 레지스터 규칙을 따른다.
+            hard = a.get("hard", False)
+            rng = random.Random(addr)
+            ncrn, stack = 0, []                                         # 다음 코어 레지스터 번호, 스택 워드들
+            sfree = [True] * 16                                         # s0..s15 의 비어 있는 여부(하드 플로트)
+            vfp_ok = True
+            core_vals = {}
+            if a.get("vfp"):
+                for i in range(16):
+                    uc.reg_write(A32.UC_ARM_REG_D0 + i, rng.getrandbits(64))      # d0–d15 는 인자가 아니면 쓰레기 (읽으면 틀린 값이 나오게)
+            for arg in args:
+                if arg[0] == "fp":
+                    wsz, raw = arg[1], arg[2] & ((1 << (8 * arg[1])) - 1)
+                    if hard and vfp_ok:
+                        if wsz == 4:
+                            k = next((i for i in range(16) if sfree[i]), None)
+                            if k is not None:
+                                sfree[k] = False
+                                uc.reg_write(A32.UC_ARM_REG_S0 + k, raw)
+                                continue
+                        else:
+                            k = next((i for i in range(0, 16, 2) if sfree[i] and sfree[i + 1]), None)
+                            if k is not None:
+                                sfree[k] = sfree[k + 1] = False
+                                uc.reg_write(A32.UC_ARM_REG_D0 + k // 2, raw)
+                                continue
+                        vfp_ok = False                                  # 자리가 없으면 이후 실수 인자는 전부 스택
+                        ws = [(raw >> (32 * j)) & 0xFFFFFFFF for j in range(wsz // 4)]
+                        if wsz == 8 and len(stack) % 2:
+                            stack.append(None)                          # 8바이트 정렬 빈칸
+                        stack.extend(ws)
+                        continue
+                    ws = [(raw >> (32 * j)) & 0xFFFFFFFF for j in range(wsz // 4)]
+                else:
+                    ws = [mask_(arg[0], 4)]
+                if len(ws) == 2 and ncrn % 2:
+                    ncrn += 1                                           # 8바이트 값은 짝수 레지스터에서 시작
+                if ncrn + len(ws) <= 4:
+                    for w in ws:
+                        core_vals[ncrn] = w
+                        ncrn += 1
+                else:
+                    ncrn = 4                                            # 걸치면 전부 스택으로
+                    if len(ws) == 2 and len(stack) % 2:
+                        stack.append(None)
+                    stack.extend(ws)
+            for i in range(4):
+                uc.reg_write(A32.UC_ARM_REG_R0 + i, core_vals.get(i, rng.getrandbits(32)))
+            base = (sp - 4 * len(stack) - 8) & ~0x7
+            for i, w in enumerate(stack):
+                uc.mem_write(base + 4 * i, (w or 0).to_bytes(4, "little"))
             uc.reg_write(A32.UC_ARM_REG_SP, base)
             th = 1 if a.get("thumb") else 0                      # Thumb 는 진입·복귀 주소의 최하위 비트로 모드를 알린다
             uc.reg_write(A32.UC_ARM_REG_LR, SENTINEL | th)
             uc.emu_start(addr | th, SENTINEL, count=3_000_000)
-            r = uc.reg_read(A32.UC_ARM_REG_R0)
+            if ret_fp and hard:
+                r = uc.reg_read(A32.UC_ARM_REG_D0) if ret_size == 8 else uc.reg_read(A32.UC_ARM_REG_S0)
+            else:
+                r = uc.reg_read(A32.UC_ARM_REG_R0) | (uc.reg_read(A32.UC_ARM_REG_R1) << 32 if ret_size == 8 else 0)
         else:
             raise SystemExit("알 수 없는 ABI")
         return None if ret_size == 0 else r & ((1 << (8 * ret_size)) - 1)
@@ -500,6 +560,8 @@ XFAIL = {
     ("i386old", "st_local"): "위와 같음(TBAA)",
     ("i386old", "ld_calls"): "구형 gcc(-march=i586)는 long double 인자를 4바이트 정수 push 세 번으로 넘긴다 — 80비트 값을 정수 세 개에서 합쳐 쓰는 표기를 아직 만들지 않는다",
     ("i386sse", "u2d"): "SSE 로 unsigned → double 변환을 하는 2^52 매직 상수 기법(orpd·subsd)을 아직 해석하지 않는다",
+    ("armsf", "d_neg"): "softfp 에서 VFP 명령 없이 정수 `eor r1, r1, #0x80000000` 만으로 r0:r1 의 double 부호를 뒤집는다 — r0 를 건드리지 않으므로 반환값이 있는 함수로도, double 로도 보이지 않는다(정수 연산뿐이라 실수라는 증거가 없다)",
+    ("thumbsf", "d_neg"): "위와 같음",
 }
 TOL = {"used": 0}
 
@@ -637,7 +699,7 @@ def main():
         elif x in ARCH:
             archs.append(x)
         i += 1
-    archs = archs or ["i386", "arm64", "arm", "thumb", "x64", "win64"]          # i386gcc·i386fast 는 이름을 주면 돈다
+    archs = archs or ["i386", "arm64", "arm", "thumb", "armhf", "thumbhf", "armsf", "thumbsf", "x64", "win64"]          # i386gcc·i386fast 등은 이름을 주면 돈다
     levels = levels or ["-O0", "-O1", "-O2"]
     fails = 0
     for arch in archs:

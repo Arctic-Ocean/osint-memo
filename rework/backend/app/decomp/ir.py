@@ -258,6 +258,8 @@ def binop(op: str, a: X, b: X, sz: int | None = None) -> X:
                 return C(0, sz)
             if op == "shr" and b.aux >= 8 * sz:
                 return C(0, sz)
+            if op == "shr" and a.op == "pair" and b.aux == 8 * a.args[0].sz:             # 이어 붙인 값의 위쪽 조각
+                return zext(a.args[1], sz)
             if op == "shr" and a.op == "bi" and a.aux == "clz" and a.args[0].sz == sz and b.aux == (8 * sz).bit_length() - 1:
                 return zext(cmp("eq", a.args[0], C(0, sz)), sz)                  # clz(x) >> log2(폭) 는 x == 0
         if a.op == "c" and a.aux == 0 and op in ("shl", "shr"):
@@ -378,6 +380,8 @@ def trunc(a: X, sz: int) -> X:
         return unop(a.op, trunc(a.args[0], sz))
     if a.op == "ite":
         return ite(a.args[0], trunc(a.args[1], sz), trunc(a.args[2], sz))
+    if a.op == "pair" and sz <= a.args[0].sz:                            # 이어 붙인 값의 아래쪽 조각만 보면 그 조각
+        return trunc(a.args[0], sz)
     if a.op == "ins":                                                    # 부분 쓰기: 아래 sz 바이트만 보면 삽입한 값
         part = a.aux
         if sz <= part:
@@ -552,6 +556,32 @@ def insert(old: X, val: X) -> X:
     if old.op == "c" and old.aux == 0:
         return zext(val, old.sz)
     return X("ins", (old, val), old.sz, val.sz)
+
+
+def hi_half(x: X) -> X:
+    """x 의 위쪽 절반(x.sz 의 절반 폭). pair(trunc(x), hi_half(x)) 는 x 로 되돌아온다."""
+    h = x.sz // 2
+    return trunc(binop("shr", x, C(8 * h, 1), x.sz), h)
+
+
+def pair(lo: X, hi: X) -> X:
+    """두 값을 이어 붙인 값(아래 lo, 위 hi). VFP 의 s 레지스터 둘이 d 레지스터 하나를 이루는 것이나 r0:r1 의 double 처럼,
+    쪼갠 두 조각을 다시 합치면 원래 값이 되도록 접는다."""
+    sz = lo.sz + hi.sz
+    if lo.op == "c" and hi.op == "c":
+        return C(lo.aux | (hi.aux << (8 * lo.sz)), sz)
+    if lo.sz == hi.sz and lo.op == "trunc" and hi.op == "trunc" and lo.args[0].sz == sz:
+        x = lo.args[0]
+        sh = hi.args[0]
+        if sh.op == "shr" and sh.args[0] == x and sh.args[1].op == "c" and sh.args[1].aux == 8 * lo.sz:
+            return x
+    if lo.op == "mem" and hi.op == "mem" and lo.sz == hi.sz:                           # 이웃한 두 번 읽기 = 한 번에 읽은 넓은 값(리틀 엔디언)
+        a, b = lo.args[0], hi.args[0]
+        if a.op == "stk" and b.op == "stk" and b.aux == a.aux + lo.sz:
+            return mem(a, sz)
+        if b.op == "add" and b.args[1].op == "c" and b.args[1].aux == lo.sz and b.args[0] == a:
+            return mem(a, sz)
+    return X("pair", (lo, hi), sz)
 
 
 # ---- 플래그 -----------------------------------------------------------------------
@@ -826,6 +856,8 @@ def rebuild(e: X, args) -> X:
         return invert(args[0])
     if op == "ins":
         return insert(args[0], args[1])
+    if op == "pair":
+        return pair(args[0], args[1])
     if op == "cc":
         fl = args[0]
         if fl.op == "fl" or (fl.op == "ite" and is_flagsrc(fl)):

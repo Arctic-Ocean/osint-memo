@@ -34,6 +34,7 @@ class Abi:
         self.fpr = fpr                       # 부동소수점 레지스터 위치 접두사(xmm·v)
         self.fp_nargs = fp_nargs             # 부동소수점 인자 레지스터 수
         self.fp_ret = f"{fpr}0"
+        self.hardfp = False                  # ARM32: 실수 인자·반환을 VFP 레지스터로 주고받는가(AAPCS-VFP)
 
 
 def xmm_lanes(lo: int, hi: int, prefix: str = "xmm", skip=()):
@@ -47,20 +48,30 @@ def xmm_lanes(lo: int, hi: int, prefix: str = "xmm", skip=()):
     return out
 
 
+def vfp_regs(hard_only: bool = False):
+    """ARM32 VFP 의 호출 중 값이 사라지는(caller-saved) 위치 이름들: d0–d7·d16–d31 와 s0–s15(= d0–d7 의 절반들). d8–d15(s16–s31) 는 보존된다."""
+    out = {f"d{i}" for i in list(range(8)) + list(range(16, 32))}
+    out |= {f"s{i}" for i in range(16)}
+    return out
+
+
 def is_fp_loc(name: str) -> bool:
-    return (name.startswith("xmm") and name[3:].rstrip("h").isdigit()) or (name.startswith("v") and name[1:].rstrip("h").isdigit())
+    return (name.startswith("xmm") and name[3:].rstrip("h").isdigit()) or (name.startswith("v") and name[1:].rstrip("h").isdigit()) \
+        or (name[:1] == "d" and name[1:].isdigit())
 
 
 def loc_size(name: str, abi: "Abi") -> int:
     """위치 이름의 기본 폭(플래그 1바이트, xmm 한 조각 8바이트, 그 밖에는 레지스터 폭)."""
-    if name == FLAGS:
+    if name == FLAGS or name == "FPF":
         return 1
+    if name in ("dr0", "dr2"):                                    # ARM softfp: r0:r1 / r2:r3 에 담겨 오는 double 인자(진입 때만 쓰는 의사 위치)
+        return 8
     if is_fp_loc(name):
         return 8
     return abi.full
 
 
-def abi_for(arch: str, bits: int, fmt: str, thumb: bool = False) -> Abi:
+def abi_for(arch: str, bits: int, fmt: str, thumb: bool = False, hardfp: bool = False) -> Abi:
     if arch == "x64":
         common = dict(sp="rsp", fps=("rbp",), callee_saved=("rbx", "rbp", "r12", "r13", "r14", "r15", "rsp"),
                       ret_reads=("rax", "eax", "ax", "al", "ah"))
@@ -74,9 +85,15 @@ def abi_for(arch: str, bits: int, fmt: str, thumb: bool = False) -> Abi:
                    "aapcs64", sp="sp", fps=("x29",), callee_saved={f"x{i}" for i in range(19, 30)} | {"sp"}, stack_arg_base=0,
                    ret_reads=("x0", "w0"), call_mn=("bl", "blr"), ret_mn=("ret",), branch_prefix=("b", "cb", "tb"), fpr="v", fp_nargs=8)
     if arch == "arm":
-        return Abi(["r0", "r1", "r2", "r3"], "r0", {"r0", "r1", "r2", "r3", "r12", "lr", FLAGS}, 4, "aapcs",
-                   sp="sp", fps=("r7",) if thumb else ("r11",), callee_saved={f"r{i}" for i in range(4, 12)} | {"sp"}, stack_arg_base=0,
-                   ret_reads=("r0",), call_mn=("bl", "blx"), ret_mn=("bx", "pop", "ldm"), branch_prefix=("b",))
+        abi = Abi(["r0", "r1", "r2", "r3"], "r0", {"r0", "r1", "r2", "r3", "r12", "lr", FLAGS, "FPF"} | vfp_regs(), 4,
+                  "aapcs-vfp" if hardfp else "aapcs",
+                  sp="sp", fps=("r7",) if thumb else ("r11",),
+                  callee_saved={f"r{i}" for i in range(4, 12)} | {"sp"} | {f"d{i}" for i in range(8, 16)} | {f"s{i}" for i in range(16, 32)},
+                  stack_arg_base=0, ret_reads=("r0",), call_mn=("bl", "blx"), ret_mn=("bx", "pop", "ldm"), branch_prefix=("b",),
+                  fpr="d", fp_nargs=8)
+        abi.hardfp = hardfp
+        abi.fp_ret = "d0"
+        return abi
     abi = Abi([], "eax", {"eax", "ecx", "edx", FLAGS} | xmm_lanes(0, 8), 4, "cdecl", sp="esp", fps=("ebp",),
               callee_saved=("ebx", "ebp", "esi", "edi", "esp"), stack_arg_base=4, ret_reads=("eax", "ax", "al", "ah"))
     abi.fp_ret = "x87ret"                       # x86-32 는 부동소수점 반환값이 st(0) 에 남는다(리프터가 ret 직전에 이 위치에 대입해 준다)

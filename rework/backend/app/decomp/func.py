@@ -14,6 +14,7 @@ from .stack import stmt_exprs as stmt_exprs_
 from . import protos
 from . import x87 as x87_mod
 from .dataflow import Flow, build_webs, abi_for, bits_of, FLAGS
+from . import abi_vfp
 from .propagate import Prop, used_vars
 from . import structure as st_mod
 from . import tables as tables_mod
@@ -144,7 +145,7 @@ class FuncDecomp:
             lifted = lifter.lift_function(insns)
         from .switch import resolve_switches
         resolve_switches(lifted, insns, self.prog, self.lo, self.hi, self.full)
-        self.abi = abi_for(self.arch, self.bits, self.model.fmt, getattr(self, "thumb", False))
+        self.abi = abi_for(self.arch, self.bits, self.model.fmt, getattr(self, "thumb", False), bool(getattr(self.model, "arm_hardfp", False)))
         self.blocks, self.order = build_blocks(lifted, self.lo, self.hi, self.lo, self.full, self.abi.ret)
         self.entry = self.lo
         eb = self.blocks[self.entry]
@@ -330,7 +331,7 @@ class FuncDecomp:
     def written_regs(self):
         """이 함수(와 호출하는 함수들)가 실제로 건드리는 호출자 보존 대상 레지스터. 같은 단위의 gcc 는 호출 규약상 파괴되는 레지스터라도
         피호출 함수가 건드리지 않음을 알면 호출 너머로 살려 쓴다(IPA-RA) — 실제 동작을 따라야 값이 맞는다."""
-        abi = abi_for(self.arch, self.bits, self.model.fmt, getattr(self, "thumb", False))
+        abi = abi_for(self.arch, self.bits, self.model.fmt, getattr(self, "thumb", False), bool(getattr(self.model, "arm_hardfp", False)))
         w = set()
         for b in self.blocks.values():
             for s in b.stmts:
@@ -343,6 +344,13 @@ class FuncDecomp:
                     w.update(s.extra["defs"])
                     if s.extra.get("writes_flags"):
                         w.add(FLAGS)
+        if self.arch == "arm":                                    # VFP: 같은 칸을 d 이름과 s 이름 어느 쪽으로 건드렸든 양쪽 모두 바뀐 것으로
+            for n in list(w):
+                if n[:1] in "ds" and n[1:].isdigit():
+                    k = int(n[1:]) if n[0] == "d" else int(n[1:]) // 2
+                    w.add(f"d{k}")
+                    if k < 16:
+                        w.update((f"s{2 * k}", f"s{2 * k + 1}"))
         return (w & abi.clobbers) | {FLAGS}
 
     def prebind_calls(self):
@@ -359,7 +367,7 @@ class FuncDecomp:
         self.load()
         self.stack_pass()
         self.noreturn_pass()
-        self.abi = abi_for(self.arch, self.bits, self.model.fmt, getattr(self, "thumb", False))
+        self.abi = abi_for(self.arch, self.bits, self.model.fmt, getattr(self, "thumb", False), bool(getattr(self.model, "arm_hardfp", False)))
         self.prebind_calls()
         written = self.written_regs()
         self.dataflow_pass()
@@ -374,6 +382,13 @@ class FuncDecomp:
 
     def _stack_layout(self):
         """x86-32 의 스택 인자 배치: [(바이트 폭, 실수 폭 또는 None)] — 호출하는 쪽이 double 은 8바이트 하나로 넘기도록."""
+        if self.arch == "arm" and not self.abi.hardfp:
+            kinds = self.fp_operand_kinds()
+            lay = []
+            for w, idx in self.params:
+                sz = 4 if w is None else self.webs[w].sz
+                lay.append((sz if sz in (4, 8) else 4, kinds.get(w) if w is not None and kinds.get(w) == sz else None))
+            return lay
         if self.arch != "x86":
             return None
         kinds = self.fp_operand_kinds()
@@ -460,6 +475,8 @@ class FuncDecomp:
 
     def _fp_plan(self, flow, s, blk, name, pr, ci):
         """호출의 부동소수점 인자: [(xmm 번호, 폭)]. Windows x64 는 위치가 곧 번호다. 반환형은 (인자 목록, 반환 폭 또는 None)."""
+        if self.arch == "arm":
+            return self._vfp_plan(flow, s, blk, name, pr, ci)
         if self.arch not in ("x64", "arm64"):
             return [], None
         win = self.abi.name == "win64"
@@ -496,10 +513,27 @@ class FuncDecomp:
             n += 1
         return [(j, 8) for j in range(n)], None
 
+    def _vfp_plan(self, flow, s, blk, name, pr, ci):
+        """ARM32 하드 플로트 호출의 실수 인자 kind 목록(레지스터 순서)과 반환 kind. 소프트 플로트는 실수도 정수 레지스터로 가서 여기서는 없음."""
+        fix = lambda k: 8 if k == 10 else k                                          # noqa: E731  (ARM 의 long double 은 double)
+        if not self.abi.hardfp:                                                       # softfp·soft: 실수 인자는 정수 레지스터로 가므로 반환형만
+            if pr is not None:
+                return [], fix(protos.FP_TYPES.get(pr[0]))
+            return [], (ci.get("ret_fp") if ci is not None else None)
+        if pr is not None:
+            rk = fix(protos.FP_TYPES.get(pr[0]))
+            if pr[2]:                                                                # 가변 인자 함수는 실수 인자도 코어 레지스터·스택으로 넘긴다
+                return [], rk
+            return [fix(k) for k in (protos.FP_TYPES.get(t) for t in pr[1]) if k], rk
+        if ci is not None:
+            return [kind for _k, kind in (ci.get("fp_params") or [])], ci.get("ret_fp")
+        return abi_vfp.defined_args(self, flow, s, blk), None
+
     def bind_calls(self, flow) -> bool:
         abi = self.abi
         full = self.full
         fp_ret = False
+        pending = []                                                  # (블록, 호출 문장, 호출 뒤에 붙일 문장들)
         for a in flow.graph.rpo:
             for s in self.blocks[a].stmts:
                 if s.k != "call":
@@ -518,6 +552,8 @@ class FuncDecomp:
                 ci = self.callee_info(tgt) if pr is None else None
                 tail = bool((s.src.aux or {}).get("tail"))
                 lay = None if tail else self._x86_layout(flow, s, name, pr, ci, sp)
+                lay_arm = None if tail or bound else self._arm_soft_layout(flow, s, name, pr, ci, sp)
+                arm_args = self._arm_soft_args(lay_arm, sp) if lay_arm is not None else None
                 fp, rk = ([], None) if tail else self._fp_plan(flow, s, self.blocks[a], name, pr, ci)
                 if tail:                                                  # 꼬리 호출: 인자는 그대로 넘어가지만 반환형은 대상 함수의 것이다
                     rk = (pr and protos.FP_TYPES.get(pr[0])) or (ci or {}).get("ret_fp") or None
@@ -542,17 +578,31 @@ class FuncDecomp:
                         break
                     pos += 1
                 fargs, fkinds = [], []
-                for k, kind in fp:
-                    x = loc(f"{abi.fpr}{k}", 8)
-                    fargs.append(x if kind == 8 else ir.trunc(x, 4))
-                    fkinds.append(kind)
+                if self.arch == "arm":
+                    for e, kind in zip(abi_vfp.arg_exprs(self, fp), fp):
+                        if e is not None:
+                            fargs.append(e)
+                            fkinds.append(kind)
+                else:
+                    for k, kind in fp:
+                        x = loc(f"{abi.fpr}{k}", 8)
+                        fargs.append(x if kind == 8 else ir.trunc(x, 4))
+                        fkinds.append(kind)
                 if bound:
                     args = list(s.src.args[1:])
                 info = dict(s.src.aux or {})
                 info.update(name=name, proto=pr, nargs=len(args), callee=ci, fp_kinds=fkinds, ret_fp=rk)
-                if rk:
+                csz = x87w or full
+                if rk and self.arch == "arm":
+                    pending.append((self.blocks[a], s, abi_vfp.call_result(self, s, rk)))
+                    csz = rk
+                    fp_ret = True
+                elif rk:
                     s.dst = loc("x87ret" if x87w else abi.fp_ret, x87w or 8)
                     fp_ret = True
+                if arm_args is not None:                                     # ARM softfp: double 은 짝수 레지스터 쌍(pair)으로
+                    args, akinds = arm_args
+                    info.update(nargs=len(args), arg_kinds=akinds)
                 if lay is not None:                                          # x86-32: 실수·8바이트 인자가 섞인 호출은 호출 규약대로 폭을 지켜 인자를 만든다
                     args, akinds, k = [], [], 0
                     for size, kind in lay:
@@ -565,7 +615,11 @@ class FuncDecomp:
                         fargs.append(self._stack_arg(sp + 16 * j, 10))
                         fkinds.append(10)
                     info["fp_kinds"] = fkinds
-                s.src = X("call", (tgt,) + tuple(args) + tuple(fargs), x87w or full, info)
+                s.src = X("call", (tgt,) + tuple(args) + tuple(fargs), csz, info)
+        for blk, s, extra in pending:                                  # 호출 직후에 반환값을 s0·s1 로 쪼개거나 d0 으로 넓히는 문장
+            if extra:
+                i = blk.stmts.index(s)
+                blk.stmts[i + 1:i + 1] = extra
         return fp_ret
 
     @staticmethod
@@ -610,6 +664,52 @@ class FuncDecomp:
             if pm is not None and pm != size and not (pm == 10 and size == 12) and not (pm == 4 and size == 8 and self.slots["promoted"].get(off + 4) == 4):
                 return None
         return lay
+
+    def _arm_soft_layout(self, flow, s, name, pr, ci, sp):
+        """ARM softfp·soft 호출의 인자 배치 [(바이트 폭, 실수 폭 또는 None)] — double·8바이트 인자가 짝수 레지스터 쌍으로 가도록. 필요 없으면 None."""
+        if self.arch != "arm" or self.abi.hardfp:
+            return None
+        lay = None
+        if pr is not None:
+            if pr[2]:
+                return None
+            lay = [(8, 8) if self._slot_of(t)[0] in (8, 12) and self._slot_of(t)[1] in (8, 10) else self._slot_of(t) for t in pr[1]]
+            lay = [(8 if sz == 12 else sz, 8 if kd == 10 else kd) for sz, kd in lay]
+        elif ci is not None and ci.get("layout"):
+            lay = list(ci["layout"])
+        if not lay or not any(sz >= 8 or kind for sz, kind in lay):
+            return None
+        return lay
+
+    def _arm_soft_args(self, lay, sp):
+        """_arm_soft_layout 의 배치대로 인자 식들과 실수 폭(없으면 None)을 만든다. 스택 인자가 필요한데 sp 를 모르면 None."""
+        args, kinds = [], []
+        n = 0
+        so = 0
+        for size, kind in lay:
+            if size == 8:
+                if n % 2:
+                    n += 1
+                if n + 2 <= 4:
+                    args.append(ir.pair(loc(f"r{n}", 4), loc(f"r{n + 1}", 4)))
+                    n += 2
+                else:
+                    if sp is None:
+                        return None
+                    n = 4
+                    so += so % 8
+                    args.append(self._stack_arg(sp + so, 8))
+                    so += 8
+            elif n < 4:
+                args.append(loc(f"r{n}", 4))
+                n += 1
+            else:
+                if sp is None:
+                    return None
+                args.append(self._stack_arg(sp + so, 4))
+                so += 4
+            kinds.append(kind)
+        return args, kinds
 
     def _tail_arity(self, flow, s):
         n = 0
@@ -660,7 +760,12 @@ class FuncDecomp:
                 self.ret_fp = 10 if self.arch == "x64" else fpk   # x86-64 에서 st(0) 으로 돌려주는 형은 long double 뿐이다
                 self.returns_value = rv = True
                 self.x87_mode = True
-        if self.arch in ("x64", "arm64") and not self.x87_mode:
+        if self.arch == "arm" and not self.abi.hardfp and getattr(self.lifter, "vmode", None):
+            fpk = self._soft_ret_kind(flow)
+            if fpk:
+                self.ret_fp = fpk
+                self.returns_value = rv = True
+        if (self.arch in ("x64", "arm64") or (self.arch == "arm" and self.abi.hardfp)) and not self.x87_mode:
             fpk = self._fp_return_kind(flow)
             if fpk:
                 pf = self._ret_pure(flow, self.abi.fp_ret)
@@ -694,6 +799,9 @@ class FuncDecomp:
                     if self.x87_mode:
                         v = loc("x87ret", self.lifter.W)
                         b.term.src = v if self.lifter.W == self.ret_fp else X("f2f", (v,), self.ret_fp)
+                        continue
+                    if self.arch == "arm":
+                        b.term.src = abi_vfp.ret_expr(self, self.ret_fp)
                         continue
                     x0 = loc(self.abi.fp_ret, 8)
                     b.term.src = x0 if self.ret_fp == 8 else ir.trunc(x0, 4)
@@ -776,6 +884,84 @@ class FuncDecomp:
             return self.lifter.W                                                   # x87: ret 직전 스택에 값이 있으면 반환값이다
         return 8 if self.callers_use_fp_result() is True else None                  # 증거가 없으면 호출자가 xmm0 을 읽을 때만
 
+    _VFP_LOC = re.compile(r"^[sd]\d+$")
+
+    def _soft_leaves(self, flow, stmt, e, depth=0):
+        """식 e 가 읽는 VFP 레지스터(또는 그 값을 담은 임시 값을 거슬러 올라가 닿는 것)의 [(문장, 이름)]."""
+        out = []
+        for n in ir.walk(e):
+            if n.op != "loc":
+                continue
+            if self._VFP_LOC.match(n.aux):
+                out.append((stmt, n.aux))
+            elif re.fullmatch(r"t\d+", n.aux) and depth < 2:
+                for dd in flow.reaching(stmt, n.aux):
+                    if dd.kind == "asg" and dd.stmt is not None:
+                        out += self._soft_leaves(flow, dd.stmt, dd.stmt.src, depth + 1)
+        return out
+
+    def _fp8_stack_access(self, off) -> bool:
+        """스택 칸 off 를 8바이트 VFP 레지스터(vstr/vldr dN)로 읽고 쓴 문장이 있는가."""
+        for b in self.blocks.values():
+            for st in b.stmts:
+                if st.k != "asg":
+                    continue
+                d, v = st.dst, st.src
+                if d.op == "mem" and d.sz == 8 and d.args[0].op == "stk" and d.args[0].aux == off and v.op == "loc" and self._VFP_LOC.match(v.aux):
+                    return True
+                if v.op == "mem" and v.sz == 8 and v.args[0].op == "stk" and v.args[0].aux == off and d.op == "loc" and self._VFP_LOC.match(d.aux):
+                    return True
+        return False
+
+    def _soft_ret_mem_kind(self, flow):
+        """-O0 Thumb softfp: 반환할 double 이 스택 변수라 `ldr r0,[sp]; ldr r1,[sp,#4]` 로 정수 레지스터에 옮겨진다.
+        두 칸이 이웃하고 그 칸을 8바이트 VFP 접근으로도 만지면 double 반환."""
+        seen = False
+        for t in self._ret_terms():
+            d0 = list(flow.reaching_at(t, "r0"))
+            d1 = list(flow.reaching_at(t, "r1"))
+            if len(d0) != 1 or len(d1) != 1 or d0[0].kind != "asg" or d1[0].kind != "asg" or d0[0].stmt is None or d1[0].stmt is None:
+                return None
+            a, b = d0[0].stmt.src, d1[0].stmt.src
+            if not (a.op == "mem" and b.op == "mem" and a.sz == b.sz == 4 and a.args[0].op == "stk" and b.args[0].op == "stk"
+                    and b.args[0].aux == a.args[0].aux + 4 and self._fp8_stack_access(a.args[0].aux)):
+                return None
+            seen = True
+        return 8 if seen else None
+
+    def _soft_ret_kind(self, flow):
+        """softfp·soft ARM: 반환값 r0(·r1)이 VFP 연산 결과를 옮겨 온 비트이면 그 폭(float 4, double 8). 아니면 None.
+        double 은 `vmov r0, r1, dN` 이라 r0·r1 이 같은 d 레지스터(또는 s(2k)·s(2k+1))에서, float 는 `vmov r0, sN` 에서 온다.
+        VFP 레지스터 값이 실제 실수 연산의 결과일 때만(정수 변환 결과 등은 제외) 실수 반환으로 본다."""
+        kinds = set()
+        for t in self._ret_terms():
+            defs0 = list(flow.reaching_at(t, "r0"))
+            if not defs0 or any(d.kind != "asg" or d.stmt is None for d in defs0):
+                return None
+            for d in defs0:
+                leaves = self._soft_leaves(flow, d.stmt, d.stmt.src)
+                if not leaves:
+                    return self._soft_ret_mem_kind(flow)
+                ev = None
+                for st, nm in leaves:
+                    for dd in flow.reaching(st, nm):
+                        ev = ev or self._fp_def_width(flow, dd, 0)
+                dbl = False
+                defs1 = [x for x in flow.reaching_at(t, "r1") if x.kind == "asg" and x.stmt is not None]
+                if defs1:
+                    n0 = leaves[0][1]
+                    n1 = []
+                    for x in defs1:
+                        n1 += [nm for _st, nm in self._soft_leaves(flow, x.stmt, x.stmt.src)]
+                    if n0[0] == "d" and n1 and n1[0] == n0:
+                        dbl = True
+                    elif n0[0] == "s" and n1 and n1[0][0] == "s" and int(n0[1:]) % 2 == 0 and int(n1[0][1:]) == int(n0[1:]) + 1:
+                        dbl = True
+                if not dbl and not ev:
+                    return None                                    # float 는 실수 연산의 결과일 때만(정수 변환 결과 등은 정수). double 은 d 레지스터 쌍으로 오가면 충분하다
+                kinds.add(8 if dbl else 4)
+        return kinds.pop() if len(kinds) == 1 else None
+
     def _fp_def_width(self, flow, d, depth):
         """정의 d 의 값이 float(4)·double(8)임을 알려 주는 증거(연산·읽기·복사 경로). 모르면 None."""
         if d.kind != "asg" or d.stmt is None or depth > 6:
@@ -811,24 +997,31 @@ class FuncDecomp:
             return None
         if not xs:
             return None
-        cs = self.prog.dis.cs
+        arm = self.arch == "arm"
         for x in xs[:20]:
             site = x["from"]
             code = self.prog.dis.read(site, 96)
+            cs = self.prog.dis.cs_at(site) if arm else self.prog.dis.cs
             for ins in list(cs.disasm(code, site))[1:9]:
                 reads, writes = set(), set()
-                for op in ins.operands:
-                    if op.type == CS_OP_REG_:
-                        n = cs.reg_name(op.reg)
-                        if op.access & 1:
-                            reads.add(n)
-                        if op.access & 2:
-                            writes.add(n)
+                try:
+                    for op in ins.operands:
+                        if op.type == CS_OP_REG_:
+                            n = cs.reg_name(op.reg)
+                            if op.access & 1:
+                                reads.add(n)
+                            if op.access & 2:
+                                writes.add(n)
+                except Exception:                                # noqa: BLE001 — 코드가 아닌 바이트(SKIPDATA)
+                    break
                 if reads & self._fp_ret_names():
                     return True
                 if writes & self._fp_ret_names():
                     break
-                if ins.mnemonic.startswith(("j", "ret", "call")):
+                if arm:
+                    if self._is_call_mn(ins.mnemonic) or self._is_exit_mn(ins.mnemonic, ins):
+                        break
+                elif ins.mnemonic.startswith(("j", "ret", "call")):
                     break
         return False
 
@@ -898,7 +1091,10 @@ class FuncDecomp:
 
     # ---- 단계 4: 웹·전파 --------------------------------------------------------------
     def dataflow_pass(self):
-        self.abi = abi_for(self.arch, self.bits, self.model.fmt, getattr(self, "thumb", False))
+        self.abi = abi_for(self.arch, self.bits, self.model.fmt, getattr(self, "thumb", False), bool(getattr(self.model, "arm_hardfp", False)))
+        if self.arch == "arm" and self.abi.hardfp:
+            self.abi.fp_ret = abi_vfp.ret_name(self)
+        abi_vfp.pair_entry_params(self)                                  # softfp: r0:r1 로 오는 double 인자를 8바이트 진입 값 하나로
         self.prebind_calls()
         flow = Flow(self.blocks, self.graph, self.abi, self.out_slots, self.slots["promoted"])
         flow.run()
@@ -1024,6 +1220,11 @@ class FuncDecomp:
             d = flow.entry_def.get(r)
             if d is not None:
                 pw[i] = flow.web_of_def[d.id]
+        if self.arch == "arm" and not abi.hardfp:                        # softfp: double 인자는 r0:r1 / r2:r3 한 쌍(진입 값 dr0 / dr2)
+            for i in (0, 2):
+                d = flow.entry_def.get(f"dr{i}")
+                if d is not None:
+                    pw[i] = flow.web_of_def[d.id]
         base = abi.stack_arg_base
         self.arg_base = base
         ld_stack = []                                      # x86-64: long double 은 스택(16바이트)으로 넘어와 정수·실수 레지스터 번호와 무관하다
@@ -1083,7 +1284,7 @@ class FuncDecomp:
                 params.append((w, i))
             else:
                 params.append((None, i))
-        if self.arch in ("x86", "x64"):                      # 넓은 스택 인자(double·long long 은 4바이트 칸 둘, long double 은 셋/둘)는 뒤 칸의 자리표시가 매개변수가 아니다
+        if self.arch in ("x86", "x64", "arm"):               # 넓은 인자(double·long long 은 4바이트 칸 둘, long double 은 셋/둘)는 뒤 칸의 자리표시가 매개변수가 아니다
             covered = set()
             for w, i in params:
                 if w is not None and webs[w].sz > self.full:
@@ -1173,6 +1374,18 @@ class FuncDecomp:
         self.fp_param_kinds = {}
         self.fp_placeholders = {}
         self.fp_entries = []                     # 시그니처용 (웹 또는 None, 번호)
+        if self.arch == "arm" and self.abi.hardfp:
+            n_int = len(self.params)
+            for pos, (w, kind) in enumerate(abi_vfp.entry_params(self, used)):
+                self.fp_params.append((w, pos, kind))
+                idx = n_int + pos
+                if w is not None:
+                    self.webs[w].param = idx
+                    self.fp_param_kinds[w] = kind
+                else:
+                    self.fp_placeholders[idx] = kind
+                self.fp_entries.append((w, idx))
+            return
         if self.arch not in ("x64", "arm64") or getattr(self, "variadic", False):
             return
         flow = self.flow

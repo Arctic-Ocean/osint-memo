@@ -184,6 +184,14 @@ def load(path: str) -> tuple[BinaryModel, bytes, object]:
         entrypoint=int(b.entrypoint),
         image_base=image_base,
     )
+    if arch == "arm" and bits == 32:
+        if fmt == "ELF":
+            try:
+                model.arm_hardfp = bool(int(b.header.processor_flag) & 0x400)         # EF_ARM_ABI_FLOAT_HARD
+            except Exception:                                                          # noqa: BLE001
+                model.arm_hardfp = False
+        elif fmt == "PE":
+            model.arm_hardfp = True
 
     # 섹션
     for s in b.sections:

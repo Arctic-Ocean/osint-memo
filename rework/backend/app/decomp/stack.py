@@ -7,6 +7,8 @@
 """
 from __future__ import annotations
 
+import re
+
 from . import ir
 from .ir import X, S, C, loc, stk, mem, subst, to_signed
 
@@ -340,8 +342,38 @@ def find_save_slots(blocks, entry, abi) -> set:
     return {o for o in cand if o not in bad}
 
 
+def _drop_dead_addr_defs(blocks: dict, abi):
+    """스택 주소를 레지스터에 담았다가(add lr, sp, #16 ; ldm lr, {…}) 읽지 않고 같은 블록에서 덮어쓰는 대입은 주소 유출이 아니다.
+    블록 안에서 뒤에서부터 훑어, 뒤에서 읽히기 전에 덮어써지는 위치(또는 뒤에서 읽히지 않는 임시 값)로의 `loc = <스택 주소가 든 식>` 을 지운다."""
+    book = {abi.sp} | abi.fps
+    is_tmp = lambda n: re.fullmatch(r"t\d+", n) is not None                    # noqa: E731
+    for b in blocks.values():
+        killed: set = set()                 # 뒤에서 읽히기 전에 덮어써지는 위치
+        tread: set = set()                  # 뒤에서 읽히는 임시 값
+        keep = []
+        for s in reversed(b.stmts + [b.term]):
+            reads = {n.aux for e in stmt_exprs(s) for n in ir.walk(e) if n.op == "loc"}
+            if s.k == "unk":
+                reads |= set(s.extra["uses"])
+            if s is not b.term and s.k == "asg" and s.dst.op == "loc" and s.dst.aux not in book and s.dst.aux not in reads \
+                    and (s.dst.aux in killed or (is_tmp(s.dst.aux) and s.dst.aux not in tread)) \
+                    and any(n.op == "stk" for n in ir.walk(s.src)):
+                continue                                              # 죽은 주소 대입
+            keep.append(s)
+            if s.k == "call":
+                killed.clear()
+            if s.k == "asg" and s.dst.op == "loc":
+                killed.add(s.dst.aux)                                 # 쓰기는 같은 문장의 읽기 뒤에 일어난다
+                tread.discard(s.dst.aux)
+            killed -= reads
+            tread |= {r for r in reads if is_tmp(r)}
+        keep.reverse()
+        b.stmts = [x for x in keep if x is not b.term]
+
+
 def promote_slots(blocks: dict, abi, frame_top: int = 0, frame_known: bool = True, entry=None) -> dict:
     """반환: {'promoted': {off: size}, 'memvars': {off: {sizes}}, 'escapes': [(off, kind)], 'canary': {off}}"""
+    _drop_dead_addr_defs(blocks, abi)
     stmts = [s for b in blocks.values() for s in b.stmts]
     terms = [b.term for b in blocks.values()]
 

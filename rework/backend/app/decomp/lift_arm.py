@@ -14,6 +14,7 @@ from capstone.arm import ARM_OP_REG as OP_REG, ARM_OP_IMM as OP_IMM, ARM_OP_MEM 
 
 from . import ir
 from .ir import C, X, S, loc, mem, add, sub, binop, unop, zext, sext, trunc, cmp, ite, flags, cc, mask
+from .lift_arm_vfp import A32Vfp
 
 FLAGS = "F"
 ARM_CC = {1: "eq", 2: "ne", 3: "hs", 4: "lo", 5: "mi", 6: "pl", 7: "vs", 8: "vc", 9: "hi", 10: "ls", 11: "ge", 12: "lt", 13: "gt", 14: "le"}
@@ -41,7 +42,7 @@ class _ImmOp:
         self.imm = imm
 
 
-class A32Lifter:
+class A32Lifter(A32Vfp):
     full = 4
     SP = "sp"
 
@@ -54,6 +55,7 @@ class A32Lifter:
         self.div_state = None
         self.wide = False                      # 자리올림 연쇄(adc·sbc)·64비트 곱셈누적이 있어 32비트 위치만으로는 값을 다 나타내지 못함
         self._tmp = 0
+        self.vfp_init()
 
     # ---- 레지스터 -----------------------------------------------------------------
     def tmp(self, sz: int = 4) -> X:
@@ -82,7 +84,7 @@ class A32Lifter:
         return S("asg", addr, loc(n, 4), val if val.sz == 4 else (trunc(val, 4) if val.sz > 4 else zext(val, 4)))
 
     def load_mem(self, a: X, sz: int) -> X:
-        if a.op == "c" and self.is_const is not None and self.read is not None and sz in (1, 2, 4) and self.is_const(a.aux):
+        if a.op == "c" and self.is_const is not None and self.read is not None and sz in (1, 2, 4, 8) and self.is_const(a.aux):
             data = self.read(a.aux, sz)
             if data and len(data) == sz:
                 return C(int.from_bytes(data, "little"), sz)
@@ -90,7 +92,7 @@ class A32Lifter:
 
     def load_literal(self, a: X, sz: int) -> X:
         """`ldr r0, [pc, #off]` 의 리터럴 풀 값: 풀이 코드 구역 안에 있어도 바뀌지 않는 상수이므로 파일에서 읽어 접는다."""
-        if a.op == "c" and self.read is not None and sz in (1, 2, 4):
+        if a.op == "c" and self.read is not None and sz in (1, 2, 4, 8):
             data = self.read(a.aux, sz)
             if data and len(data) == sz:
                 return C(int.from_bytes(data, "little"), sz)
@@ -169,6 +171,13 @@ class A32Lifter:
 
         for op in insn.operands:
             if op.type == OP_REG:
+                vi = self.vinfo(op.reg)
+                if vi is not None:                                    # VFP·NEON 레지스터: 접근 방향을 모르면 읽고 쓴다고 본다(모드에 맞는 위치 이름들)
+                    names = self.vloc_names(*vi)
+                    uses.update(names)
+                    if not insn.mnemonic.startswith(("vst", "vpush", "vcmp")):
+                        defs.update(names)
+                    continue
                 c = canon(op.reg)
                 if c:
                     if op.access & 1:
@@ -212,6 +221,7 @@ class A32Lifter:
         머리 조각은 첫 명령의 첫 바이트(주소 A, 크기 1), 참 조각은 A+1, 거짓 조각은 첫 거짓 명령의 주소에 놓아 블록 시작 주소가 겹치지 않게 한다."""
         targets = set()
         insns = [i for i in insns]
+        self.vfp_prescan([i for i in insns if not self._is_data(i)])
         for ins in insns:
             if self._is_data(ins):
                 continue
@@ -344,6 +354,11 @@ class A32Lifter:
 
         if m in ("nop", "dmb", "dsb", "isb", "yield", "wfe", "wfi", "sev", "sevl", "pld", "pldw", "pli", "cpsid", "cpsie", "bkpt_", "hint"):
             return []
+        if insn.mnemonic.startswith("v"):                                 # VFP (NEON 은 따로)
+            r = self.vfp_lift(insn)
+            if r is None:
+                raise Unsupported(m)
+            return r
         if m in ("udf", "bkpt", "trap"):
             return [S("noret", a)]
         # ---- 분기 ----

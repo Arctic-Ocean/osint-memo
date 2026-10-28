@@ -514,6 +514,10 @@ class Renderer(FpRender):
             ta, sa, pa = self.P(a, want)
             tb, sb, pb = self.P(b, want or sa)
             return f"{self.cond(c, PREC['cond'] + 1)} ? {self._paren(ta, pa, PREC['cond'] + 1)} : {self._paren(tb, pb, PREC['cond'])}", sa, PREC["cond"]
+        if op == "pair":                                                   # 이어 붙인 값: (hi << 8*lo폭) | lo
+            lo, hi = e.args
+            ty = itype(sz, "u")
+            return f"(({ty}){self.fit(hi, 'u')} << {8 * lo.sz}) | ({ty}){self.fit(lo, 'u')}", "u", PREC["bor"]      # 각 조각은 자기 폭의 부호 없는 값으로 먼저 본다(음수 int 가 위쪽 비트를 채우지 않게)
         if op == "ins":
             old, val = e.args
             part = e.aux
