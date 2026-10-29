@@ -54,7 +54,7 @@ python3 -m venv .venv
 |---|---|
 | 로딩 | lief로 ELF·PE·Mach-O 파싱. 아키텍처·엔트리·섹션·심볼·임포트/익스포트 인식 |
 | 디스어셈블 | Capstone 기반 x86/x64·ARM·ARM64·MIPS·PPC. 호출/분기/데이터 참조를 이름·문자열로 해석 |
-| **디컴파일(의사코드)** | x86·x64(System V·Windows)·x86‑32(cdecl·PE stdcall)·ARM64·**ARM 32비트(ARM·Thumb‑2)** 를 중간 표현(IR)으로 올려 **스택 슬롯 승격·데이터플로·구조화**를 거쳐 의사 C 로 되돌립니다. `if`/`else if`/`&&`·`||`·`while`/`do‑while`/`for`/`break`/`continue`/`switch`(점프 테이블·룩업 테이블·fallthrough), 상수 나누기·나머지 복원(`x / 7`, `x % 5`), 포인터·배열·구조체 지역 변수(`p[i]`, `locals.x`), 호출 인자 수·반환값 추정(같은 파일의 함수는 실제로 분석, libc 는 원형 표), 문자열 인자, PLT→임포트 이름(x86·x64·ARM·ARM64 의 `.plt` 스텁에서 GOT 슬롯을 따라가 `printf` 같은 이름으로). 구조화로 풀리지 않는 흐름만 `goto` 로 남깁니다. `float`·`double`(SSE·ARM64 FP) 산술·비교(NaN 포함)·변환·인자·반환과 128비트 이동·`rep movs/stos`·`bt`·`bswap` 도 풉니다. ARM 32비트는 조건 실행(`moveq`·IT 블록)을 `if`/`else` 로 묶고 `ldr pc`·`add pc`·`tbb/tbh` 점프 테이블을 `switch` 로 복원합니다. 해석하지 못한 명령(x87·SIMD·VFP/NEON 연산 등)이 있으면 결과 아래에 알립니다 |
+| **디컴파일(의사코드)** | x86·x64(System V·Windows)·x86‑32(cdecl·PE stdcall)·ARM64·**ARM 32비트(ARM·Thumb‑2)** 를 중간 표현(IR)으로 올려 **스택 슬롯 승격·데이터플로·구조화**를 거쳐 의사 C 로 되돌립니다. `if`/`else if`/`&&`·`||`·`while`/`do‑while`/`for`/`break`/`continue`/`switch`(점프 테이블·룩업 테이블·fallthrough), 상수 나누기·나머지 복원(`x / 7`, `x % 5`), 포인터·배열·구조체 지역 변수(`p[i]`, `locals.x`), 호출 인자 수·반환값 추정(같은 파일의 함수는 실제로 분석, libc 는 원형 표), 문자열 인자, PLT→임포트 이름(x86·x64·ARM·ARM64 의 `.plt` 스텁에서 GOT 슬롯을 따라가 `printf` 같은 이름으로). 구조화로 풀리지 않는 흐름만 `goto` 로 남깁니다. `float`·`double`(SSE·ARM64 FP) 산술·비교(NaN 포함)·변환·인자·반환과 128비트 이동·`rep movs/stos`·`bt`·`bswap` 도 풉니다. **x87**(x86‑32 의 `float`·`double`·`long double`: FPU 스택을 정적으로 추적해 `st(i)` 를 변수로, `fcomi`·`fnstsw`+`sahf` 비교, `fsin`·`fprem`·`fldcw` 반올림 모드, `st(0)` 반환), **ARM 32비트 VFP**(하드 플로트 `s0–s15`/`d0–d7` 뒷칸 채우기 배정·softfp `r0:r1` double, `vmla`/`vfma` 계열·`vcvt`·`vldm`/`vpush`), **NEON**(ARM64 Advanced SIMD·ARM32 NEON: 원소별 연산·재배치·넓히기/좁히기·가로 연산·`ld1–ld4`/`st1–st4`)도 풉니다 — 벡터는 `int32x2_t` 같은 ACLE 형과 `a + b`·`vmax_s32(a, b)`·`__builtin_shufflevector` 로 출력합니다(128비트는 64비트 두 조각). ARM 32비트는 조건 실행(`moveq`·IT 블록)을 `if`/`else` 로 묶고 `ldr pc`·`add pc`·`tbb/tbh` 점프 테이블을 `switch` 로 복원합니다. 해석하지 못한 명령이 있으면 결과 아래에 알립니다 |
 | **리네임(리팩터링)** | 함수 이름 변경(F2), 의사코드의 변수 더블클릭 리네임. 명령줄 주석. 바이너리 SHA‑256별 SQLite에 보존되어 다시 열면 복원 |
 | **디버거(동적 분석)** | GDB/MI 기반. 중단점(함수명·라이브 디스어셈 클릭), 실행 제어(계속·한 줄·스텝·명령 단위·함수 끝·멈춤), 레지스터·콜스택·지역변수, 라이브 디스어셈블리(현재 `$pc` 강조), **런타임 변수·레지스터·메모리 조작**, 대상 프로그램 입출력 캡처, 원시 gdb 콘솔. PIE 로드 바이어스 자동 보정 |
 | 네비게이션 | 호출·참조·문자열·심볼 클릭으로 이동, 상호참조 패널, 북마크 |
@@ -336,6 +336,7 @@ REWORK_TEST_SANDBOX=1 .venv/bin/python tests/test_debugger.py   # 같은 시나�
 .venv/bin/python tests/test_workspace.py        # 작업 폴더(탐색기·소스 편집) API: 경로 격리·인코딩·원자적 저장·충돌·금지 구역·검색
 .venv/bin/python tests/test_decomp.py -O0 -O1 -O2          # 디컴파일러 차분 시험(gcc 로 컴파일한 코퍼스를 의사코드로 되돌려 다시 컴파일·실행해 비교)
 .venv/bin/python tests/test_decomp_emu.py arm64 x64 i386 win64 arm thumb -O0 -O1 -O2   # 같은 시험을 다른 아키텍처·호출 규약으로(clang + lld + Unicorn 에뮬레이터)
+.venv/bin/python tests/test_decomp_emu.py armhf armsf armneon thumbhf thumbsf thumbneon -O0 -O1 -O2   # ARM 32비트 VFP(하드·softfp)·NEON. i386gcc·i386fast·i386old·i386sse 는 x87 의 gcc/클래식/인라인 초월함수/SSE 변형
 .venv/bin/python tests/test_decomp_arm.py     # ARM 32비트 어셈블리 점프 테이블(ldr pc·add pc·tbb/tbh)이 switch 로 복원되고 에뮬레이션과 같은 값을 내는지
 ```
 
@@ -352,7 +353,12 @@ REWORK_TEST_SANDBOX=1 .venv/bin/python tests/test_debugger.py   # 같은 시나�
 - `tests/test_decomp_emu.py`: clang `--target=…` + lld 로 x86‑64·x86‑32·ARM64·ARM 32비트(ARM·Thumb‑2, 소프트 플로트)·Windows x64(`ms_abi`)용 정적 바이너리를 만들어 **Unicorn 에뮬레이터**에서 원본을 실행하고, 의사코드는 호스트에서 컴파일해 비교합니다. 좁은 인자의 상위 비트에 쓰레기 값을 넣어 호출 규약 가정을 확인합니다.
   Unicorn 은 시험에만 쓰므로 런타임 의존성(`backend/requirements.txt`)에 넣지 않았습니다: `.venv/bin/pip install unicorn`. clang·lld·gcc 가 없으면 해당 시험을 건너뜁니다.
 
-해석하지 못한 명령(SIMD·부동소수점)이 있거나 데이터 주소를 직접 읽는 함수는 “건너뜀”으로 세고 통과로 치지 않습니다. 현재 모든 아키텍처·최적화 수준에서 실행 가능한 함수는 전부 통과합니다.
+해석하지 못한 명령이 있거나 데이터 주소를 직접 읽는 함수는 “건너뜀”으로 세고 통과로 치지 않습니다. 현재 모든 아키텍처·최적화 수준에서 실행 가능한 함수는 전부 통과합니다.
+고칠 수 없는 한계(예: 구형 gcc 의 `long double` 정수 push)는 “알려진 한계”로 이유와 함께 따로 보고합니다(`XFAIL`).
+
+- **x87**: `i386`(clang)·`i386gcc`·`i386fast`(`-ffast-math` 로 `fsin`·`fpatan`·`fprem`·`f2xm1` 인라인)·`i386old`(`-march=i586`: `fnstsw`+`sahf`)·`i386sse` 변형과, 컴파일러가 거의 안 만드는 x87 명령·피연산자 형태를 직접 쓴 naked 어셈 39개, `long double`(i386·x86‑64) 13개.
+- **VFP**: `armhf`·`thumbhf`(하드 플로트)·`armsf`·`thumbsf`(softfp). 곱셈누적 계열·변환·레인·`vldm`/`vpush`·별칭을 직접 쓴 naked 어셈 시험 포함. 의사코드는 `#pragma clang fp contract(off)` 로 컴파일해 `vmla`(비융합)와 `vfma`(`fma()`)를 구분합니다.
+- **NEON**: ARM64 는 생성한 naked 어셈 1013개(원소별 연산·재배치·넓히기·가로 연산·구조 로드·스토어), ARM32 `armneon`·`thumbneon` 은 641개 + 자동 벡터화된 코퍼스(`-O2`/`-O3`). 어셈 시험은 최적화와 무관하므로 `-O1` 에서만 빌드합니다.
 
 실제 GDB로 `samples/demo_elf`를 디버깅하며 런타임 조작, MI 명령 주입 차단, 시작 실패·동시 종료 시
 자원 정리, gdb 외부 종료, 재실행, 대상 stdin(한 줄·EOF·이스케이프·한글·한 줄 4095바이트 경계·리다이렉트),
@@ -404,6 +410,6 @@ rework/
 2. ~~**대상 실행 샌드박스**: 신뢰할 수 없는 바이너리를 격리 실행(네임스페이스/seccomp/컨테이너)~~ — ✅ 완료(`sandbox.py`, Linux·bubblewrap. Windows 는 WSL2/VM)
 3. ~~**데스크톱 패키징**: Windows·Kali용 Electron(또는 Tauri) 설치본~~ — ✅ Linux(Kali·Ubuntu) `.deb`·AppImage 완료·검증. Windows 설치본은 코드·CI 워크플로까지 작성(Windows 러너 첫 빌드·실행은 미검증 — [데스크톱 앱](#데스크톱-앱-windowskali) 참고)
 4. ~~**폴더 열기 + 소스 편집**: Monaco 에디터(자동완성·구문강조·코드접기)~~ — ✅ 완료(`workspace.py`, `frontend/js/workspace.js`)
-5. ~~**디컴파일 고도화**: 완전한 if/else·switch·루프 구조화, 타입/인자 추론, ARM 의사코드~~ — ✅ 완료(`backend/app/decomp/`, 차분 시험으로 검증). 남은 한계: x87(x86‑32 의 `float`·`double`)·벡터 산술(`paddd`·`fadd v.2d` 등) 미지원(함수에 알림 표시), ARM 32비트는 정수 코드만(심볼이 없는 스트립 파일은 함수마다 ARM/Thumb 를 코드 모양으로 짐작하므로 드물게 틀릴 수 있고, VFP·NEON 부동소수점/벡터와 `tbb` 이외의 낯선 간접 점프는 알림 표시)이고 64비트 정수(레지스터 쌍 `adc`/`sbc` 연쇄·`umull` 결과 합치기)는 하위 32비트만 보이며 그 사실을 알립니다, MIPS 등은 의사코드 미지원(디스어셈블리 사용), 복잡한 흐름의 일부는 `goto` 로 남음
+5. ~~**디컴파일 고도화**: 완전한 if/else·switch·루프 구조화, 타입/인자 추론, ARM 의사코드~~ — ✅ 완료(`backend/app/decomp/`, 차분 시험으로 검증). x87·VFP·NEON 은 이후 추가됨(아래). 남은 한계: x86 SSE/AVX 정수 벡터 산술(`paddd` 등)과 x87 의 `fninit`·`fldenv`·`fbld`·`fxam`, MSVC 의 `_ftol2`·`_CI*` 도우미, 정수 push 로 조립한 `long double`은 미지원(함수에 알림 표시), ARM 32비트는 심볼이 없는 스트립 파일에서 함수마다 ARM/Thumb 를 코드 모양으로 짐작하므로 드물게 틀릴 수 있고(`tbb` 이외의 낯선 간접 점프는 알림 표시), float/double 과 정수가 섞인 매개변수는 레지스터 종류별로만 번호가 매겨져 **선언 순서를 복원하지 못합니다**(x86‑64·ARM64·AAPCS‑VFP 공통: `f(float, double, float)` 와 `f(float, float, double)` 은 레지스터 배정이 같음; Windows x64 는 정수보다 앞선 실수 인자의 순서도), 벡터를 값으로 주고받는 매개변수·반환(`int32x4_t` 등)과 64비트 원소의 포화·가변 시프트(`sqadd v.2d`·`sshl v.2d`), NEON `vrshr`·`vqmovn`·`vabdl`·`vtbl`·`ld1 {…}` 의 일부 드문 형식, d0–d7 을 다 쓰고 스택으로 넘어오는 실수 인자는 미지원이고 64비트 정수(레지스터 쌍 `adc`/`sbc` 연쇄·`umull` 결과 합치기)는 하위 32비트만 보이며 그 사실을 알립니다, MIPS 등은 의사코드 미지원(디스어셈블리 사용), 복잡한 흐름의 일부는 `goto` 로 남음
 6. ~~**디버거 심화**: 조건부 중단점·워치포인트, 메모리/스택 뷰어, 역방향 디버깅, 원격 gdbserver~~ — ✅ 완료(`debug.py`, `frontend/js/dbgx.js`, `tests/test_debugger_adv.py`). 한계: 역방향은 gdb `record full` 이라 느리고 AVX 등 일부 명령은 기록하지 못하며, 원격은 gdbserver(gdb 원격 프로토콜)만 지원합니다
 7. ~~**빌드/테스트 러너·Jupyter 셀**~~ — ✅ 완료(`runner.py`·`frontend/js/runner.js`, `notebook.py`·`frontend/js/notebook.js`). 한계: 러너는 한 번에 한 작업이고 삭제는 되가져오지 않으며(옵션), 노트북 커널은 서버 프로세스 안에서 돌아 **격리되지 않고** 파이썬 하나뿐이며 HTML·위젯 출력은 그리지 않습니다

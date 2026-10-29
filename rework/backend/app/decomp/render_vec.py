@@ -306,7 +306,7 @@ class VecRender:
 
     def _const_load(self, addr: int):
         sec = self.fd.model.section_for(addr)
-        if sec is None or sec.is_code or sec.writable:
+        if sec is None or sec.writable:                                                    # 읽기 전용(코드 구역 안의 리터럴 풀 포함)
             return None
         data = self.fd.prog.dis.read(addr, 8)
         if not data or len(data) < 8:

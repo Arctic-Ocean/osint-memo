@@ -94,7 +94,7 @@ class A64Neon:
                 k += 1
         try:
             return self._neon_inner(insn, m, ops, a)
-        except NeonUnsupported:
+        except (NeonUnsupported, TypeError, AttributeError, KeyError, IndexError, ValueError, StopIteration):      # 해석 못 하는 형식은 그 명령만 미해석으로 둔다
             return None
 
     def _neon_inner(self, insn, m, ops, a):

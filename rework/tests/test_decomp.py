@@ -60,7 +60,7 @@ SPECS = {
     "xa_near": ("D", "d"), "xa_fist_near": ("i", "d"), "xa_fist_down": ("i", "d"),
     "ld_add": ("X", "XX"), "ld_mix": ("X", "Xdi"), "ld2d": ("D", "X"), "d2ld": ("X", "d"), "ld_cmp": ("i", "XX"), "ld_sum": ("X", "Yn"),
     "ld_scale": ("v", "YnX"), "ld2i": ("i", "X"), "ld_sqrt": ("X", "X"), "ld_poly": ("X", "X"), "ld_calls": ("X", "XX"),
-    "bf_mix": ("D", "fdf"), "ff_mix": ("F", "ffff"), "fd_mix": ("D", "fdi"),
+    "bf_mix": ("D", "fdf"), "ff_mix": ("F", "ffff"), "fd_mix": ("D", "ifd"),
     **{n: ("D", "ddd") for n in ("va_vmla", "va_vmls", "va_vnmla", "va_vnmls", "va_vfms", "va_vfnma", "va_vfnms", "va_vfma")},
     **{n: ("F", "fff") for n in ("vf_vmla", "vf_vmls", "vf_vnmla", "vf_vnmls", "vf_vfms", "vf_vfnma", "vf_vfnms", "vf_vfma")},
     "va_vnmul": ("D", "dd"), "va_vabs": ("D", "d"), "va_vneg": ("D", "d"), "va_vsqrt": ("D", "d"), "vf_vabs": ("F", "f"), "vf_vneg": ("F", "f"),
@@ -78,6 +78,8 @@ SPECS = {
 # 생성된 NEON 어셈 시험(nvi_*: int[16] 두 개, nvf_*: float[16] 두 개, nvd_*: double[16] 두 개)
 for _m in re.finditer(r"^NK void (nv([ifd])_\w+)\(", open(CORPUS, encoding="utf-8").read(), re.M):
     SPECS[_m.group(1)] = ("v", {"i": "PP", "f": "GG", "d": "EE"}[_m.group(2)])
+for _m in re.finditer(r"^NK void (nw([if])_\w+)\(", open(CORPUS, encoding="utf-8").read(), re.M):                 # ARM32 NEON 어셈 시험
+    SPECS[_m.group(1)] = ("v", {"i": "PP", "f": "GG"}[_m.group(2)])
 # 인자 이름이 겹치는 특수 처리: bsearch_(const int *a, int n, int key) → Q(정렬 배열), n(<=16), i(키)
 SPECS["bsearch_"] = ("i", "Qni")
 SPECS["hash"] = ("u", "Sn")

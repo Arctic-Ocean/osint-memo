@@ -141,6 +141,11 @@ ARCH = {
                   uc=(UC_ARCH_ARM, UC_MODE_ARM), ptr=4, long=4, abi="aapcs", hard=True, vfp=True),
     "thumbhf": dict(target="thumbv7-linux-gnueabihf", cflags=["-mcpu=cortex-a15", "-mthumb", "-mfloat-abi=hard", "-mfpu=vfpv4", "-DVFP_TESTS"],
                     uc=(UC_ARCH_ARM, UC_MODE_THUMB), ptr=4, long=4, abi="aapcs", thumb=True, hard=True, vfp=True),
+    # NEON: -mfpu=neon-vfpv4 면 -O2 부터 루프를 자동 벡터화하고(vld1·vadd.i32 …), -DNEON_TESTS 는 naked 어셈 NEON 시험을 -O1 에서 켠다
+    "armneon": dict(target="armv7-linux-gnueabihf", cflags=["-mcpu=cortex-a15", "-marm", "-mfloat-abi=hard", "-mfpu=neon-vfpv4", "-DVFP_TESTS", "-DNEON_TESTS"],
+                    uc=(UC_ARCH_ARM, UC_MODE_ARM), ptr=4, long=4, abi="aapcs", hard=True, vfp=True),
+    "thumbneon": dict(target="thumbv7-linux-gnueabihf", cflags=["-mcpu=cortex-a15", "-mthumb", "-mfloat-abi=hard", "-mfpu=neon-vfpv4", "-DVFP_TESTS", "-DNEON_TESTS"],
+                      uc=(UC_ARCH_ARM, UC_MODE_THUMB), ptr=4, long=4, abi="aapcs", thumb=True, hard=True, vfp=True),
     "armsf": dict(target="armv7-linux-gnueabi", cflags=["-mcpu=cortex-a15", "-marm", "-mfloat-abi=softfp", "-mfpu=vfpv4"],
                   uc=(UC_ARCH_ARM, UC_MODE_ARM), ptr=4, long=4, abi="aapcs", vfp=True),
     "thumbsf": dict(target="thumbv7-linux-gnueabi", cflags=["-mcpu=cortex-a15", "-mthumb", "-mfloat-abi=softfp", "-mfpu=vfpv4"],
@@ -575,6 +580,8 @@ XFAIL = {
     ("thumbsf", "d_neg"): "위와 같음",
     ("armhf", "fp9"): "하드 플로트에서 d0–d7 을 다 쓰고 스택으로 넘어오는 아홉째 double — 스택 인자를 정수 매개변수로 보고 앞에 둬서 선언 순서가 어긋난다",
     ("thumbhf", "fp9"): "위와 같음",
+    ("armneon", "fp9"): "위와 같음",
+    ("thumbneon", "fp9"): "위와 같음",
 }
 TOL = {"used": 0}
 
@@ -590,8 +597,8 @@ def run_level(arch, opt, only, verbose, seed=1, iterations=30):
         src_text += SUPPORT_X87
     if a.get("vfp"):
         src_text += SUPPORT_VFP
-        if a.get("cc") == "gcc":
-            src_text += SUPPORT_I386_GCC
+    if a.get("cc") == "gcc":
+        src_text += SUPPORT_I386_GCC
     corpus_path = os.path.join(WORK, f"corpus_{arch}.c")
     with open(corpus_path, "w") as fh:
         fh.write(src_text)
@@ -716,7 +723,7 @@ def main():
         elif x in ARCH:
             archs.append(x)
         i += 1
-    archs = archs or ["i386", "arm64", "arm", "thumb", "armhf", "thumbhf", "armsf", "thumbsf", "x64", "win64"]          # i386gcc·i386fast 등은 이름을 주면 돈다
+    archs = archs or ["i386", "arm64", "arm", "thumb", "armhf", "thumbhf", "armsf", "thumbsf", "armneon", "thumbneon", "x64", "win64"]          # i386gcc·i386fast 등은 이름을 주면 돈다
     levels = levels or ["-O0", "-O1", "-O2"]
     fails = 0
     for arch in archs:

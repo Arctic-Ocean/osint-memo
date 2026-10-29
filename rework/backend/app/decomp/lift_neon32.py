@@ -78,7 +78,7 @@ class A32Neon:
             return NOT_NEON
         try:
             return self._neon32(insn, head, dts, ops, a)
-        except NeonUnsupported:
+        except (NeonUnsupported, TypeError, AttributeError, KeyError, IndexError, ValueError, StopIteration):      # 해석 못 하는 형식은 그 명령만 미해석으로 둔다
             return None
 
     def _is_neon(self, head, dts, ops) -> bool:
@@ -167,7 +167,7 @@ class A32Neon:
         total = self.nsize(d)
         flt = cls == "f"
         # ---- 원소별 이항 ----
-        if m in INT_BIN or m in FLT_BIN:
+        if (m in INT_BIN or m in FLT_BIN) and n == 3 and ops[2].type == OP_REG:
             return self._n32_bin(a, d, ops, m, esz, cls, total)
         if m in ("vcle", "vclt") and n == 3 and ops[2].type == OP_REG:                                  # 피연산자를 바꿔 vcge/vcgt
             sw = {"vcle": "vcge", "vclt": "vcgt"}[m]
@@ -291,7 +291,8 @@ class A32Neon:
         esz = dt[0]
         v = nc.imm_pattern(s.imm, esz) if esz < 8 else (s.imm & ir.mask(8))
         if dts[0] == "i64":
-            v = s.imm & ir.mask(8)
+            mt = re.search(r"#(0x[0-9a-fA-F]+|\d+)\s*$", insn.op_str)
+            v = (int(mt.group(1), 0) if mt else s.imm) & ir.mask(8)
         if invert:
             v = ~v & ir.mask(8)
         if dts[0] == "f32" and s.type == OP_FP:
@@ -517,7 +518,7 @@ class A32Neon:
                             for i in range(per):
                                 j = i * nn + r_i
                                 srcs.append((g * nn + (j * esz) // 8, ((j * esz) % 8) // esz))
-                            out += self.vwrite(a, "d", dregs[g * nn + r_i], nc.gather_pieces(chunks, srcs, esz))
+                            out += self.vwrite(a, "d", dregs[r_i * G + g], nc.gather_pieces(chunks, srcs, esz))
             else:
                 pieces = {r_i: self.vread("d", r) for r_i, r in enumerate(dregs)}
                 if nn == 1:
@@ -530,7 +531,7 @@ class A32Neon:
                             for l in range(per):
                                 j = ci * per + l
                                 r_i, i = j % nn, j // nn
-                                srcs.append((g * nn + r_i, i))
+                                srcs.append((r_i * G + g, i))
                             val = nc.gather_pieces(pieces, [(k, l) for k, l in srcs], esz)
                             c = g * nn + ci
                             out.append(S("asg", a, mem(binop("add", ea, C(8 * c, 4), 4) if c else ea, 8), val))
