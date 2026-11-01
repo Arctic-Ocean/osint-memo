@@ -2057,3 +2057,321 @@ NK void nwi_vst2lane_32(int *p, int *q) { NASM("vld1.8 {d0, d1}, [r0]\n vst2.32 
 NK void nwi_vldr_vstr(int *p, int *q) { NASM("vldr d0, [r0, #8]\n vstr d0, [r1, #16]"); }
 NK void nwi_vldm_q(int *p, int *q) { NASM("vldmia r0!, {d0, d1, d2}\n vstmia r1!, {d0, d1, d2}"); }
 #endif
+
+#if defined(SSE_ASM) && (defined(__x86_64__) || defined(__i386__))   /* naked 어셈 함수(생성): x86 SSE 패킹 명령을 직접 시험한다. xmm0=*p, xmm1=*q → 결과 xmm2 를 *q 에 */
+#ifndef NK
+#define NK __attribute__((naked, noinline))
+#endif
+#if defined(__x86_64__)
+#define PA "rdi"
+#define QA "rsi"
+#define XPRO ""
+#else
+#define PA "ecx"
+#define QA "edx"
+#define XPRO "mov ecx, [esp+4]\n mov edx, [esp+8]\n"
+#endif
+#define XASM(...) __asm__(".intel_syntax noprefix\n" XPRO __VA_ARGS__ "\nret\n.att_syntax")
+NK void nxi_paddb(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n paddb xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_paddb_m(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n paddb xmm2, [" QA "]\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_paddw(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n paddw xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_paddw_m(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n paddw xmm2, [" QA "]\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_paddd(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n paddd xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_paddd_m(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n paddd xmm2, [" QA "]\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_paddq(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n paddq xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_paddq_m(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n paddq xmm2, [" QA "]\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_psubb(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n psubb xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_psubb_m(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n psubb xmm2, [" QA "]\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_psubw(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n psubw xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_psubw_m(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n psubw xmm2, [" QA "]\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_psubd(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n psubd xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_psubd_m(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n psubd xmm2, [" QA "]\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_psubq(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n psubq xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_psubq_m(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n psubq xmm2, [" QA "]\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pcmpeqb(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n pcmpeqb xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pcmpeqb_m(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n pcmpeqb xmm2, [" QA "]\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pcmpeqw(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n pcmpeqw xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pcmpeqw_m(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n pcmpeqw xmm2, [" QA "]\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pcmpeqd(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n pcmpeqd xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pcmpeqd_m(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n pcmpeqd xmm2, [" QA "]\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pcmpgtb(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n pcmpgtb xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pcmpgtb_m(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n pcmpgtb xmm2, [" QA "]\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pcmpgtw(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n pcmpgtw xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pcmpgtw_m(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n pcmpgtw xmm2, [" QA "]\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pcmpgtd(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n pcmpgtd xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pcmpgtd_m(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n pcmpgtd xmm2, [" QA "]\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pmullw(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n pmullw xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pmullw_m(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n pmullw xmm2, [" QA "]\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pmaxsw(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n pmaxsw xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pmaxsw_m(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n pmaxsw xmm2, [" QA "]\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pmaxub(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n pmaxub xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pmaxub_m(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n pmaxub xmm2, [" QA "]\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pminsw(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n pminsw xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pminsw_m(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n pminsw xmm2, [" QA "]\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pminub(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n pminub xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pminub_m(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n pminub xmm2, [" QA "]\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_paddsb(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n paddsb xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_paddsb_m(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n paddsb xmm2, [" QA "]\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_paddsw(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n paddsw xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_paddsw_m(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n paddsw xmm2, [" QA "]\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_paddusb(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n paddusb xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_paddusb_m(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n paddusb xmm2, [" QA "]\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_paddusw(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n paddusw xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_paddusw_m(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n paddusw xmm2, [" QA "]\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_psubsb(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n psubsb xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_psubsb_m(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n psubsb xmm2, [" QA "]\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_psubsw(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n psubsw xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_psubsw_m(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n psubsw xmm2, [" QA "]\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_psubusb(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n psubusb xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_psubusb_m(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n psubusb xmm2, [" QA "]\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_psubusw(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n psubusw xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_psubusw_m(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n psubusw xmm2, [" QA "]\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pavgb(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n pavgb xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pavgb_m(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n pavgb xmm2, [" QA "]\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pavgw(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n pavgw xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pavgw_m(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n pavgw xmm2, [" QA "]\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pmuludq(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n pmuludq xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pmuludq_m(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n pmuludq xmm2, [" QA "]\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pmulhw(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n pmulhw xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pmulhw_m(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n pmulhw xmm2, [" QA "]\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pmulhuw(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n pmulhuw xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pmulhuw_m(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n pmulhuw xmm2, [" QA "]\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pmaddwd(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n pmaddwd xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pmaddwd_m(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n pmaddwd xmm2, [" QA "]\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pand(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n pand xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pand_m(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n pand xmm2, [" QA "]\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pandn(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n pandn xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pandn_m(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n pandn xmm2, [" QA "]\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_por(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n por xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_por_m(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n por xmm2, [" QA "]\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pxor(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n pxor xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pxor_m(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n pxor xmm2, [" QA "]\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pmulld(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n pmulld xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pmulld_m(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n pmulld xmm2, [" QA "]\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pmaxsb(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n pmaxsb xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pmaxsb_m(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n pmaxsb xmm2, [" QA "]\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pmaxsd(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n pmaxsd xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pmaxsd_m(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n pmaxsd xmm2, [" QA "]\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pmaxuw(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n pmaxuw xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pmaxuw_m(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n pmaxuw xmm2, [" QA "]\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pmaxud(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n pmaxud xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pmaxud_m(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n pmaxud xmm2, [" QA "]\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pminsb(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n pminsb xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pminsb_m(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n pminsb xmm2, [" QA "]\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pminsd(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n pminsd xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pminsd_m(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n pminsd xmm2, [" QA "]\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pminuw(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n pminuw xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pminuw_m(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n pminuw xmm2, [" QA "]\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pminud(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n pminud xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pminud_m(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n pminud xmm2, [" QA "]\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pcmpeqq(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n pcmpeqq xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pcmpeqq_m(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n pcmpeqq xmm2, [" QA "]\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pcmpgtq(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n pcmpgtq xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pcmpgtq_m(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n pcmpgtq xmm2, [" QA "]\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pabsb(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n pabsb xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pabsw(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n pabsw xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pabsd(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n pabsd xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_psllw_1(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n psllw xmm2, 1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_psllw_8(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n psllw xmm2, 8\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_psllw_15(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n psllw xmm2, 15\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_psllw_16(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n psllw xmm2, 16\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_psllw_200(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n psllw xmm2, 200\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_psllw_x0(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n mov eax, 0\n movd xmm1, eax\n psllw xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_psllw_x3(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n mov eax, 3\n movd xmm1, eax\n psllw xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_psllw_x15(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n mov eax, 15\n movd xmm1, eax\n psllw xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_psllw_x16(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n mov eax, 16\n movd xmm1, eax\n psllw xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_psllw_x21(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n mov eax, 21\n movd xmm1, eax\n psllw xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pslld_1(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n pslld xmm2, 1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pslld_16(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n pslld xmm2, 16\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pslld_31(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n pslld xmm2, 31\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pslld_32(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n pslld xmm2, 32\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pslld_200(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n pslld xmm2, 200\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pslld_x0(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n mov eax, 0\n movd xmm1, eax\n pslld xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pslld_x3(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n mov eax, 3\n movd xmm1, eax\n pslld xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pslld_x31(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n mov eax, 31\n movd xmm1, eax\n pslld xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pslld_x32(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n mov eax, 32\n movd xmm1, eax\n pslld xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pslld_x37(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n mov eax, 37\n movd xmm1, eax\n pslld xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_psllq_1(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n psllq xmm2, 1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_psllq_32(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n psllq xmm2, 32\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_psllq_63(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n psllq xmm2, 63\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_psllq_64(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n psllq xmm2, 64\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_psllq_200(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n psllq xmm2, 200\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_psllq_x0(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n mov eax, 0\n movd xmm1, eax\n psllq xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_psllq_x3(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n mov eax, 3\n movd xmm1, eax\n psllq xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_psllq_x63(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n mov eax, 63\n movd xmm1, eax\n psllq xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_psllq_x64(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n mov eax, 64\n movd xmm1, eax\n psllq xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_psllq_x69(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n mov eax, 69\n movd xmm1, eax\n psllq xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_psrlw_1(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n psrlw xmm2, 1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_psrlw_8(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n psrlw xmm2, 8\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_psrlw_15(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n psrlw xmm2, 15\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_psrlw_16(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n psrlw xmm2, 16\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_psrlw_200(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n psrlw xmm2, 200\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_psrlw_x0(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n mov eax, 0\n movd xmm1, eax\n psrlw xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_psrlw_x3(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n mov eax, 3\n movd xmm1, eax\n psrlw xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_psrlw_x15(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n mov eax, 15\n movd xmm1, eax\n psrlw xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_psrlw_x16(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n mov eax, 16\n movd xmm1, eax\n psrlw xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_psrlw_x21(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n mov eax, 21\n movd xmm1, eax\n psrlw xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_psrld_1(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n psrld xmm2, 1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_psrld_16(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n psrld xmm2, 16\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_psrld_31(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n psrld xmm2, 31\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_psrld_32(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n psrld xmm2, 32\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_psrld_200(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n psrld xmm2, 200\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_psrld_x0(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n mov eax, 0\n movd xmm1, eax\n psrld xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_psrld_x3(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n mov eax, 3\n movd xmm1, eax\n psrld xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_psrld_x31(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n mov eax, 31\n movd xmm1, eax\n psrld xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_psrld_x32(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n mov eax, 32\n movd xmm1, eax\n psrld xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_psrld_x37(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n mov eax, 37\n movd xmm1, eax\n psrld xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_psrlq_1(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n psrlq xmm2, 1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_psrlq_32(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n psrlq xmm2, 32\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_psrlq_63(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n psrlq xmm2, 63\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_psrlq_64(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n psrlq xmm2, 64\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_psrlq_200(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n psrlq xmm2, 200\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_psrlq_x0(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n mov eax, 0\n movd xmm1, eax\n psrlq xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_psrlq_x3(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n mov eax, 3\n movd xmm1, eax\n psrlq xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_psrlq_x63(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n mov eax, 63\n movd xmm1, eax\n psrlq xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_psrlq_x64(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n mov eax, 64\n movd xmm1, eax\n psrlq xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_psrlq_x69(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n mov eax, 69\n movd xmm1, eax\n psrlq xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_psraw_1(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n psraw xmm2, 1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_psraw_8(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n psraw xmm2, 8\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_psraw_15(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n psraw xmm2, 15\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_psraw_16(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n psraw xmm2, 16\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_psraw_200(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n psraw xmm2, 200\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_psraw_x0(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n mov eax, 0\n movd xmm1, eax\n psraw xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_psraw_x3(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n mov eax, 3\n movd xmm1, eax\n psraw xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_psraw_x15(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n mov eax, 15\n movd xmm1, eax\n psraw xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_psraw_x16(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n mov eax, 16\n movd xmm1, eax\n psraw xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_psraw_x21(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n mov eax, 21\n movd xmm1, eax\n psraw xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_psrad_1(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n psrad xmm2, 1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_psrad_16(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n psrad xmm2, 16\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_psrad_31(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n psrad xmm2, 31\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_psrad_32(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n psrad xmm2, 32\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_psrad_200(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n psrad xmm2, 200\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_psrad_x0(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n mov eax, 0\n movd xmm1, eax\n psrad xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_psrad_x3(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n mov eax, 3\n movd xmm1, eax\n psrad xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_psrad_x31(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n mov eax, 31\n movd xmm1, eax\n psrad xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_psrad_x32(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n mov eax, 32\n movd xmm1, eax\n psrad xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_psrad_x37(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n mov eax, 37\n movd xmm1, eax\n psrad xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pslldq_1(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n pslldq xmm2, 1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_psrldq_1(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n psrldq xmm2, 1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pslldq_4(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n pslldq xmm2, 4\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_psrldq_4(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n psrldq xmm2, 4\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pslldq_8(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n pslldq xmm2, 8\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_psrldq_8(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n psrldq xmm2, 8\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pslldq_15(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n pslldq xmm2, 15\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_psrldq_15(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n psrldq xmm2, 15\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pslldq_16(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n pslldq xmm2, 16\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_psrldq_16(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n psrldq xmm2, 16\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pslldq_20(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n pslldq xmm2, 20\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_psrldq_20(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n psrldq xmm2, 20\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pshufd_0(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n pshufd xmm2, xmm1, 0\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pshufdi_0(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqu xmm2, [" PA "+16]\n pshufd xmm2, xmm2, 0\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pshuflw_0(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqu xmm2, [" PA "+16]\n pshuflw xmm2, xmm2, 0\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pshufhw_0(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqu xmm2, [" PA "+16]\n pshufhw xmm2, xmm2, 0\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pshufd_1b(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n pshufd xmm2, xmm1, 27\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pshufdi_1b(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqu xmm2, [" PA "+16]\n pshufd xmm2, xmm2, 27\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pshuflw_1b(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqu xmm2, [" PA "+16]\n pshuflw xmm2, xmm2, 27\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pshufhw_1b(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqu xmm2, [" PA "+16]\n pshufhw xmm2, xmm2, 27\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pshufd_e4(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n pshufd xmm2, xmm1, 228\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pshufdi_e4(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqu xmm2, [" PA "+16]\n pshufd xmm2, xmm2, 228\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pshuflw_e4(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqu xmm2, [" PA "+16]\n pshuflw xmm2, xmm2, 228\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pshufhw_e4(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqu xmm2, [" PA "+16]\n pshufhw xmm2, xmm2, 228\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pshufd_55(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n pshufd xmm2, xmm1, 85\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pshufdi_55(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqu xmm2, [" PA "+16]\n pshufd xmm2, xmm2, 85\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pshuflw_55(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqu xmm2, [" PA "+16]\n pshuflw xmm2, xmm2, 85\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pshufhw_55(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqu xmm2, [" PA "+16]\n pshufhw xmm2, xmm2, 85\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pshufd_aa(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n pshufd xmm2, xmm1, 170\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pshufdi_aa(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqu xmm2, [" PA "+16]\n pshufd xmm2, xmm2, 170\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pshuflw_aa(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqu xmm2, [" PA "+16]\n pshuflw xmm2, xmm2, 170\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pshufhw_aa(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqu xmm2, [" PA "+16]\n pshufhw xmm2, xmm2, 170\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pshufd_ff(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n pshufd xmm2, xmm1, 255\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pshufdi_ff(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqu xmm2, [" PA "+16]\n pshufd xmm2, xmm2, 255\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pshuflw_ff(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqu xmm2, [" PA "+16]\n pshuflw xmm2, xmm2, 255\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pshufhw_ff(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqu xmm2, [" PA "+16]\n pshufhw xmm2, xmm2, 255\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pshufd_4e(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n pshufd xmm2, xmm1, 78\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pshufdi_4e(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqu xmm2, [" PA "+16]\n pshufd xmm2, xmm2, 78\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pshuflw_4e(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqu xmm2, [" PA "+16]\n pshuflw xmm2, xmm2, 78\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pshufhw_4e(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqu xmm2, [" PA "+16]\n pshufhw xmm2, xmm2, 78\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_punpcklbw(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n punpcklbw xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_punpcklwd(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n punpcklwd xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_punpckldq(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n punpckldq xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_punpcklqdq(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n punpcklqdq xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_punpckhbw(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n punpckhbw xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_punpckhwd(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n punpckhwd xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_punpckhdq(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n punpckhdq xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_punpckhqdq(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n punpckhqdq xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_packsswb(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n packsswb xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_packuswb(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n packuswb xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_packssdw(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n packssdw xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_packusdw(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n packusdw xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_palignr_0(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n palignr xmm2, xmm1, 0\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_palignr_1(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n palignr xmm2, xmm1, 1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_palignr_5(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n palignr xmm2, xmm1, 5\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_palignr_8(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n palignr xmm2, xmm1, 8\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_palignr_15(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n palignr xmm2, xmm1, 15\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_palignr_16(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n palignr xmm2, xmm1, 16\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_palignr_20(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n palignr xmm2, xmm1, 20\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pinsrw_0(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqu xmm2, [" PA "+16]\n mov eax, [" QA "]\n pinsrw xmm2, eax, 0\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pextrw_0(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n pextrw eax, xmm0, 0\n movd xmm2, eax\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pinsrw_3(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqu xmm2, [" PA "+16]\n mov eax, [" QA "]\n pinsrw xmm2, eax, 3\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pextrw_3(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n pextrw eax, xmm0, 3\n movd xmm2, eax\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pinsrw_7(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqu xmm2, [" PA "+16]\n mov eax, [" QA "]\n pinsrw xmm2, eax, 7\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pextrw_7(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n pextrw eax, xmm0, 7\n movd xmm2, eax\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pinsrd_0(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqu xmm2, [" PA "+16]\n mov eax, [" QA "]\n pinsrd xmm2, eax, 0\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pextrd_0(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n pextrd eax, xmm0, 0\n movd xmm2, eax\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pinsrd_3(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqu xmm2, [" PA "+16]\n mov eax, [" QA "]\n pinsrd xmm2, eax, 3\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pextrd_3(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n pextrd eax, xmm0, 3\n movd xmm2, eax\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pextrb_0(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n pextrb eax, xmm0, 0\n movd xmm2, eax\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pinsrb_0(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqu xmm2, [" PA "+16]\n mov eax, [" QA "]\n pinsrb xmm2, eax, 0\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pextrb_9(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n pextrb eax, xmm0, 9\n movd xmm2, eax\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pinsrb_9(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqu xmm2, [" PA "+16]\n mov eax, [" QA "]\n pinsrb xmm2, eax, 9\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pextrb_15(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n pextrb eax, xmm0, 15\n movd xmm2, eax\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pinsrb_15(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqu xmm2, [" PA "+16]\n mov eax, [" QA "]\n pinsrb xmm2, eax, 15\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_pmovmskb(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n pmovmskb eax, xmm0\n movd xmm2, eax\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxf_movmskps(float *p, float *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n movmskps eax, xmm0\n movd xmm2, eax\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxd_movmskpd(double *p, double *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n movmskpd eax, xmm0\n movd xmm2, eax\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxf_addps(float *p, float *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n addps xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxf_addps_m(float *p, float *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n addps xmm2, [" QA "]\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxf_subps(float *p, float *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n subps xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxf_subps_m(float *p, float *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n subps xmm2, [" QA "]\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxf_mulps(float *p, float *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n mulps xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxf_mulps_m(float *p, float *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n mulps xmm2, [" QA "]\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxf_divps(float *p, float *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n divps xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxf_divps_m(float *p, float *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n divps xmm2, [" QA "]\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxf_maxps(float *p, float *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n maxps xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxf_maxps_m(float *p, float *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n maxps xmm2, [" QA "]\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxf_minps(float *p, float *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n minps xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxf_minps_m(float *p, float *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n minps xmm2, [" QA "]\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxd_addpd(double *p, double *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n addpd xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxd_subpd(double *p, double *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n subpd xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxd_mulpd(double *p, double *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n mulpd xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxd_divpd(double *p, double *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n divpd xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxd_maxpd(double *p, double *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n maxpd xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxd_minpd(double *p, double *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n minpd xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxf_sqrtps(float *p, float *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n andps xmm1, xmm1\n pslld xmm1, 1\n psrld xmm1, 1\n sqrtps xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxd_sqrtpd(double *p, double *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n psllq xmm1, 1\n psrlq xmm1, 1\n sqrtpd xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxf_cmpeqps(float *p, float *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n cmpeqps xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxd_cmpeqpd(double *p, double *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n cmpeqpd xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxf_cmpltps(float *p, float *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n cmpltps xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxd_cmpltpd(double *p, double *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n cmpltpd xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxf_cmpleps(float *p, float *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n cmpleps xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxd_cmplepd(double *p, double *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n cmplepd xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxf_cmpneqps(float *p, float *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n cmpneqps xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxd_cmpneqpd(double *p, double *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n cmpneqpd xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxf_cmpnltps(float *p, float *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n cmpnltps xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxd_cmpnltpd(double *p, double *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n cmpnltpd xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxf_cmpnleps(float *p, float *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n cmpnleps xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxd_cmpnlepd(double *p, double *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n cmpnlepd xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxf_shufps_0(float *p, float *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n shufps xmm2, xmm1, 0\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxf_shufps_1b(float *p, float *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n shufps xmm2, xmm1, 27\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxf_shufps_e4(float *p, float *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n shufps xmm2, xmm1, 228\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxf_shufps_55(float *p, float *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n shufps xmm2, xmm1, 85\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxf_shufps_aa(float *p, float *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n shufps xmm2, xmm1, 170\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxf_shufps_ff(float *p, float *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n shufps xmm2, xmm1, 255\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxf_shufps_4e(float *p, float *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n shufps xmm2, xmm1, 78\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxf_shufps_93(float *p, float *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n shufps xmm2, xmm1, 147\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxf_unpcklps(float *p, float *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n unpcklps xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxf_unpckhps(float *p, float *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n unpckhps xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxi_cvtdq2ps(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n cvtdq2ps xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxf_cvttps2dq(float *p, float *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n cvttps2dq xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+NK void nxf_cvtps2dq(float *p, float *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n cvtps2dq xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+#endif

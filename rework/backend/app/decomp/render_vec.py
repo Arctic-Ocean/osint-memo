@@ -216,9 +216,9 @@ class VecRender:
         op = e.op
         if op in ir.VEC_OPS:
             res, _ = vop_types(e)
-            rcls = res[1]
-            text, p = self._vec_text(e, vt if rcls is None else (res[0], rcls))
-            if rcls is not None and (res[0], rcls) != vt:
+            rcls = res[1] if res[1] is not None else (vt[1] if res[0] == vt[0] else "s")      # 부호 무관 연산: 문맥의 부호(원소 폭이 같을 때)를 따른다
+            text, p = self._vec_text(e, (res[0], rcls))
+            if (res[0], rcls) != vt:                                                         # 원소 폭이나 부호가 다르면 비트를 그대로 옮긴다
                 return f"__builtin_bit_cast({ty}, {text})", PREC["prim"]
             return text, p
         if op == "var":

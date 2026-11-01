@@ -30,6 +30,8 @@ from test_decomp import SPECS, CORPUS, c_param_list, HELPERS as _H   # noqa: E40
 HELPERS = """#include <stdint.h>
 #if defined(__ARM_NEON) || defined(__aarch64__)
 #include <arm_neon.h>
+#elif defined(__x86_64__) || defined(__i386__)
+#include "vec_compat.h"
 #endif
 #if !defined(__clang__)
 #define __builtin_bit_cast(T, x) ({ __typeof__(x) _bcs = (x); T _bcd; __builtin_memcpy(&_bcd, &_bcs, sizeof _bcd); _bcd; })
@@ -122,7 +124,7 @@ long long __moddi3(long long a, long long b) { long long r; __divmoddi4(a, b, &r
 """
 
 ARCH = {
-    "i386": dict(target="i386-linux-gnu", cflags=["-DX87_TESTS", "-DLD_TESTS"], uc=(UC_ARCH_X86, UC_MODE_32), ptr=4, long=4, abi="cdecl", ld=12),
+    "i386": dict(target="i386-linux-gnu", cflags=["-DX87_TESTS", "-DLD_TESTS", "-DSSE_TESTS"], uc=(UC_ARCH_X86, UC_MODE_32), ptr=4, long=4, abi="cdecl", ld=12),
     # gcc -m32: clang 과 다른 x87 관용구(fnstsw+sahf·fcmov·fld1 …)를 시험한다. i386fast 는 인라인 초월함수(fsin·fpatan·fprem …)까지 쓰게 한다
     "i386gcc": dict(target="i386-linux-gnu", cc="gcc", cflags=["-m32", "-march=i686", "-DX87_TESTS", "-DLD_TESTS"], uc=(UC_ARCH_X86, UC_MODE_32), ptr=4, long=4, abi="cdecl", ld=12),
     "i386old": dict(target="i386-linux-gnu", cc="gcc", cflags=["-m32", "-march=i586", "-DX87_TESTS", "-DLD_TESTS"], uc=(UC_ARCH_X86, UC_MODE_32),
@@ -150,7 +152,7 @@ ARCH = {
                   uc=(UC_ARCH_ARM, UC_MODE_ARM), ptr=4, long=4, abi="aapcs", vfp=True),
     "thumbsf": dict(target="thumbv7-linux-gnueabi", cflags=["-mcpu=cortex-a15", "-mthumb", "-mfloat-abi=softfp", "-mfpu=vfpv4"],
                     uc=(UC_ARCH_ARM, UC_MODE_THUMB), ptr=4, long=4, abi="aapcs", thumb=True, vfp=True),
-    "x64": dict(target="x86_64-linux-gnu", cflags=["-DLD_TESTS"], uc=(UC_ARCH_X86, UC_MODE_64), ptr=8, long=8, abi="sysv", ld=16),
+    "x64": dict(target="x86_64-linux-gnu", cflags=["-DLD_TESTS", "-DSSE_TESTS"], uc=(UC_ARCH_X86, UC_MODE_64), ptr=8, long=8, abi="sysv", ld=16),
     "win64": dict(target="x86_64-linux-gnu", cflags=["-DMS_ABI"], uc=(UC_ARCH_X86, UC_MODE_64), ptr=8, long=8, abi="win64"),
 }
 
@@ -176,6 +178,8 @@ def cc(arch, opt, src, out, extra=()):
     base, link = compiler_cmd(a)
     if "-DNEON_TESTS" in a["cflags"] and opt == "-O1":
         base = base + ["-DNEON_ASM"]                       # naked 어셈 시험은 최적화 수준과 무관하므로 -O1 한 번만(시간)
+    if "-DSSE_TESTS" in a["cflags"] and opt == "-O1":
+        base = base + ["-DSSE_ASM"]
     cmd = base + [opt, "-ffreestanding", "-nostdlib", "-static"] + link + ["-w",
                                                              "-fno-stack-protector", "-fno-pic", "-fwrapv", "-fno-builtin", "-fno-math-errno", "-o", out, src,
                                                              "-Wl,-e,main", "-Wl,--no-gc-sections"] + list(extra)
@@ -649,7 +653,7 @@ def run_level(arch, opt, only, verbose, seed=1, iterations=30):
         one = os.path.join(WORK, "one.c")
         with open(one, "w") as fh:
             fh.write("#define main corpus_main\n#include \"decomp_corpus.c\"\n#undef main\n" + HELPERS + "\n" + t + "\n")
-        r = sh(compiler_cmd(a)[0] + ["-c", "-w", "-ffreestanding", "-I", WORK, "-o", os.devnull, one])
+        r = sh(compiler_cmd(a)[0] + ["-c", "-w", "-ffreestanding", "-I", WORK, "-I", os.path.dirname(os.path.abspath(__file__)), "-o", os.devnull, one])
         if r.returncode:
             err = [l for l in r.stderr.splitlines() if "error" in l][:2]
             results.append((e[0], "COMPILE", " / ".join(err)))
@@ -662,7 +666,7 @@ def run_level(arch, opt, only, verbose, seed=1, iterations=30):
                  + "#ifdef __clang__\n#pragma clang fp contract(off)\n#endif\n"           # 의사코드의 `a + b * c` 를 컴파일러가 멋대로 융합하지 못하게(융합은 `fma()` 로 명시한다)
                  + "\n\n".join(t for _, t in good) + "\nint main(void){return 0;}\n")
     exe = os.path.join(WORK, f"all_{arch}_{opt.strip('-')}")
-    cc(arch, opt, allc, exe, extra=["-I", WORK])
+    cc(arch, opt, allc, exe, extra=["-I", WORK, "-I", os.path.dirname(os.path.abspath(__file__))])
     m = Machine(arch, exe)
     rng = random.Random(seed)
     for (name, ret, kinds, dparams), t in good:

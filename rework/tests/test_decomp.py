@@ -78,6 +78,8 @@ SPECS = {
 # 생성된 NEON 어셈 시험(nvi_*: int[16] 두 개, nvf_*: float[16] 두 개, nvd_*: double[16] 두 개)
 for _m in re.finditer(r"^NK void (nv([ifd])_\w+)\(", open(CORPUS, encoding="utf-8").read(), re.M):
     SPECS[_m.group(1)] = ("v", {"i": "PP", "f": "GG", "d": "EE"}[_m.group(2)])
+for _m in re.finditer(r"^NK void (nx([ifd])_\w+)\(", open(CORPUS, encoding="utf-8").read(), re.M):                 # x86 SSE 어셈 시험
+    SPECS[_m.group(1)] = ("v", {"i": "PP", "f": "GG", "d": "EE"}[_m.group(2)])
 for _m in re.finditer(r"^NK void (nw([if])_\w+)\(", open(CORPUS, encoding="utf-8").read(), re.M):                 # ARM32 NEON 어셈 시험
     SPECS[_m.group(1)] = ("v", {"i": "PP", "f": "GG"}[_m.group(2)])
 # 인자 이름이 겹치는 특수 처리: bsearch_(const int *a, int n, int key) → Q(정렬 배열), n(<=16), i(키)

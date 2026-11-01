@@ -13,6 +13,7 @@ from capstone import x86 as cx
 from . import ir
 from .ir import C, X, S, loc, mem, add, sub, binop, unop, zext, sext, trunc, cmp, ite, insert, flags, cc, mask
 from .x87 import X87Mixin, is_x87
+from .lift_sse_vec import X86Vec
 
 FLAGS = "F"
 CC_NAMES = {"o", "no", "b", "c", "nae", "ae", "nb", "nc", "e", "z", "ne", "nz", "be", "na", "a", "nbe", "s", "ns", "p", "pe",
@@ -65,7 +66,7 @@ def cc_of(mnem: str, prefix: str) -> str | None:
     return s if s in CC_NAMES else None
 
 
-class X86Lifter(X87Mixin):
+class X86Lifter(X87Mixin, X86Vec):
     def __init__(self, cs, bits: int, read=None, is_const=None, imports=None):
         self.cs = cs
         self.imports = imports or ()     # 임포트 주소 표(IAT 칸): `call [IAT]` 를 이름 있는 호출로 본다
@@ -242,27 +243,7 @@ class X86Lifter(X87Mixin):
             imm = ops[2].imm
             t0, t1 = self.tmp(8), self.tmp(8)
             return [S("asg", a, t0, h0 if imm & 1 else l0), S("asg", a, t1, h1 if imm & 2 else l1)] + self.lanes_write(insn, ops[0], t0, t1)
-        if m == "pshufd" and n == 3 and ops[2].type == CS_OP_IMM:
-            l1, h1 = self.lanes_read(insn, ops[1])
-            imm = ops[2].imm & 0xff
-            sel = [(imm >> (2 * i)) & 3 for i in range(4)]
-
-            def dword(k):
-                lane = l1 if k < 2 else h1
-                return trunc(lane if k % 2 == 0 else binop("shr", lane, C(32, 1), 8), 4)
-
-            def lane_of(i0, i1):
-                if i1 == i0 + 1 and i0 % 2 == 0:
-                    return l1 if i0 == 0 else h1
-                if i0 == i1 and False:
-                    return None
-                return binop("or", zext(dword(i0), 8), binop("shl", zext(dword(i1), 8), C(32, 1), 8), 8)
-            lo, hi = lane_of(sel[0], sel[1]), lane_of(sel[2], sel[3])
-            if self.is_xmm(ops[0]) and ops[1].type == CS_OP_REG and ops[0].reg == ops[1].reg:       # 제자리 섞기: 두 조각을 한꺼번에 읽는다
-                t0, t1 = self.tmp(8), self.tmp(8)
-                return [S("asg", a, t0, lo), S("asg", a, t1, hi)] + self.lanes_write(insn, ops[0], t0, t1)
-            return self.lanes_write(insn, ops[0], lo, hi)
-        return None
+        return self._sse_vec(insn, m, ops)
 
     def _rep_string(self, insn, m):
         """`rep movs·stos`(방향 플래그는 0 으로 가정): while (rcx != 0) { 한 원소 복사·저장; rsi/rdi 전진; rcx--; } 로 두 조각에 풀어 쓴다.
