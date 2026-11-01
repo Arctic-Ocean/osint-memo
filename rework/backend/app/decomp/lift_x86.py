@@ -14,6 +14,7 @@ from . import ir
 from .ir import C, X, S, loc, mem, add, sub, binop, unop, zext, sext, trunc, cmp, ite, insert, flags, cc, mask
 from .x87 import X87Mixin, is_x87
 from .lift_sse_vec import X86Vec
+from .lift_vex import X86Vex
 
 FLAGS = "F"
 CC_NAMES = {"o", "no", "b", "c", "nae", "ae", "nb", "nc", "e", "z", "ne", "nz", "be", "na", "a", "nbe", "s", "ns", "p", "pe",
@@ -66,7 +67,7 @@ def cc_of(mnem: str, prefix: str) -> str | None:
     return s if s in CC_NAMES else None
 
 
-class X86Lifter(X87Mixin, X86Vec):
+class X86Lifter(X87Mixin, X86Vec, X86Vex):
     def __init__(self, cs, bits: int, read=None, is_const=None, imports=None):
         self.cs = cs
         self.imports = imports or ()     # 임포트 주소 표(IAT 칸): `call [IAT]` 를 이름 있는 호출로 본다
@@ -158,6 +159,10 @@ class X86Lifter(X87Mixin, X86Vec):
         """데이터 이동·비트 연산 위주의 SSE 명령(부동소수점 계산은 하지 않는다). 해당하지 않으면 None."""
         a = insn.address
         n = len(ops)
+        if m[0] == "v":
+            r = self.vex_lift(insn, m, ops)                                   # VEX(AVX·FMA3) 형식 — lift_vex.py
+            if r is not None:
+                return r
         r = self._fp(insn, m, ops)
         if r is not None:
             return r

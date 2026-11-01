@@ -69,6 +69,8 @@ static inline float32x2_t vadd_f32(float32x2_t a, float32x2_t b) { return a + b;
 static inline float32x2_t vsub_f32(float32x2_t a, float32x2_t b) { return a - b; }
 static inline float32x2_t vmul_f32(float32x2_t a, float32x2_t b) { return a * b; }
 static inline float32x2_t vdiv_f32(float32x2_t a, float32x2_t b) { return a / b; }
+static inline float32x2_t vfma_f32(float32x2_t a, float32x2_t b, float32x2_t c) { float32x2_t r; for (int i = 0; i < 2; i++) r[i] = __builtin_fmaf(b[i], c[i], a[i]); return r; }     /* a + b*c, 한 번만 반올림 */
+static inline float32x2_t vfms_f32(float32x2_t a, float32x2_t b, float32x2_t c) { float32x2_t r; for (int i = 0; i < 2; i++) r[i] = __builtin_fmaf(-b[i], c[i], a[i]); return r; }  /* a - b*c */
 static inline float32x2_t vmax_f32(float32x2_t a, float32x2_t b) { float32x2_t r; for (int i = 0; i < 2; i++) r[i] = a[i] > b[i] ? a[i] : b[i]; return r; }
 static inline float32x2_t vmin_f32(float32x2_t a, float32x2_t b) { float32x2_t r; for (int i = 0; i < 2; i++) r[i] = a[i] < b[i] ? a[i] : b[i]; return r; }
 static inline float32x2_t vsqrt_f32(float32x2_t a) { float32x2_t r; for (int i = 0; i < 2; i++) r[i] = __builtin_sqrtf(a[i]); return r; }

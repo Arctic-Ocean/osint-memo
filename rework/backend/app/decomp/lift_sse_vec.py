@@ -34,6 +34,8 @@ PABS = {"pabsb": 1, "pabsw": 2, "pabsd": 4}
 PFLT = {"addps": ("fadd", 4), "subps": ("fsub", 4), "mulps": ("fmul", 4), "divps": ("fdiv", 4), "maxps": ("fmax", 4), "minps": ("fmin", 4),
         "addpd": ("fadd", 8), "subpd": ("fsub", 8), "mulpd": ("fmul", 8), "divpd": ("fdiv", 8), "maxpd": ("fmax", 8), "minpd": ("fmin", 8)}
 CMPCODE = {"eq": 0, "lt": 1, "le": 2, "unord": 3, "neq": 4, "nlt": 5, "nle": 6, "ord": 7}
+VEX_UNARY = {"pabsb", "pabsw", "pabsd", "pshufd", "pshuflw", "pshufhw", "sqrtps", "sqrtpd", "cvtdq2ps", "cvttps2dq", "cvtps2dq",
+             "pextrw", "pextrb", "pextrd", "pextrq", "pmovmskb", "movmskps", "movmskpd"}
 SHIFT_IMM = {"psllw": ("shl", 2), "pslld": ("shl", 4), "psllq": ("shl", 8), "psrlw": ("shr", 2), "psrld": ("shr", 4), "psrlq": ("shr", 8),
              "psraw": ("sar", 2), "psrad": ("sar", 4)}
 
@@ -78,13 +80,18 @@ class X86Vec:
     def _sse_vec_inner(self, insn, m, ops):
         a = insn.address
         # VEX 128비트: vpaddd x0, x1, x2 → 목적지 x0 = x1 op x2 (v 를 떼고 첫 입력을 목적지와 분리해 본다)
-        vex = m.startswith("v") and m[1:] in self._vec_names() and len(ops) >= 3
-        if vex:
+        vex = m.startswith("v") and m[1:] in self._vec_names()
+        if vex and m[1:] in VEX_UNARY:                                    # 입력이 하나인 명령은 피연산자 모양이 SSE 와 같다
+            m = m[1:]
+            vex = False
+        elif vex:
+            if len(ops) < 3:
+                return None
             m = m[1:]
             d, s1, rest = ops[0], ops[1], ops[2:]
-        else:
-            if m.startswith("v") and m[1:] in self._vec_names():
-                return None
+        elif m.startswith("v"):
+            return None
+        if not vex:
             d, s1, rest = ops[0], ops[0], ops[1:]
         n = len(ops)
         if not self.is_xmm(d):
@@ -121,6 +128,19 @@ class X86Vec:
                     dws.append(binop("add", t0, t1, 4))
                 outs.append(vpack(dws, 4, "s"))
             return self.vec_store(insn, d, *outs)
+        # ---- 마스크로 고르기: vblendvpd d, a, b, m (VEX) · blendvpd d, b, xmm0 (SSE) → 마스크 원소의 부호 비트가 1 이면 b, 아니면 a ----
+        if m in ("blendvpd", "blendvps", "pblendvb") and len(rest) == 2:
+            esz = {"blendvpd": 8, "blendvps": 4, "pblendvb": 1}[m]
+            y = self.lanes_read(insn, rest[0])
+            k = self.lanes_read(insn, rest[1])
+            outs = []
+            for p, q, mk in zip(x, y, k):
+                if esz == 8 and mk.op == "neg" and mk.args[0].op == "zext" and mk.args[0].args[0].sz == 1:     # 비교 결과(0 또는 -1)로 만든 마스크
+                    outs.append(ite(mk.args[0].args[0], q, p))
+                    continue
+                sel = nc.bin_op("cgt", "s", esz, C(0, 8), mk, False)
+                outs.append(binop("or", binop("and", sel, q, 8), binop("and", unop("not", sel), p, 8), 8))
+            return self.vec_store(insn, d, *outs)
         # ---- 시프트 ----
         if m in SHIFT_IMM and len(rest) == 1:
             kind, esz = SHIFT_IMM[m]
@@ -153,10 +173,15 @@ class X86Vec:
             y = self.lanes_read(insn, rest[0])
             idx = nc.zip_indices("zip2" if m.startswith("punpckh") else "zip1", 16, esz)
             return self.vec_store(insn, d, *nc.perm_halves(idx, list(x), list(y), esz, 16))
-        if m in ("unpcklps", "unpckhps") and len(rest) == 1:
+        if m in ("unpcklps", "unpckhps", "unpcklpd", "unpckhpd") and len(rest) == 1:
             y = self.lanes_read(insn, rest[0])
-            idx = nc.zip_indices("zip2" if m == "unpckhps" else "zip1", 16, 4)
-            return self.vec_store(insn, d, *nc.perm_halves(idx, list(x), list(y), 4, 16))
+            esz = 4 if m.endswith("ps") else 8
+            idx = nc.zip_indices("zip2" if m.startswith("unpckh") else "zip1", 16, esz)
+            return self.vec_store(insn, d, *nc.perm_halves(idx, list(x), list(y), esz, 16))
+        if m == "shufpd" and len(rest) == 2 and rest[1].type == OP_IMM:
+            y = self.lanes_read(insn, rest[0])
+            imm = rest[1].imm
+            return self.vec_store(insn, d, x[imm & 1], y[(imm >> 1) & 1])
         if m == "shufps" and len(rest) == 2 and rest[1].type == OP_IMM:
             y = self.lanes_read(insn, rest[0])
             imm = rest[1].imm & 0xff
@@ -215,7 +240,7 @@ class X86Vec:
                 "pmuludq", "pmulhw", "pmulhuw", "pmaddwd", "pslldq", "psrldq", "pshufd", "pshuflw", "pshufhw", "punpcklbw", "punpcklwd", "punpckldq",
                 "punpcklqdq", "punpckhbw", "punpckhwd", "punpckhdq", "punpckhqdq", "unpcklps", "unpckhps", "shufps", "palignr", "packsswb",
                 "packuswb", "packssdw", "packusdw", "sqrtps", "sqrtpd", "cvtdq2ps", "cvttps2dq", "cvtps2dq", "pinsrw", "pinsrb", "pinsrd", "pinsrq",
-                "pextrw", "pextrb", "pextrd", "pextrq", "pmovmskb", "movmskps", "movmskpd"}
+                "pextrw", "pextrb", "pextrd", "pextrq", "pmovmskb", "movmskps", "movmskpd", "unpcklpd", "unpckhpd", "shufpd", "blendvpd", "blendvps", "pblendvb"}
             names |= {f"cmp{c}{t}" for c in CMPCODE for t in ("ps", "pd")} | {"cmpps", "cmppd"}
             self._vec_name_set = names
         return self._vec_name_set

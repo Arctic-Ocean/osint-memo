@@ -78,7 +78,7 @@ SPECS = {
 # 생성된 NEON 어셈 시험(nvi_*: int[16] 두 개, nvf_*: float[16] 두 개, nvd_*: double[16] 두 개)
 for _m in re.finditer(r"^NK void (nv([ifd])_\w+)\(", open(CORPUS, encoding="utf-8").read(), re.M):
     SPECS[_m.group(1)] = ("v", {"i": "PP", "f": "GG", "d": "EE"}[_m.group(2)])
-for _m in re.finditer(r"^NK void (nx([ifd])_\w+)\(", open(CORPUS, encoding="utf-8").read(), re.M):                 # x86 SSE 어셈 시험
+for _m in re.finditer(r"^NK void (n[xy]([ifd])_\w+)\(", open(CORPUS, encoding="utf-8").read(), re.M):                 # x86 SSE(nx)·VEX(ny) 어셈 시험
     SPECS[_m.group(1)] = ("v", {"i": "PP", "f": "GG", "d": "EE"}[_m.group(2)])
 for _m in re.finditer(r"^NK void (nw([if])_\w+)\(", open(CORPUS, encoding="utf-8").read(), re.M):                 # ARM32 NEON 어셈 시험
     SPECS[_m.group(1)] = ("v", {"i": "PP", "f": "GG"}[_m.group(2)])
@@ -224,8 +224,9 @@ def gen_case(name, rng, kinds):
     return decl, a_orig, a_dec, bufs
 
 
-def make_driver(entries, seed, iterations=40):
-    """entries: [(name, ret, kinds, dec_params)] → C 소스"""
+def make_driver(entries, seed, iterations=40, tol=False):
+    """entries: [(name, ret, kinds, dec_params)] → C 소스.
+    tol: 실수 반환값을 몇 ulp 오차까지 같다고 본다 (-mfma 처럼 컴파일러가 곱셈-덧셈을 융합하는 위치가 최적화 수준마다 달라지는 경우)."""
     rng = random.Random(seed)
     out = ['#include <stdio.h>', '#include <string.h>', '#include <stdint.h>', '#include <unistd.h>', '#include <sys/wait.h>',
            '#define main corpus_main', '#include "decomp_corpus.c"', '#undef main', '#include "dec.c"', '']
@@ -249,7 +250,9 @@ def make_driver(entries, seed, iterations=40):
             if rt and ret in "DF":
                 out.append(f"    {rt} ro = {name}({', '.join(ao)});")
                 out.append(f"    {rt} rd = dec_{name}({', '.join(cast_args)});")
-                out.append(f'    if (memcmp(&ro, &rd, sizeof ro)) {{ bad++; if (bad < 3) printf("MISMATCH {name} it={it}: orig=%.17g dec=%.17g\\n", (double)ro, (double)rd); }}')
+                bad_cond = ("!(ro != ro && rd != rd) && fabs((double)ro - (double)rd) > (sizeof ro == 4 ? 4e-6 : 4e-13) * (fabs((double)ro) + 1)"
+                            if tol else "memcmp(&ro, &rd, sizeof ro)")
+                out.append(f'    if ({bad_cond}) {{ bad++; if (bad < 3) printf("MISMATCH {name} it={it}: orig=%.17g dec=%.17g\\n", (double)ro, (double)rd); }}')
             elif rt:
                 out.append(f"    {rt} ro = ({rt}){name}({', '.join(ao)});")
                 out.append(f"    {rt} rd = ({rt})dec_{name}({', '.join(cast_args)});")
@@ -274,6 +277,9 @@ HELPERS = """#include <stdint.h>
 #include <math.h>
 #if defined(__ARM_NEON) || defined(__aarch64__)
 #include <arm_neon.h>
+#endif
+#if defined(__x86_64__) || defined(__i386__)
+#include "vec_compat.h"
 #endif
 #if !defined(__clang__)
 #define __builtin_bit_cast(T, x) ({ __typeof__(x) _bcs = (x); T _bcd; __builtin_memcpy(&_bcd, &_bcs, sizeof _bcd); _bcd; })
@@ -330,21 +336,24 @@ def run_level(opt, only=None, verbose=False, seed=1):
             stats["goto"] += 1
     with open(os.path.join(WORK, "dec.c"), "w") as fh:
         fh.write(HELPERS + "\n" + "\n\n".join(decs) + "\n")
-    drv = make_driver(entries, seed)
+    tol = any(f.startswith("-mfma") for f in opt.split(","))
+    drv = make_driver(entries, seed, tol=tol)
     with open(os.path.join(WORK, "drv.c"), "w") as fh:
         fh.write(drv)
-    for hdr in ("decomp_corpus.c",):
-        sh(["cp", CORPUS, os.path.join(WORK, hdr)])
+    for hdr in (CORPUS, os.path.join(HERE, "vec_compat.h")):
+        sh(["cp", hdr, WORK])
+    # 원본 소스도 같은 기계 옵션(-mavx2·-mfma …)으로 컴파일한다: 바이너리가 곱셈-덧셈을 FMA 로 융합했다면 기준 값도 같은 방식으로 반올림돼야 한다
+    mflags = [f for f in opt.split(",") if f.startswith(("-m", "-D"))]
     out_exe = os.path.join(WORK, "drv" + re.sub(r"[^A-Za-z0-9]", "_", opt))
     # 함수마다 (의사코드 + 그 함수의 시험 코드) 가 컴파일되는지 따로 확인해, 안 되는 것만 COMPILE 로 분류한다
     ok_entries = []
     for e, t in zip(entries, decs):
         one = os.path.join(WORK, "one.c")
-        drv1 = make_driver([e], seed).split('#include "dec.c"')[1].split("int main(void)")[0]
+        drv1 = make_driver([e], seed, tol=tol).split('#include "dec.c"')[1].split("int main(void)")[0]
         with open(one, "w") as fh:
             fh.write(HELPERS + '#include <stdio.h>\n#include <string.h>\n#define main corpus_main\n#include "decomp_corpus.c"\n#undef main\n'
                      + t + "\n" + drv1)
-        rr = sh(["gcc", "-c", "-w", "-I", WORK, "-o", os.devnull, one])
+        rr = sh(["gcc", "-c", "-w"] + mflags + ["-I", WORK, "-o", os.devnull, one])
         if rr.returncode:
             err = [l for l in rr.stderr.splitlines() if "error" in l][:3]
             results.append((e[0], "COMPILE", "\n".join(err)))
@@ -355,8 +364,8 @@ def run_level(opt, only=None, verbose=False, seed=1):
     with open(os.path.join(WORK, "dec.c"), "w") as fh:
         fh.write(HELPERS + "\n" + "\n\n".join(t for _, t in ok_entries) + "\n")
     with open(os.path.join(WORK, "drv.c"), "w") as fh:
-        fh.write(make_driver([e for e, _ in ok_entries], seed))
-    r = sh(["gcc", "-O1", "-fwrapv", "-w", "-fno-strict-aliasing", "-I", WORK, "-o", out_exe, os.path.join(WORK, "drv.c"), "-lm"])
+        fh.write(make_driver([e for e, _ in ok_entries], seed, tol=tol))
+    r = sh(["gcc", "-O1", "-fwrapv", "-w", "-fno-strict-aliasing"] + mflags + ["-I", WORK, "-o", out_exe, os.path.join(WORK, "drv.c"), "-lm"])
     if r.returncode:
         print(r.stderr[:2000])
         return results, stats

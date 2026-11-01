@@ -537,6 +537,8 @@ class Renderer(FpRender, VecRender):
             m = mask(part)
             to, so, po = self.P(old, "u")
             tv, sv, pv = self.P(val, "u")
+            if val.sz in (1, 2, 4) and val.sz < sz:                         # 삽입할 값은 자기 폭의 부호 없는 값으로 먼저 본다(C 의 int 인 -(a < b) 가 위쪽 비트를 채우지 않게)
+                tv, pv = f"({itype(val.sz, 'u')}){self._paren(tv, pv, PREC['unary'])}", PREC["unary"]
             return (f"({self._paren(to, po, PREC['band'] + 1)} & {hex(mask(sz) ^ m)}) | (({itype(sz, 'u')}){self._paren(tv, pv, PREC['unary'])})",
                     "u", PREC["bor"])
         if op == "mulhs" or op == "mulhu":
