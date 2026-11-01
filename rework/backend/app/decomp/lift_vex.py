@@ -9,8 +9,12 @@ SSE 는 목적지가 첫 입력을 겸하지만(`addsd x0, x1` : x0 = x0 + x1) V
 - 2피연산자 형식(vmovaps·vmovd·vcvttsd2si·vucomisd·vpshufd …)은 v 를 떼고 SSE 경로에 맡긴다
 - 128비트 패킹 정수·실수 연산은 lift_sse_vec.py 가 v 접두사를 보고 푼다
 
-ymm(256비트)이 끼는 명령은 풀지 않는다 — 윗 128비트 위치가 없는 동안은 알 수 없는 명령으로 남긴다.
-`vzeroupper` 는 xmm 만 모델링하므로 아무 일도 하지 않는다.
+ymm(256비트)은 네 조각이다: 하위 128비트 xmmN·xmmNh, 상위 128비트는 번호에 32 를 더한 가짜 레지스터 xmm(N+32)·xmm(N+32)h.
+- 128비트 칸마다 같은 연산인 명령(AVX2 대부분: 산술·논리·시프트·패킹·칸 안의 재배치·FMA)은 같은 풀이를 칸 0·1 에 한 번씩 적용한다
+  (X86Lifter._lane 이 xmm_name·lanes_read·lanes_write 의 칸을 정한다).
+- 칸을 넘나드는 명령(vextracti128·vinserti128·vperm2i128·vpermq/pd·브로드캐스트·vpmovzx/sx)은 아래에서 직접 푼다.
+- VEX 로 xmm 을 쓰면 ymm 의 상위 128비트가 0 이 된다 — 그 대입을 문장에 덧붙인다(안 쓰이면 죽은 코드로 지워진다).
+`vzeroupper` 는 컴파일러가 상위를 더 읽지 않을 때만 쓰므로 아무 일도 하지 않는다.
 """
 from __future__ import annotations
 
@@ -19,9 +23,10 @@ import re
 from capstone.x86 import X86_OP_REG as OP_REG, X86_OP_IMM as OP_IMM, X86_OP_MEM as OP_MEM
 
 from . import ir
-from .ir import C, X, S, loc, binop, unop, zext, trunc, insert, vdup
+from .ir import C, X, S, loc, binop, unop, zext, trunc, insert, vdup, add
 from . import neon_core as nc
 from .neon_core import NeonUnsupported
+from .lift_sse_vec import SHIFT_IMM
 
 SC_ARITH = {"add": "fadd", "sub": "fsub", "mul": "fmul", "div": "fdiv", "min": "fmin", "max": "fmax"}
 LOGIC = {"xorps": "xor", "xorpd": "xor", "pxor": "xor", "andps": "and", "andpd": "and", "pand": "and",
@@ -34,7 +39,9 @@ CMP_PRED = {"eq": 0, "lt": 1, "le": 2, "unord": 3, "neq": 4, "nlt": 5, "nle": 6,
 TWO_OP = {"movaps", "movups", "movapd", "movupd", "movdqa", "movdqu", "lddqu", "movntdq", "movntps", "movntpd", "movd", "movq",
           "movsd", "movss", "movhps", "movhpd", "movlps", "movlpd", "comisd", "ucomisd", "comiss", "ucomiss", "cvttsd2si", "cvttss2si"}
 FMA_RE = re.compile(r"^(fmadd|fmsub|fnmadd|fnmsub)(132|213|231)(sd|ss|pd|ps)$")
-BROADCAST = {"pbroadcastb": 1, "pbroadcastw": 2, "pbroadcastd": 4, "pbroadcastq": 8, "broadcastss": 4, "movddup": 8}
+BROADCAST = {"pbroadcastb": 1, "pbroadcastw": 2, "pbroadcastd": 4, "pbroadcastq": 8, "broadcastss": 4, "broadcastsd": 8, "movddup": 8}
+STORE_MOVES = {"movaps", "movups", "movapd", "movupd", "movdqa", "movdqu", "movntdq", "movntps", "movntpd"}
+NO_DEST_WRITE = {"comisd", "ucomisd", "comiss", "ucomiss", "ptest", "testps", "testpd"}
 
 
 def fcond(A: X, B: X, pred: int) -> X:
@@ -52,6 +59,9 @@ def fcond(A: X, B: X, pred: int) -> X:
 class X86Vex:
     """X86Lifter 에 섞어 쓴다(X86Vec 의 lanes_read·vec_store·vec_ok 와 X86Lifter 의 f_read·is_xmm·xmm_name 사용)."""
 
+    def _is_ymm(self, op) -> bool:
+        return op.type == OP_REG and (self.cs.reg_name(op.reg) or "").startswith("ymm")
+
     def vex_lift(self, insn, m, ops):
         """VEX 로 인코딩된 명령이면 문장 목록, 아니면 None."""
         if len(m) < 4 or m[0] != "v":
@@ -59,15 +69,104 @@ class X86Vex:
         if m == "vzeroupper":
             return []
         base = m[1:]
-        if not self.vec_ok(ops):
-            return None
+        ops = list(ops)
         try:
-            r = self._vex(insn, base, list(ops))
+            if any(self._is_ymm(o) for o in ops):
+                r = self._ymm_lift(insn, base, ops)
+            else:
+                r = self._vex_body(insn, base, ops)
         except (NeonUnsupported, TypeError, AttributeError, KeyError, IndexError, ValueError, StopIteration):
             return None
+        if r is None:
+            return None
+        if ops and ops[0].type == OP_REG and self.is_xmm(ops[0]) and not self._is_ymm(ops[0]) and base not in NO_DEST_WRITE:
+            k = int(self.xmm_name(ops[0].reg)[3:]) + 32                        # VEX 로 xmm 을 쓰면 ymm 상위가 0 이 된다
+            r = r + [S("asg", insn.address, loc(f"xmm{k}", 8), C(0, 8)), S("asg", insn.address, loc(f"xmm{k}h", 8), C(0, 8))]
+        return r
+
+    def _vex_body(self, insn, base, ops):
+        r = self._vex(insn, base, ops)
         if r is not None:
             return r
-        return self._sse_vec(insn, m, ops)
+        return self._sse_vec(insn, "v" + base, ops)
+
+    # ---- ymm ---------------------------------------------------------------------------
+    def _ymm_lift(self, insn, base, ops):
+        r = self._ymm_special(insn, base, ops)
+        if r is not None:
+            return r
+        if not self._lane_ok(base, ops):
+            return None
+        out = []
+        self._ymm = True
+        try:
+            for lane in (0, 1):
+                self._lane = lane
+                r = self._vex_body(insn, base, list(ops))
+                if r is None:
+                    return None
+                out += r
+        finally:
+            self._lane = 0
+            self._ymm = False
+        return out
+
+    def _lane_ok(self, base, ops):
+        """128비트 칸마다 같은 연산을 두 번 적용해도 되는 명령인가."""
+        if base in BROADCAST or not ops:
+            return False
+        if ops[0].type == OP_MEM:                                                 # 저장: vmovdqu [m], ymm
+            if base not in STORE_MOVES or len(ops) != 2:
+                return False
+        elif ops[0].type != OP_REG or not self.is_xmm(ops[0]):
+            return False
+        last = len(ops) - 1
+        for i, o in enumerate(ops):
+            if o.type == OP_REG:
+                if not self.is_xmm(o):
+                    return False
+                if not self._is_ymm(o) and not (base in SHIFT_IMM and i == last and o.reg != ops[0].reg
+                                                and self.xmm_name(o.reg) != self.xmm_name(ops[0].reg)):
+                    return False                                                  # 그 밖의 xmm 피연산자는 칸을 넘나드는 명령이다
+            elif o.type == OP_MEM and base in SHIFT_IMM and i == last:
+                return False                                                      # 메모리 시프트 개수는 칸마다 다른 주소가 아니다
+        return True
+
+    def _ymm_special(self, insn, base, ops):
+        n = len(ops)
+        d = ops[0]
+        if base in ("extracti128", "extractf128") and n == 3 and self._is_ymm(ops[1]) and ops[2].type == OP_IMM and not self._is_ymm(d):
+            k = ops[2].imm & 1
+            src = self.ymm_names(ops[1].reg)
+            return self.vec_store4(insn, d, [loc(src[2 * k], 8), loc(src[2 * k + 1], 8)])
+        if base in ("inserti128", "insertf128") and n == 4 and self._is_ymm(d) and self._is_ymm(ops[1]) and ops[3].type == OP_IMM:
+            k = ops[3].imm & 1
+            pcs = self.pieces_read(insn, ops[1])
+            pcs[2 * k:2 * k + 2] = self.pieces_read(insn, ops[2])[:2]
+            return self.vec_store4(insn, d, pcs)
+        if base in ("perm2i128", "perm2f128") and n == 4 and self._is_ymm(d) and self._is_ymm(ops[1]) and ops[3].type == OP_IMM:
+            srcs = (self.pieces_read(insn, ops[1]), self.pieces_read(insn, ops[2]))
+            pcs = []
+            for k in range(2):
+                ctl = (ops[3].imm >> (4 * k)) & 0xf
+                if ctl & 8:
+                    pcs += [C(0, 8), C(0, 8)]
+                else:
+                    sel = ctl & 3
+                    src = srcs[sel >> 1]
+                    pcs += src[2 * (sel & 1):2 * (sel & 1) + 2]
+            return self.vec_store4(insn, d, pcs)
+        if base in ("permq", "permpd") and n == 3 and self._is_ymm(d) and ops[2].type == OP_IMM:
+            src = self.pieces_read(insn, ops[1])
+            return self.vec_store4(insn, d, [src[(ops[2].imm >> (2 * i)) & 3] for i in range(4)])
+        if base in BROADCAST and n == 2 and self._is_ymm(d):
+            return self._vex_broadcast(insn, base, ops)
+        if base in ("broadcastf128", "broadcasti128") and n == 2 and self._is_ymm(d) and ops[1].type == OP_MEM:
+            lo, hi = self.lanes_read(insn, ops[1])
+            return self.vec_store4(insn, d, [lo, hi, lo, hi])
+        if base.startswith(("pmovzx", "pmovsx")) and n == 2 and self._is_ymm(d) and not self._is_ymm(ops[1]):
+            return self._vec_widen(insn, base, d, ops[1])
+        return None
 
     def _vex(self, insn, base, ops):
         n = len(ops)
@@ -78,6 +177,13 @@ class X86Vex:
         mm = FMA_RE.match(base)
         if mm and n == 3:
             return self._vex_fma(insn, mm, ops)
+        if base in ("permilps", "permilpd") and n == 3 and ops[2].type == OP_IMM:
+            src = self.lanes_read(insn, ops[1])
+            imm = ops[2].imm
+            if base == "permilps":
+                return self.vec_store(insn, ops[0], *nc.perm_halves([(imm >> (2 * i)) & 3 for i in range(4)], list(src), [], 4, 16))
+            sh = 2 * self._lane
+            return self.vec_store(insn, ops[0], src[(imm >> sh) & 1], src[(imm >> (sh + 1)) & 1])
         if base in LOGIC and n == 3:
             return self._vex_logic(insn, base, ops)
         if base in BROADCAST and n == 2:
@@ -226,4 +332,4 @@ class X86Vex:
         else:
             return None
         piece = e if esz == 8 else vdup(e, esz, "u")
-        return self.vec_store(insn, d, piece, piece)
+        return self.vec_store4(insn, d, [piece] * (4 if self._is_ymm(d) else 2))

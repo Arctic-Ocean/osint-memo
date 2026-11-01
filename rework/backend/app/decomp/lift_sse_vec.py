@@ -34,7 +34,8 @@ PABS = {"pabsb": 1, "pabsw": 2, "pabsd": 4}
 PFLT = {"addps": ("fadd", 4), "subps": ("fsub", 4), "mulps": ("fmul", 4), "divps": ("fdiv", 4), "maxps": ("fmax", 4), "minps": ("fmin", 4),
         "addpd": ("fadd", 8), "subpd": ("fsub", 8), "mulpd": ("fmul", 8), "divpd": ("fdiv", 8), "maxpd": ("fmax", 8), "minpd": ("fmin", 8)}
 CMPCODE = {"eq": 0, "lt": 1, "le": 2, "unord": 3, "neq": 4, "nlt": 5, "nle": 6, "ord": 7}
-VEX_UNARY = {"pabsb", "pabsw", "pabsd", "pshufd", "pshuflw", "pshufhw", "sqrtps", "sqrtpd", "cvtdq2ps", "cvttps2dq", "cvtps2dq",
+WIDEN = {f"pmov{k}x{p}" for k in "zs" for p in ("bw", "bd", "bq", "wd", "wq", "dq")}
+VEX_UNARY = WIDEN | {"pabsb", "pabsw", "pabsd", "pshufd", "pshuflw", "pshufhw", "sqrtps", "sqrtpd", "cvtdq2ps", "cvttps2dq", "cvtps2dq",
              "pextrw", "pextrb", "pextrd", "pextrq", "pmovmskb", "movmskps", "movmskpd"}
 SHIFT_IMM = {"psllw": ("shl", 2), "pslld": ("shl", 4), "psllq": ("shl", 8), "psrlw": ("shr", 2), "psrld": ("shr", 4), "psrlq": ("shr", 8),
              "psraw": ("sar", 2), "psrad": ("sar", 4)}
@@ -43,9 +44,14 @@ SHIFT_IMM = {"psllw": ("shl", 2), "pslld": ("shl", 4), "psllq": ("shl", 8), "psr
 class X86Vec:
     """X86Lifter 에 섞어 쓴다(is_xmm·xmm_name·lanes_read·lanes_write·tmp·mem_addr·load_mem·read_op·write_op 사용)."""
 
+    _lane = 0                  # ymm 을 128비트 칸 둘로 나눠 풀 때 지금 풀고 있는 칸(0 하위 · 1 상위)
+    _ymm = False               # 칸별로 풀고 있는 중이면 ymm 피연산자를 받아들인다
+
     # ---- 읽기·쓰기 -----------------------------------------------------------------------
     def vec_ok(self, ops) -> bool:
-        """ymm 이 끼면 풀지 않는다."""
+        """ymm 이 끼면 칸별로 풀 때만 받아들인다."""
+        if self._ymm:
+            return True
         for o in ops:
             if o.type == OP_REG:
                 n = self.cs.reg_name(o.reg) or ""
@@ -66,6 +72,63 @@ class X86Vec:
                 t0, t1 = self.tmp(8), self.tmp(8)
                 return [S("asg", a, t0, lo), S("asg", a, t1, hi)] + self.lanes_write(insn, dst, t0, t1)
         return self.lanes_write(insn, dst, lo, hi)
+
+    def vec_store4(self, insn, dst, pieces):
+        """조각 둘(xmm) 또는 넷(ymm)을 목적지에 쓴다. 쓰는 위치를 읽는 값이 있으면 임시 값을 거친다. ymm 은 칸 단위로 풀지 않는 명령이 쓴다."""
+        a = insn.address
+        if dst.type == OP_REG:
+            names = self.ymm_names(dst.reg)
+            if names is None or len(names) != len(pieces):
+                raise NeonUnsupported("width")
+            nset = set(names)
+
+            def reads(e):
+                return any(x.op == "loc" and x.aux in nset for x in ir.walk(e))
+            if any(reads(e) for e in pieces):
+                ts = [self.tmp(8) for _ in pieces]
+                return [S("asg", a, t, e) for t, e in zip(ts, pieces)] + [S("asg", a, loc(nm, 8), t) for nm, t in zip(names, ts)]
+            return [S("asg", a, loc(nm, 8), e) for nm, e in zip(names, pieces)]
+        if dst.type == OP_MEM:
+            ad = self.mem_addr(insn, dst)
+            return [S("asg", a, mem(add(ad, C(8 * i, self.full)) if i else ad, 8), e) for i, e in enumerate(pieces)]
+        raise NeonUnsupported("dest")
+
+    def pieces_read(self, insn, op):
+        """128비트(xmm) 또는 256비트(ymm) 피연산자의 64비트 조각들(메모리는 폭만큼 읽는다)."""
+        if op.type == OP_REG:
+            names = self.ymm_names(op.reg)
+            if names is None:
+                raise NeonUnsupported("reg")
+            return [loc(nm, 8) for nm in names]
+        if op.type == OP_MEM:
+            ad = self.mem_addr(insn, op)
+            cnt = 4 if op.size == 32 else 2
+            return [self.load_mem(add(ad, C(8 * i, self.full)) if i else ad, 8) for i in range(cnt)]
+        raise NeonUnsupported("operand")
+
+    def _vec_widen(self, insn, m, d, src):
+        """pmovzx·pmovsx(bw bd bq wd wq dq): 작은 원소를 넓혀 목적지(xmm 또는 ymm)를 채운다. 원본은 xmm 이거나 메모리다."""
+        kind, pair = m[4:6], m[6:8]
+        ssz = {"b": 1, "w": 2, "d": 4}[pair[0]]
+        dsz = {"w": 2, "d": 4, "q": 8}[pair[1]]
+        names = self.ymm_names(d.reg) if d.type == OP_REG else None
+        if names is None:
+            raise NeonUnsupported("widen dest")
+        n = (8 * len(names)) // dsz
+        ext = zext if kind == "zx" else sext
+        elems = []
+        if src.type == OP_MEM:
+            ad = self.mem_addr(insn, src)
+            for i in range(n):
+                elems.append(ext(self.load_mem(add(ad, C(i * ssz, self.full)) if i else ad, ssz), dsz))
+        else:
+            lo, hi = self.lanes_read(insn, src)
+            for i in range(n):
+                off = i * ssz
+                elems.append(ext(vlane(lo if off < 8 else hi, (off % 8) // ssz, ssz, "u"), dsz))
+        per = 8 // dsz
+        pieces = [elems[j] if per == 1 else vpack(elems[j:j + per], dsz, "u") for j in range(0, n, per)]
+        return self.vec_store4(insn, d, pieces)
 
     # ---- 진입 -------------------------------------------------------------------------------
     def _sse_vec(self, insn, m, ops):
@@ -96,6 +159,8 @@ class X86Vec:
         n = len(ops)
         if not self.is_xmm(d):
             return self._vec_to_gpr(insn, m, ops)
+        if m.startswith(("pmovzx", "pmovsx")) and len(rest) == 1:
+            return self._vec_widen(insn, m, d, rest[0])
         x = self.lanes_read(insn, s1)
         # ---- 원소별 정수 2항 ----
         if m in PINT and len(rest) == 1:
@@ -180,7 +245,7 @@ class X86Vec:
             return self.vec_store(insn, d, *nc.perm_halves(idx, list(x), list(y), esz, 16))
         if m == "shufpd" and len(rest) == 2 and rest[1].type == OP_IMM:
             y = self.lanes_read(insn, rest[0])
-            imm = rest[1].imm
+            imm = rest[1].imm >> (2 * self._lane)                          # ymm 은 상위 칸이 비트 2·3 을 쓴다
             return self.vec_store(insn, d, x[imm & 1], y[(imm >> 1) & 1])
         if m == "shufps" and len(rest) == 2 and rest[1].type == OP_IMM:
             y = self.lanes_read(insn, rest[0])
@@ -236,7 +301,7 @@ class X86Vec:
 
     def _vec_names(self):
         if not hasattr(self, "_vec_name_set"):
-            names = set(PINT) | set(PABS) | set(PFLT) | set(SHIFT_IMM) | {
+            names = set(PINT) | set(PABS) | WIDEN | set(PFLT) | set(SHIFT_IMM) | {
                 "pmuludq", "pmulhw", "pmulhuw", "pmaddwd", "pslldq", "psrldq", "pshufd", "pshuflw", "pshufhw", "punpcklbw", "punpcklwd", "punpckldq",
                 "punpcklqdq", "punpckhbw", "punpckhwd", "punpckhdq", "punpckhqdq", "unpcklps", "unpckhps", "shufps", "palignr", "packsswb",
                 "packuswb", "packssdw", "packusdw", "sqrtps", "sqrtpd", "cvtdq2ps", "cvttps2dq", "cvtps2dq", "pinsrw", "pinsrb", "pinsrd", "pinsrq",

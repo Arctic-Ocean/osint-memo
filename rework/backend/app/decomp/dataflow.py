@@ -76,10 +76,10 @@ def abi_for(arch: str, bits: int, fmt: str, thumb: bool = False, hardfp: bool = 
         common = dict(sp="rsp", fps=("rbp",), callee_saved=("rbx", "rbp", "r12", "r13", "r14", "r15", "rsp"),
                       ret_reads=("rax", "eax", "ax", "al", "ah"))
         if fmt == "PE":
-            return Abi(["rcx", "rdx", "r8", "r9"], "rax", {"rax", "rcx", "rdx", "r8", "r9", "r10", "r11", FLAGS} | xmm_lanes(0, 6), 8, "win64",
+            return Abi(["rcx", "rdx", "r8", "r9"], "rax", {"rax", "rcx", "rdx", "r8", "r9", "r10", "r11", FLAGS} | xmm_lanes(0, 6) | xmm_lanes(32, 48), 8, "win64",
                        stack_arg_base=40, fp_nargs=4, **common)
         return Abi(["rdi", "rsi", "rdx", "rcx", "r8", "r9"], "rax",
-                   {"rax", "rcx", "rdx", "rsi", "rdi", "r8", "r9", "r10", "r11", FLAGS} | xmm_lanes(0, 16), 8, "sysv", stack_arg_base=8, **common)
+                   {"rax", "rcx", "rdx", "rsi", "rdi", "r8", "r9", "r10", "r11", FLAGS} | xmm_lanes(0, 16) | xmm_lanes(32, 48), 8, "sysv", stack_arg_base=8, **common)
     if arch == "arm64":
         return Abi([f"x{i}" for i in range(8)], "x0", {f"x{i}" for i in range(19)} | {"x30", FLAGS} | xmm_lanes(0, 32, "v", skip=range(8, 16)), 8,
                    "aapcs64", sp="sp", fps=("x29",), callee_saved={f"x{i}" for i in range(19, 30)} | {"sp"}, stack_arg_base=0,
@@ -94,7 +94,7 @@ def abi_for(arch: str, bits: int, fmt: str, thumb: bool = False, hardfp: bool = 
         abi.hardfp = hardfp
         abi.fp_ret = "d0"
         return abi
-    abi = Abi([], "eax", {"eax", "ecx", "edx", FLAGS} | xmm_lanes(0, 8), 4, "cdecl", sp="esp", fps=("ebp",),
+    abi = Abi([], "eax", {"eax", "ecx", "edx", FLAGS} | xmm_lanes(0, 8) | xmm_lanes(32, 40), 4, "cdecl", sp="esp", fps=("ebp",),
               callee_saved=("ebx", "ebp", "esi", "edi", "esp"), stack_arg_base=4, ret_reads=("eax", "ax", "al", "ah"))
     abi.fp_ret = "x87ret"                       # x86-32 는 부동소수점 반환값이 st(0) 에 남는다(리프터가 ret 직전에 이 위치에 대입해 준다)
     return abi

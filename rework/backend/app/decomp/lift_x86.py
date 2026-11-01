@@ -119,14 +119,28 @@ class X86Lifter(X87Mixin, X86Vec, X86Vex):
 
     # ---- xmm: 하위·상위 64비트 두 조각의 위치로 다룬다 --------------------------------------
     def xmm_name(self, rid):
+        """xmm/ymm 레지스터의 (현재 128비트 칸) 위치 이름. ymm 의 윗 128비트는 번호에 32 를 더한 가짜 xmm 번호(xmm32..47)로 둔다."""
         n = self.cs.reg_name(rid)
         if n and n.startswith(("xmm", "ymm")) and n[3:].isdigit():
-            return "xmm" + n[3:]
+            k = int(n[3:])
+            if n[0] == "y" and self._lane:
+                k += 32
+            return "xmm" + str(k)
         return None
 
+    def ymm_names(self, rid):
+        """ymm 레지스터의 네 조각 위치 이름 [하위 128비트 둘, 상위 128비트 둘]. xmm 이면 둘."""
+        n = self.cs.reg_name(rid)
+        if not n or not n.startswith(("xmm", "ymm")) or not n[3:].isdigit():
+            return None
+        k = int(n[3:])
+        out = [f"xmm{k}", f"xmm{k}h"]
+        if n[0] == "y":
+            out += [f"xmm{k + 32}", f"xmm{k + 32}h"]
+        return out
+
     def xmm_lanes_of(self, rid):
-        n = self.xmm_name(rid)
-        return [n, n + "h"] if n else None
+        return self.ymm_names(rid)
 
     def is_xmm(self, op) -> bool:
         return op.type == CS_OP_REG and self.xmm_name(op.reg) is not None
@@ -140,6 +154,8 @@ class X86Lifter(X87Mixin, X86Vec, X86Vex):
             return loc(n, 8), loc(n + "h", 8)
         if op.type == CS_OP_MEM:
             a = self.mem_addr(insn, op)
+            if self._lane:
+                a = add(a, C(16 * self._lane, self.full))
             return self.load_mem(a, 8), self.load_mem(add(a, C(8, self.full)), 8)
         raise Unsupported("xmm operand")
 
@@ -152,6 +168,8 @@ class X86Lifter(X87Mixin, X86Vec, X86Vex):
             return [S("asg", a, loc(n, 8), lo), S("asg", a, loc(n + "h", 8), hi)]
         if op.type == CS_OP_MEM:
             ad = self.mem_addr(insn, op)
+            if self._lane:
+                ad = add(ad, C(16 * self._lane, self.full))
             return [S("asg", a, mem(ad, 8), lo), S("asg", a, mem(add(ad, C(8, self.full)), 8), hi)]
         raise Unsupported("xmm dest")
 
@@ -300,7 +318,7 @@ class X86Lifter(X87Mixin, X86Vec, X86Vex):
         ad = self.mem_addr(insn, op)
         if ad.op != "c":
             return None
-        data = self.read(ad.aux, 16)
+        data = self.read(ad.aux + 16 * self._lane, 16)
         if not data or len(data) < 16:
             return None
         return int.from_bytes(data[:8], "little"), int.from_bytes(data[8:16], "little")
