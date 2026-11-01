@@ -708,6 +708,21 @@ class X86Lifter(X87Mixin):
             return self._widening_mul(insn, ops[0], signed=False)
         if m in ("div", "idiv"):
             return self._divide(insn, ops[0], signed=(m == "idiv"))
+        if m in ("shld", "shrd") and n == 3:                       # 두 레지스터를 이어 붙여 옮기기: shld d, s, c = (d << c) | (s >> (폭 - c)),  shrd d, s, c = (d >> c) | (s << (폭 - c))
+            sz = ops[0].size
+            bits = 8 * sz
+            A, B = self.read_op(insn, ops[0]), self.read_op(insn, ops[1], sz)
+            first, second = ("shl", "shr") if m == "shld" else ("shr", "shl")
+            if ops[2].type == CS_OP_IMM:
+                c = ops[2].imm & (63 if sz == 8 else 31)
+                if c == 0:
+                    return []                                       # 옮기는 양이 0 이면 값도 플래그도 그대로
+                r = binop("or", binop(first, A, C(c, 1), sz), binop(second, B, C(bits - c, 1), sz), sz)
+            else:
+                cnt = binop("and", self.read_op(insn, ops[2]), C(63 if sz == 8 else 31, 1), 1)
+                r = ite(cmp("eq", cnt, C(0, 1)), A,
+                        binop("or", binop(first, A, cnt, sz), binop(second, B, binop("sub", C(bits, 1), cnt, 1), sz), sz))
+            return [self.write_op(insn, ops[0], r), S("asg", a, loc(FLAGS, 1), flags("unk", (), 1))]
         if m in ("shl", "sal", "shr", "sar", "rol", "ror"):
             sz = ops[0].size
             if n == 1:
@@ -844,11 +859,13 @@ class X86Lifter(X87Mixin):
             raise Unsupported("mul8")
         acc = self.rn("rax" if sz == 8 else "eax" if sz == 4 else "ax")
         B = self.read_op(insn, op)
-        lo = binop("mul", acc, B, sz)
-        hi = binop("mulhs" if signed else "mulhu", acc, B, sz)
+        ta, tb = self.tmp(sz), self.tmp(sz)                         # 피연산자가 edx(또는 eax)일 수 있으니 쓰기 전에 원래 값을 잡아 둔다
+        lo = binop("mul", ta, tb, sz)
+        hi = binop("mulhs" if signed else "mulhu", ta, tb, sz)
         lo_name = {8: "rax", 4: "eax", 2: "ax"}[sz]
         hi_name = {8: "rdx", 4: "edx", 2: "dx"}[sz]
-        return [self.write_reg_named(hi_name, hi, a), self.write_reg_named(lo_name, lo, a),
+        return [S("asg", a, ta, acc), S("asg", a, tb, B),
+                self.write_reg_named(hi_name, hi, a), self.write_reg_named(lo_name, lo, a),
                 S("asg", a, loc(FLAGS, 1), flags("unk", (), 1))]
 
     def _divide(self, insn, op, signed):
