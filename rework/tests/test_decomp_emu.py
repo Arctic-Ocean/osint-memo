@@ -74,6 +74,18 @@ static inline uint64_t __rol64(uint64_t x, unsigned k) { k &= 63; return (x << k
 static inline uint64_t __ror64(uint64_t x, unsigned k) { return __rol64(x, 64 - (k & 63)); }
 static inline uint32_t __clz32(uint32_t x) { return x ? __builtin_clz(x) : 32; }
 static inline uint32_t __rbit32(uint32_t x) { uint32_t r = 0; for (int i = 0; i < 32; i++) r |= ((x >> i) & 1u) << (31 - i); return r; }
+static inline uint16_t __tzcnt16(uint16_t x) { return x ? __builtin_ctz(x) : 16; }
+static inline uint32_t __tzcnt32(uint32_t x) { return x ? __builtin_ctz(x) : 32; }
+static inline uint64_t __tzcnt64(uint64_t x) { return x ? __builtin_ctzll(x) : 64; }
+static inline uint16_t __lzcnt16(uint16_t x) { return x ? __builtin_clz(x) - 16 : 16; }
+static inline uint32_t __lzcnt32(uint32_t x) { return x ? __builtin_clz(x) : 32; }
+static inline uint64_t __lzcnt64(uint64_t x) { return x ? __builtin_clzll(x) : 64; }
+static inline uint16_t __popcnt16(uint16_t x) { return __builtin_popcount(x); }
+static inline uint32_t __popcnt32(uint32_t x) { return __builtin_popcount(x); }
+static inline uint64_t __popcnt64(uint64_t x) { return __builtin_popcountll(x); }
+static inline uint16_t __bsr16(uint16_t x) { return x ? 31 - __builtin_clz(x) : 0; }
+static inline uint32_t __bsr32(uint32_t x) { return x ? 31 - __builtin_clz(x) : 0; }
+static inline uint64_t __bsr64(uint64_t x) { return x ? 63 - __builtin_clzll(x) : 0; }
 static inline uint32_t __rev1632(uint32_t x) { return ((x & 0x00ff00ffu) << 8) | ((x >> 8) & 0x00ff00ffu); }
 """
 

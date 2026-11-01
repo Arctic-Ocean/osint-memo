@@ -15,8 +15,10 @@ from .ir import C, X, S, loc, mem, add, sub, binop, unop, zext, sext, trunc, cmp
 from .x87 import X87Mixin, is_x87
 from .lift_sse_vec import X86Vec
 from .lift_vex import X86Vex
+from .lift_bmi import X86Bmi, SCAN as _BMI_SCAN, BMI1 as _BMI1, SHIFTX as _BMI_SHIFTX
 
 FLAGS = "F"
+BMI_NAMES = set(_BMI_SCAN) | _BMI1 | set(_BMI_SHIFTX) | {"bzhi", "rorx", "mulx", "movbe"}
 CC_NAMES = {"o", "no", "b", "c", "nae", "ae", "nb", "nc", "e", "z", "ne", "nz", "be", "na", "a", "nbe", "s", "ns", "p", "pe",
             "np", "po", "l", "nge", "ge", "nl", "le", "ng", "g", "nle"}
 
@@ -67,7 +69,7 @@ def cc_of(mnem: str, prefix: str) -> str | None:
     return s if s in CC_NAMES else None
 
 
-class X86Lifter(X87Mixin, X86Vec, X86Vex):
+class X86Lifter(X87Mixin, X86Vec, X86Vex, X86Bmi):
     def __init__(self, cs, bits: int, read=None, is_const=None, imports=None):
         self.cs = cs
         self.imports = imports or ()     # 임포트 주소 표(IAT 칸): `call [IAT]` 를 이름 있는 호출로 본다
@@ -606,6 +608,10 @@ class X86Lifter(X87Mixin, X86Vec, X86Vex):
         if m == "bswap" and n == 1 and ops[0].type == CS_OP_REG:
             v = self.read_op(insn, ops[0])
             return [self.write_op(insn, ops[0], X("bi", (v,), v.sz, "rev"))]
+        if m in BMI_NAMES:                                              # bsf·tzcnt·popcnt·BMI1/2 — lift_bmi.py
+            r = self.bmi_lift(insn, m, ops)
+            if r is not None:
+                return r
         # -- SSE 데이터 이동·비트 연산 --
         sse = self._sse(insn, m, ops)
         if sse is not None:

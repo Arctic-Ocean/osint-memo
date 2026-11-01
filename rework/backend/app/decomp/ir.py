@@ -410,6 +410,16 @@ def cmp(op: str, a: X, b: X) -> X:
                 return invert(a)
         if a.op == "zext" and a.args[0].op in BOOL_OPS and op in ("eq", "ne") and c in (0, 1):
             return cmp(op, a.args[0], C(c, 1))
+        if c == 0 and a.op == "neg" and a.args[0].op == "zext" and a.args[0].args[0].op in BOOL_OPS and a.args[0].args[0].sz == 1:
+            bl = a.args[0].args[0]                                    # -(불리언) 은 0 또는 -1: 부호 있는 0 과의 비교는 불리언 자체(SSE 비교 마스크로 고를 때)
+            if op == "slt":
+                return bl
+            if op == "sge":
+                return invert(bl)
+            if op == "sgt":
+                return C(0, 1)
+            if op == "sle":
+                return C(1, 1)
         # 부호 없는 값은 0 보다 작을 수 없다 등
         if op == "ult" and c == 0:
             return C(0, 1)
@@ -805,6 +815,14 @@ def reduce_cc(code: str, fl: X):
         if code == "ae":
             return C(1, 1)
         return None
+    if kind in ("cfz", "cfnz"):                   # tzcnt·lzcnt·blsr·blsmsk: CF = (원본 == 0) · blsi: CF = (원본 != 0) — ZF·SF 는 결과, OF=0
+        src, r = a[0], a[1]
+        cf = cmp("eq" if kind == "cfz" else "ne", src, C(0, sz))
+        table = {"b": cf, "ae": invert(cf), "o": C(0, 1), "no": C(1, 1), "be": lor(cf, _zf(r)), "a": invert(lor(cf, _zf(r))),
+                 "l": _sf(r), "ge": invert(_sf(r)), "le": lor(_zf(r), _sf(r)), "g": invert(lor(_zf(r), _sf(r)))}
+        if code in ("e", "ne", "s"):
+            return by_result(r)
+        return table.get(code)
     if kind == "add":
         x, y, r = a[0], a[1], a[2]
         if code in ("e", "ne", "s"):

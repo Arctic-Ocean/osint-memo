@@ -78,7 +78,7 @@ SPECS = {
 # 생성된 NEON 어셈 시험(nvi_*: int[16] 두 개, nvf_*: float[16] 두 개, nvd_*: double[16] 두 개)
 for _m in re.finditer(r"^NK void (nv([ifd])_\w+)\(", open(CORPUS, encoding="utf-8").read(), re.M):
     SPECS[_m.group(1)] = ("v", {"i": "PP", "f": "GG", "d": "EE"}[_m.group(2)])
-for _m in re.finditer(r"^NK void (n[xyz]([ifd])_\w+)\(", open(CORPUS, encoding="utf-8").read(), re.M):                 # x86 SSE(nx)·VEX(ny: xmm · nz: ymm) 어셈 시험
+for _m in re.finditer(r"^NK void (n[xyzb]([ifd])_\w+)\(", open(CORPUS, encoding="utf-8").read(), re.M):                 # x86 SSE(nx)·VEX(ny: xmm · nz: ymm) 어셈 시험
     SPECS[_m.group(1)] = ("v", {"i": "PP", "f": "GG", "d": "EE"}[_m.group(2)])
 for _m in re.finditer(r"^NK void (nw([if])_\w+)\(", open(CORPUS, encoding="utf-8").read(), re.M):                 # ARM32 NEON 어셈 시험
     SPECS[_m.group(1)] = ("v", {"i": "PP", "f": "GG"}[_m.group(2)])
@@ -289,6 +289,18 @@ static inline uint32_t __mulhu32(uint32_t a, uint32_t b) { return (uint32_t)(((u
 static inline int64_t __mulhs64(int64_t a, int64_t b) { return (int64_t)(((__int128)a * b) >> 64); }
 static inline uint64_t __mulhu64(uint64_t a, uint64_t b) { return (uint64_t)(((unsigned __int128)a * b) >> 64); }
 static uint64_t __stack_chk_guard;
+static inline uint16_t __tzcnt16(uint16_t x) { return x ? __builtin_ctz(x) : 16; }
+static inline uint32_t __tzcnt32(uint32_t x) { return x ? __builtin_ctz(x) : 32; }
+static inline uint64_t __tzcnt64(uint64_t x) { return x ? __builtin_ctzll(x) : 64; }
+static inline uint16_t __lzcnt16(uint16_t x) { return x ? __builtin_clz(x) - 16 : 16; }
+static inline uint32_t __lzcnt32(uint32_t x) { return x ? __builtin_clz(x) : 32; }
+static inline uint64_t __lzcnt64(uint64_t x) { return x ? __builtin_clzll(x) : 64; }
+static inline uint16_t __popcnt16(uint16_t x) { return __builtin_popcount(x); }
+static inline uint32_t __popcnt32(uint32_t x) { return __builtin_popcount(x); }
+static inline uint64_t __popcnt64(uint64_t x) { return __builtin_popcountll(x); }
+static inline uint16_t __bsr16(uint16_t x) { return x ? 31 - __builtin_clz(x) : 0; }
+static inline uint32_t __bsr32(uint32_t x) { return x ? 31 - __builtin_clz(x) : 0; }
+static inline uint64_t __bsr64(uint64_t x) { return x ? 63 - __builtin_clzll(x) : 0; }
 static inline uint8_t __rol8(uint8_t x, unsigned k) { k &= 7; return (uint8_t)((x << k) | (x >> ((8 - k) & 7))); }
 static inline uint8_t __ror8(uint8_t x, unsigned k) { return __rol8(x, 8 - (k & 7)); }
 static inline uint16_t __rol16(uint16_t x, unsigned k) { k &= 15; return (uint16_t)((x << k) | (x >> ((16 - k) & 15))); }

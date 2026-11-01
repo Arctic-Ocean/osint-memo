@@ -594,10 +594,14 @@ class Renderer(FpRender, VecRender):
             b = ir.C(-to_signed(b.aux, sz), sz)
         if op in ("shl", "shr", "sar"):
             ta = self.fit(a, need or want, pr if op != "shl" else pr)
+            if op == "shl" and sz == 8 and a.op == "c":                    # 64비트 상수를 왼쪽으로 밀 때 C 의 int 로 계산되지 않게: (uint64_t)1 << n
+                ta = f"({itype(8, 'u')}){self.lit(a.aux, 8, 'u')}"
             tb, sb, pb = self.P(b)
             tb = self._paren(tb, pb, pr + 1)
             text = f"{ta} {sym} {tb}"
             sign = need or (self.P(a)[1])
+            if op == "shl" and sz == 8 and a.op == "c":
+                sign = need or "u"
         else:
             w = need or want
             ta, sa, pa = self.P(a, w)

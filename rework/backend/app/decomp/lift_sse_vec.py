@@ -399,12 +399,12 @@ class X86Vec:
                 return [self.write_op(insn, ops[0], sc)]
             return [self.write_op(insn, ops[0], sc)]
         if m in ("pmovmskb", "movmskps", "movmskpd") and len(ops) == 2 and ops[0].type == OP_REG and self.is_xmm(ops[1]):
-            lo, hi = self.lanes_read(insn, ops[1])
+            pieces = self.pieces_read(insn, ops[1])                                  # xmm 은 둘, ymm 은 넷
             esz = 1 if m == "pmovmskb" else (4 if m == "movmskps" else 8)
             full = self.reg_info(ops[0].reg)[1]
             acc = None
             k = 0
-            for piece in (lo, hi):
+            for piece in pieces:
                 for j in range(8 // esz):
                     lane = vlane(piece, j, esz, "u")
                     bit = zext(binop("shr", lane, C(8 * esz - 1, 1), esz), full) if esz > 1 or True else None

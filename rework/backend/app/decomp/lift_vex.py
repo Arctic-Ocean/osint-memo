@@ -159,6 +159,8 @@ class X86Vex:
         if base in ("permq", "permpd") and n == 3 and self._is_ymm(d) and ops[2].type == OP_IMM:
             src = self.pieces_read(insn, ops[1])
             return self.vec_store4(insn, d, [src[(ops[2].imm >> (2 * i)) & 3] for i in range(4)])
+        if base in ("pmovmskb", "movmskps", "movmskpd") and n == 2 and self._is_ymm(ops[1]) and d.type == OP_REG and not self.is_xmm(d):
+            return self._vec_to_gpr(insn, base, ops)                                     # 32비트(바이트)·8비트(float)·4비트(double) 마스크
         if base in BROADCAST and n == 2 and self._is_ymm(d):
             return self._vex_broadcast(insn, base, ops)
         if base in ("broadcastf128", "broadcasti128") and n == 2 and self._is_ymm(d) and ops[1].type == OP_MEM:
