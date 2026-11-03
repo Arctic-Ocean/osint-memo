@@ -242,7 +242,7 @@ FN STD double std_dmix(double a, int n, double b) { return a * n + b; }
 FN double std_dcalls(double a, double b) { return std_dmix(a, 3, b) * std_dmix(b, 2, a); }          /* 곱: 뺄셈의 상쇄로 x87 확장 정밀도 차이가 부풀지 않게 */
 #endif
 
-#if (defined(__x86_64__) && !defined(_WIN32)) || defined(__aarch64__)   /* 128비트 벡터를 값으로 주고받는 함수: SysV·AAPCS64 는 xmm/v 레지스터로 (Windows x64 는 포인터, ARM32·i386 은 아직) */
+#if (defined(__x86_64__) && !defined(_WIN32)) || defined(__aarch64__) || (defined(__ARM_NEON) && defined(__ARM_PCS_VFP))   /* 128비트 벡터를 값으로 주고받는 함수: SysV·AAPCS64·AAPCS-VFP(NEON) 는 xmm/v/q 레지스터로 (Windows x64 는 포인터, i386 은 아직) */
 typedef int vi4 __attribute__((vector_size(16)));
 typedef float vf4 __attribute__((vector_size(16)));
 typedef double vd2 __attribute__((vector_size(16)));

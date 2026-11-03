@@ -603,15 +603,16 @@ class FuncDecomp:
                 info = dict(s.src.aux or {})
                 info.update(name=name, proto=pr, nargs=len(args), callee=ci, fp_kinds=fkinds, ret_fp=rk)
                 csz = x87w or full
-                if rk and self.arch == "arm":
-                    pending.append((self.blocks[a], s, abi_vfp.call_result(self, s, rk)))
-                    csz = rk
-                    fp_ret = True
-                elif rk == 16:                                                # 128비트 벡터 반환: 호출 결과를 16바이트 값에 받아 두 조각으로 나눈다
+                vn = self._vec_piece_names() if rk == 16 else None
+                if rk == 16 and vn is not None:                               # 128비트 벡터 반환: 호출 결과를 16바이트 값에 받아 두 조각으로 나눈다
                     s.dst = loc("vrt", 16)
                     csz = 16
-                    pending.append((self.blocks[a], s, [S("asg", s.addr, loc(abi.fp_ret, 8), ir.vhalf(loc("vrt", 16), 0)),
-                                                        S("asg", s.addr, loc(abi.fp_ret + "h", 8), ir.vhalf(loc("vrt", 16), 1))]))
+                    pending.append((self.blocks[a], s, [S("asg", s.addr, loc(vn[0], 8), ir.vhalf(loc("vrt", 16), 0)),
+                                                        S("asg", s.addr, loc(vn[1], 8), ir.vhalf(loc("vrt", 16), 1))]))
+                    fp_ret = True
+                elif rk and self.arch == "arm":
+                    pending.append((self.blocks[a], s, abi_vfp.call_result(self, s, 8 if rk == 16 else rk)))
+                    csz = 8 if rk == 16 else rk
                     fp_ret = True
                 elif rk:
                     s.dst = loc("x87ret" if x87w else abi.fp_ret, x87w or 8)
@@ -793,6 +794,8 @@ class FuncDecomp:
                     uint = self.callers_use_result()
                     if uint is True and not self.callers_use_fp_result():
                         used = False
+                if fpk == 16 and used is False:                          # 벡터는 NEON 레지스터 목록 읽기 등 호출자의 읽기를 놓치기 쉽다 — 윗 조각을 계산했다는 구조적 증거를 믿는다
+                    used = None
                 if used is True:
                     choose = True
                 elif used is False and rv and pi is not None:
@@ -814,8 +817,8 @@ class FuncDecomp:
         for b in self.blocks.values():
             if b.term.k == "ret":
                 if self.ret_fp == 16:
-                    lo_n = self.abi.fp_ret
-                    b.term.src = ir.vcomb(loc(lo_n, 8), loc(lo_n + "h", 8))
+                    lo_n, hi_n = self._vec_piece_names()
+                    b.term.src = ir.vcomb(loc(lo_n, 8), loc(hi_n, 8))
                     continue
                 if self.ret_fp:
                     if self.x87_mode:
@@ -880,17 +883,51 @@ class FuncDecomp:
     def _ret_terms(self):
         return [b.term for b in self.blocks.values() if b.term.k == "ret"]
 
+    def _vec_piece_names(self):
+        """128비트 벡터 값의 (아래 조각, 위 조각) 위치 이름: x64 xmm0·xmm0h, ARM64 v0·v0h, ARM32 하드 플로트 q0 = d0·d1(둘 다 d 모드일 때)."""
+        if self.arch == "arm":
+            lf = self.lifter
+            if self.abi.hardfp and lf.mode_of(0) == "d" and lf.mode_of(1) == "d":
+                return "d0", "d1"
+            return None
+        return self.abi.fp_ret, self.abi.fp_ret + "h"
+
     def _vec_return(self, flow) -> bool:
         """ret 에 닿는 xmm0(v0) 의 윗 조각을 함수 안에서 '계산한' 값(상수 0·진입 값 복사가 아닌)으로 정의하고, 그 정의가 아래 조각의 마지막 정의보다 뒤이거나 같은
         명령이면 128비트 벡터 반환으로 본다 — 스칼라 double 을 돌려주는 코드에 남는 윗 조각 찌꺼기(앞서 한 packed 연산의 결과 뒤에 아래 조각만 쓴 경우)와 구별한다.
         ARM64 의 스칼라 쓰기는 윗 조각을 0 으로 만들므로 상수 0 으로 걸러진다."""
-        if self.arch not in ("x64", "arm64") or getattr(self, "variadic", False):
+        if self.arch not in ("x64", "arm64", "arm") or getattr(self, "variadic", False):
             return False
-        lo_n = self.abi.fp_ret
-        hi_n = lo_n + "h"
+        names = self._vec_piece_names()
+        if names is None:
+            return False
+        lo_n, hi_n = names
 
         def real(ds):
             return [d for d in ds if d.kind in ("asg", "unk", "call") and d.stmt is not None]
+
+        # 낮은 조각만 쓰는 스칼라 부동소수점 연산(addsd·cmpltsd …)이 있으면 스칼라 함수다: 윗 조각이 packed 연산(blendv 등)의 찌꺼기로 계산돼 있어도 벡터 반환이 아니다
+        for blk in (self.blocks.values() if self.arch == "x64" else ()):            # (ARM 은 조각마다 따로 연산하므로 이 증거를 쓰지 않는다: ARM32 의 double 벡터 덧셈은 vadd.f64 d0·d1 두 번)
+            for st in blk.stmts:
+                if st.k == "asg" and st.dst.op == "loc" and st.dst.aux == lo_n and any(n.op in ir.FOPS or n.op in ir.FCMP_OPS for n in ir.walk(st.src)):
+                    if not any(o.k == "asg" and o.addr == st.addr and o.dst.op == "loc" and o.dst.aux == hi_n for o in blk.stmts):
+                        return False
+
+        def has_data(e, stmt, depth):
+            """식 e 가 함수 입력(진입 값·메모리·호출 결과) 에 기대는가 — 상수와 상수 계산만이면 False."""
+            for n in ir.walk(e):
+                if n.op == "mem":
+                    return True
+                if n.op == "loc":
+                    ds = flow.reaching(stmt, n.aux)
+                    if not ds and depth == 0:
+                        continue
+                    for x in ds:
+                        if x.kind != "asg" or x.stmt is None:
+                            return True                                                          # 진입 값·호출·미해석 명령의 결과
+                        if depth < 4 and has_data(x.stmt.src, x.stmt, depth + 1):
+                            return True
+            return False
 
         def computed(d, depth=0):
             if d.kind == "call":
@@ -900,6 +937,12 @@ class FuncDecomp:
                 return False
             src = d.stmt.src
             if src.op == "c" or src.op in ("trunc", "zext", "sext", "ins"):
+                return False
+            if src.op in ("xor", "and", "or") and any(a.op == "c" for a in src.args):        # 부호·절댓값 마스크(xorpd/andpd [상수]) — 스칼라 neg·abs 가 윗 조각에 남기는 흔적
+                return False
+            if src.op in ("fneg", "fabs", "not") and src.args[0].op == "loc":
+                return False
+            if src.op != "loc" and not has_data(src, d.stmt, 0):                              # 값이 상수끼리의 계산(윗 조각이 0 인 스칼라 neg 등)이면 벡터의 증거가 아니다
                 return False
             if src.op == "loc":
                 if depth >= 3:

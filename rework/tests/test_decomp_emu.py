@@ -365,6 +365,15 @@ class Machine:
             for arg in args:
                 if arg[0] == "fp":
                     wsz, raw = arg[1], arg[2] & ((1 << (8 * arg[1])) - 1)
+                    if hard and vfp_ok and wsz == 16:                       # 128비트 벡터: q 레지스터 하나(= 비어 있는 d 쌍 중 4칸 정렬된 가장 낮은 것)
+                        k = next((i for i in range(0, 16, 4) if all(sfree[i:i + 4])), None)
+                        if k is not None:
+                            for j in range(4):
+                                sfree[k + j] = False
+                            uc.reg_write(A32.UC_ARM_REG_D0 + k // 2, raw & ((1 << 64) - 1))
+                            uc.reg_write(A32.UC_ARM_REG_D0 + k // 2 + 1, raw >> 64)
+                            continue
+                        raise SystemExit("벡터 인자가 q 레지스터에 안 들어간다")
                     if hard and vfp_ok:
                         if wsz == 4:
                             k = next((i for i in range(16) if sfree[i]), None)
@@ -408,7 +417,10 @@ class Machine:
             uc.reg_write(A32.UC_ARM_REG_LR, SENTINEL | th)
             uc.emu_start(addr | th, SENTINEL, count=3_000_000)
             if ret_fp and hard:
-                r = uc.reg_read(A32.UC_ARM_REG_D0) if ret_size == 8 else uc.reg_read(A32.UC_ARM_REG_S0)
+                if ret_size == 16:
+                    r = uc.reg_read(A32.UC_ARM_REG_D0) | (uc.reg_read(A32.UC_ARM_REG_D1) << 64)
+                else:
+                    r = uc.reg_read(A32.UC_ARM_REG_D0) if ret_size == 8 else uc.reg_read(A32.UC_ARM_REG_S0)
             else:
                 r = uc.reg_read(A32.UC_ARM_REG_R0) | (uc.reg_read(A32.UC_ARM_REG_R1) << 32 if ret_size == 8 else 0)
         else:
@@ -638,6 +650,11 @@ def run_level(arch, opt, only, verbose, seed=1, iterations=30):
             continue
         if name not in by:
             continue
+        if arch in ("arm", "thumb", "armhf", "thumbhf", "armneon", "thumbneon") and name == "vv_calls":
+            results.append((name, "XFAIL", "ARM32 의 벡터 매개변수는 q 레지스터 = d 레지스터 쌍이라 double 둘로 읽힌다 — 같은 파일의 원본(벡터 매개변수)을 부르는 시험 코드와 인자 형이 안 맞아 컴파일되지 않는다"))
+            continue
+        if arch == "win64" and name.startswith("vv_"):
+            continue                    # Windows x64 는 벡터 인자를 포인터로 받는다(값으로 xmm 에 받는 시험이 아니다). ELF 위의 ms_abi 모의 환경은 _WIN32 가 아니라 코퍼스 가드도 못 거른다
         if arch == "win64" and name in ("big_copy", "big_zero"):
             continue                    # 컴파일러가 만드는 memcpy/memset 호출은 SysV 규약이라, ELF 위의 ms_abi 모의 환경에서는 호출 규약이 섞여 의미가 없다
         d = Decompiler(prog).decompile(by[name])

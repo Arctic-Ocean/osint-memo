@@ -788,6 +788,11 @@ class Renderer(FpRender, VecRender):
             return text, PREC["add"], None
         return None
 
+    @staticmethod
+    def label_name(t: int) -> str:
+        """블록 번호 → C 라벨. 반환 블록 복제(dup_returns)가 만든 합성 블록은 음수 번호라 `L_-3` 이 되지 않게 `L_r3` 으로 쓴다."""
+        return f"L_{t:x}" if t >= 0 else f"L_r{-t}"
+
     def P128(self, e: X):
         """128비트 벡터 값(uint64x2_t)의 문자열과 우선순위: 변수는 이름 그대로, 그 밖은 vcomb 등 P 가 만든 식."""
         if e.op == "var":
@@ -939,7 +944,7 @@ class Renderer(FpRender, VecRender):
             n = nodes[i]
             k = n[0]
             if k == "label":
-                self.emit(max(indent - 1, 0), f"L_{n[1]:x}:", "label", n[1])
+                self.emit(max(indent - 1, 0), f"{self.label_name(n[1])}:", "label", n[1])
             elif k == "s":
                 s = n[1]
                 self.cur_addr = s.addr
@@ -967,7 +972,7 @@ class Renderer(FpRender, VecRender):
             elif k == "continue":
                 self.emit(indent, "continue;", "ctrl")
             elif k == "goto":
-                self.emit(indent, f"goto L_{n[1]:x};", "goto", n[1])
+                self.emit(indent, f"goto {self.label_name(n[1])};", "goto", n[1])
             elif k == "ret":
                 if n[1] is None or not self.fd.returns_value:
                     self.emit(indent, "return;" if not self.fd.returns_value else "return 0;", "stmt")
