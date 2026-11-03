@@ -73,6 +73,9 @@ SPECS = {
     "va_pushpop": ("D", "dd"), "vf_pushpop": ("F", "ff"), "va_lit": ("D", "d"), "va_hiregs": ("D", "dd"), "va_alias_sd": ("D", "f"),
     "va_alias_ds": ("F", "d"), "va_alias3": ("F", "ff"), "fp9": ("D", "ddddddddd"),
     "std_add": ("i", "ii"), "std_three": ("i", "iii"), "std_calls": ("i", "ii"), "std_dmix": ("D", "did"), "std_dcalls": ("D", "dd"),
+    "vv_add": ("q", "qq"), "vv_mix": ("q", "qqq"), "vv_fmul": ("r", "rr"), "vv_dadd": ("s", "ss"), "vv_dscale": ("s", "sd"), "vv_k": ("q", "iq"),
+    "vv_sum": ("i", "q"), "vv_load": ("q", "P"), "vv_store": ("v", "Pq"), "vv_calls": ("q", "qq"), "vv_rev": ("q", "q"), "vv_max": ("q", "qq"),
+    "vv_fsum": ("r", "rr"),
     "bit_test": ("i", "un"), "bit_flag": ("i", "Ln"), "bit_set": ("u", "un"), "bswap32": ("u", "u"), "bswap64": ("l", "L"),
 }
 # 생성된 NEON 어셈 시험(nvi_*: int[16] 두 개, nvf_*: float[16] 두 개, nvd_*: double[16] 두 개)
@@ -211,6 +214,13 @@ def gen_case(name, rng, kinds):
                 decl.append(f"float {v} = {rng.randint(-400, 400) / 8}f;")
             a_orig.append(v)
             a_dec.append(v)
+        elif k in ("q", "r", "s"):                                  # 128비트 벡터 값 인자: int4 · float4 · double2
+            vt, n = {"q": ("vi4", 4), "r": ("vf4", 4), "s": ("vd2", 2)}[k]
+            vals = [str(rng.randint(-99, 99)) if k == "q" else (f"{rng.randint(-400, 400) / 8}f" if k == "r" else repr(round(rng.uniform(-50, 50), 3)))
+                    for _ in range(n)]
+            decl.append(f"{vt} {v}o = {{{', '.join(vals)}}}; {vt} {v}d = {v}o;")
+            a_orig.append(f"{v}o")
+            a_dec.append(f"{v}d")
         elif k == "B":
             decl.append(f"Big {v}o = {{{{{', '.join(str(rng.randint(-99, 99)) for _ in range(16))}}}}}; Big {v}d = {v}o;")
             a_orig.append(f"&{v}o")
@@ -247,7 +257,12 @@ def make_driver(entries, seed, iterations=40, tol=False):
             out.append("  {")
             out.extend("    " + d for d in decl)
             rt = {"i": "int", "u": "unsigned", "l": "long", "D": "double", "F": "float"}.get(ret)
-            if rt and ret in "DF":
+            if ret in ("q", "r", "s"):                                  # 128비트 벡터 반환: 16바이트를 비트 그대로 비교
+                vt = {"q": "vi4", "r": "vf4", "s": "vd2"}[ret]
+                out.append(f"    {vt} ro = {name}({', '.join(ao)});")
+                out.append(f"    {vt} rd = ({vt})dec_{name}({', '.join(cast_args)});")
+                out.append(f'    if (memcmp(&ro, &rd, sizeof ro)) {{ bad++; if (bad < 3) printf("MISMATCH {name} it={it}: vector\\n"); }}')
+            elif rt and ret in "DF":
                 out.append(f"    {rt} ro = {name}({', '.join(ao)});")
                 out.append(f"    {rt} rd = dec_{name}({', '.join(cast_args)});")
                 bad_cond = ("!(ro != ro && rd != rd) && fabs((double)ro - (double)rd) > (sizeof ro == 4 ? 4e-6 : 4e-13) * (fabs((double)ro) + 1)"
@@ -365,7 +380,7 @@ def run_level(opt, only=None, verbose=False, seed=1):
         with open(one, "w") as fh:
             fh.write(HELPERS + '#include <stdio.h>\n#include <string.h>\n#define main corpus_main\n#include "decomp_corpus.c"\n#undef main\n'
                      + t + "\n" + drv1)
-        rr = sh(["gcc", "-c", "-w"] + mflags + ["-I", WORK, "-o", os.devnull, one])
+        rr = sh(["gcc", "-c", "-w", "-flax-vector-conversions"] + mflags + ["-I", WORK, "-o", os.devnull, one])
         if rr.returncode:
             err = [l for l in rr.stderr.splitlines() if "error" in l][:3]
             results.append((e[0], "COMPILE", "\n".join(err)))
@@ -377,7 +392,7 @@ def run_level(opt, only=None, verbose=False, seed=1):
         fh.write(HELPERS + "\n" + "\n\n".join(t for _, t in ok_entries) + "\n")
     with open(os.path.join(WORK, "drv.c"), "w") as fh:
         fh.write(make_driver([e for e, _ in ok_entries], seed, tol=tol))
-    r = sh(["gcc", "-O1", "-fwrapv", "-w", "-fno-strict-aliasing"] + mflags + ["-I", WORK, "-o", out_exe, os.path.join(WORK, "drv.c"), "-lm"])
+    r = sh(["gcc", "-O1", "-fwrapv", "-w", "-fno-strict-aliasing", "-flax-vector-conversions"] + mflags + ["-I", WORK, "-o", out_exe, os.path.join(WORK, "drv.c"), "-lm"])
     if r.returncode:
         print(r.stderr[:2000])
         return results, stats

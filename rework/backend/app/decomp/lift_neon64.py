@@ -56,7 +56,12 @@ class A64Neon:
     def vout(self, a, d, lo, hi, total):
         """대상 벡터에 쓴다: 64비트 배열이면 상위 64비트를 0 으로."""
         k, n = self.fp_info(d.reg)
-        return [S("asg", a, loc(f"v{n}", 8), lo), S("asg", a, loc(f"v{n}h", 8), hi if total == 16 else C(0, 8))]
+        hi = hi if total == 16 else C(0, 8)
+        names = {f"v{n}", f"v{n}h"}
+        if any(x.op == "loc" and x.aux in names for x in ir.walk(hi)):                      # 아래 조각을 먼저 쓰면 위 조각 식이 옛 값을 못 읽는다(ext·rev 처럼 제자리에서 두 조각을 섞는 명령)
+            t0, t1 = self.tmp(8), self.tmp(8)
+            return [S("asg", a, t0, lo), S("asg", a, t1, hi), S("asg", a, loc(f"v{n}", 8), t0), S("asg", a, loc(f"v{n}h", 8), t1)]
+        return [S("asg", a, loc(f"v{n}", 8), lo), S("asg", a, loc(f"v{n}h", 8), hi)]
 
     def velem(self, op, esz):
         """원소 지정 피연산자 `v1.s[2]` 의 (조각, 조각 안 번호)."""

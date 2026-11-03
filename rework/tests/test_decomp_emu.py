@@ -468,6 +468,12 @@ def make_case(rng, name, kinds, a):
             out.append((k, round(rng.uniform(-20, 20), 4) if name != "ld_sqrt" else round(rng.uniform(0, 50), 4)))
         elif k == "Y":
             out.append((k, [round(rng.uniform(-9, 9), 3) for _ in range(8)]))
+        elif k == "q":                                              # 128비트 벡터: int4 · float4 · double2 (비트 그대로 한 정수)
+            out.append((k, sum((rng.randint(-99, 99) & 0xFFFFFFFF) << (32 * i) for i in range(4))))
+        elif k == "r":
+            out.append((k, sum(struct.unpack("<I", struct.pack("<f", rng.randint(-400, 400) / 8))[0] << (32 * i) for i in range(4))))
+        elif k == "s":
+            out.append((k, sum(struct.unpack("<Q", struct.pack("<d", round(rng.uniform(-50, 50), 3)))[0] << (64 * i) for i in range(2))))
     return out
 
 
@@ -496,6 +502,8 @@ def run_one(m, addr, kinds_vals, ret, a, buf_slots):
             args.append(("fp", 4, struct.unpack("<I", struct.pack("<f", v))[0]))
         elif k == "X":
             args.append(("ld", a["ld"], float_to_ext(v)))
+        elif k in ("q", "r", "s"):                                  # 128비트 벡터 인자: xmm/v 레지스터 하나
+            args.append(("fp", 16, v))
         else:
             base = DATA_BASE + buf_slots[idx]
             if k in ("P", "Q"):
@@ -519,8 +527,8 @@ def run_one(m, addr, kinds_vals, ret, a, buf_slots):
             uc.mem_write(base, data)
             args.append((base, a["ptr"]))
             bufs.append((base, len(data)))
-    rs = {"i": 4, "u": 4, "l": a["long"], "v": 0, "D": 8, "F": 4, "X": 10}[ret]
-    r = m.call(addr, args, rs, ret_fp=ret in ("D", "F", "X"))
+    rs = {"i": 4, "u": 4, "l": a["long"], "v": 0, "D": 8, "F": 4, "X": 10, "q": 16, "r": 16, "s": 16}[ret]
+    r = m.call(addr, args, rs, ret_fp=ret in ("D", "F", "X", "q", "r", "s"))
     outs = [bytes(uc.mem_read(b, n)) for b, n in bufs]
     return r, outs
 

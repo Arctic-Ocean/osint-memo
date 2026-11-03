@@ -568,6 +568,20 @@ def insert(old: X, val: X) -> X:
     return X("ins", (old, val), old.sz, val.sz)
 
 
+def vcomb(lo: X, hi: X) -> X:
+    """두 64비트 조각을 묶은 128비트 벡터 값(인자·반환의 경계). 같은 값의 두 조각을 도로 묶으면 그 값이다."""
+    if lo.op == "vhalf" and hi.op == "vhalf" and lo.args[0] == hi.args[0] and lo.aux == 0 and hi.aux == 1:
+        return lo.args[0]
+    return X("vcomb", (lo, hi), 16)
+
+
+def vhalf(v: X, h: int) -> X:
+    """128비트 벡터 값 v 의 한 조각(0 아래 · 1 위)."""
+    if v.op == "vcomb":
+        return v.args[h]
+    return X("vhalf", (v,), 8, h)
+
+
 def hi_half(x: X) -> X:
     """x 의 위쪽 절반(x.sz 의 절반 폭). pair(trunc(x), hi_half(x)) 는 x 로 되돌아온다."""
     h = x.sz // 2
@@ -950,6 +964,10 @@ def rebuild(e: X, args) -> X:
         return insert(args[0], args[1])
     if op == "pair":
         return pair(args[0], args[1])
+    if op == "vcomb":
+        return vcomb(args[0], args[1])
+    if op == "vhalf":
+        return vhalf(args[0], e.aux)
     if op in ("vlane", "vlanef"):
         return vlane(args[0], e.aux[0], e.aux[1], e.aux[2])
     if op == "vpack":

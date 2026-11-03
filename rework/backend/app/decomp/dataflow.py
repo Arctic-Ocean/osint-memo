@@ -66,6 +66,8 @@ def loc_size(name: str, abi: "Abi") -> int:
         return 1
     if name in ("dr0", "dr2"):                                    # ARM softfp: r0:r1 / r2:r3 에 담겨 오는 double 인자(진입 때만 쓰는 의사 위치)
         return 8
+    if name == "vrt":                                             # 128비트 벡터를 돌려주는 호출의 결과(두 조각으로 나뉘기 전)
+        return 16
     if is_fp_loc(name):
         return 8
     return abi.full

@@ -14,7 +14,7 @@ from .ir import X, mask
 PREC = {"prim": 16, "unary": 14, "mul": 13, "add": 12, "shift": 11, "rel": 10, "eq": 9, "band": 8, "bxor": 7,
         "bor": 6, "land": 5, "lor": 4, "cond": 3}
 
-FTYPE = {4: "float", 8: "double", 10: "long double"}
+FTYPE = {4: "float", 8: "double", 10: "long double", 16: "uint64x2_t"}          # 16: 128비트 벡터 값(매개변수·반환) — 원소 형은 ABI 에 보이지 않으니 64비트 원소 둘로 둔다
 _SUF = {4: "f", 8: "", 10: "l"}                                                            # C 라이브러리 함수 접미사(sinf·sin·sinl)
 _MATH = {"fsin": "sin", "fcos": "cos", "ftan": "tan", "flog2": "log2", "fexp2": "exp2", "fatan2": "atan2", "fmod": "fmod", "fremainder": "remainder"}
 _BIN = {"fadd": ("+", "add"), "fsub": ("-", "add"), "fmul": ("*", "mul"), "fdiv": ("/", "mul")}

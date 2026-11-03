@@ -15,6 +15,18 @@ typedef float float32x2_t __attribute__((vector_size(8)));
 typedef int64_t int64x1_t __attribute__((vector_size(8)));
 typedef uint64_t uint64x1_t __attribute__((vector_size(8)));
 
+/* 128비트(q) 형: 벡터를 값으로 주고받는 매개변수·반환이 쓰는 uint64x2_t 와, 그 위에서 필요한 형들 */
+typedef int8_t int8x16_t __attribute__((vector_size(16)));
+typedef uint8_t uint8x16_t __attribute__((vector_size(16)));
+typedef int16_t int16x8_t __attribute__((vector_size(16)));
+typedef uint16_t uint16x8_t __attribute__((vector_size(16)));
+typedef int32_t int32x4_t __attribute__((vector_size(16)));
+typedef uint32_t uint32x4_t __attribute__((vector_size(16)));
+typedef float float32x4_t __attribute__((vector_size(16)));
+typedef int64_t int64x2_t __attribute__((vector_size(16)));
+typedef uint64_t uint64x2_t __attribute__((vector_size(16)));
+typedef double float64x2_t __attribute__((vector_size(16)));
+
 #define VC_N(T) ((int)(sizeof(T) / sizeof(((T){0})[0])))
 
 /* 정수 형 하나(sfx: 접미사, ET: 원소형, UT: 부호 없는 원소형, VT: 벡터형, UV: 부호 없는 벡터형, SV: 부호 있는 벡터형, BITS: 원소 비트 수) */

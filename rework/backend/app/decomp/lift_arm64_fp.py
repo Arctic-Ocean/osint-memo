@@ -222,6 +222,10 @@ class A64Fp:
 
     def lanes_write(self, a, op, lo: X, hi: X) -> list:
         k, n = self.fp_info(op.reg)
+        names = {f"v{n}", f"v{n}h"}
+        if any(x.op == "loc" and x.aux in names for x in ir.walk(hi)):                      # 아래 조각을 먼저 쓰면 위 조각 식이 옛 값을 못 읽는다
+            t0, t1 = self.tmp(8), self.tmp(8)
+            return [S("asg", a, t0, lo), S("asg", a, t1, hi), S("asg", a, loc(f"v{n}", 8), t0), S("asg", a, loc(f"v{n}h", 8), t1)]
         return [S("asg", a, loc(f"v{n}", 8), lo), S("asg", a, loc(f"v{n}h", 8), hi)]
 
     # ---- 벡터(데이터 이동·비트 연산만) ------------------------------------------------------

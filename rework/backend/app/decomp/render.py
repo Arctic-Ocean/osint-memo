@@ -454,6 +454,18 @@ class Renderer(FpRender, VecRender):
             if cls == "f":
                 return f"__builtin_bit_cast(uint32_t, {t})", "u", PREC["prim"]
             return t, cls, PREC["prim"]
+        if op == "vparam":                                                # 128비트 벡터 인자의 한 64비트 조각: arg1[0] · arg1[1]
+            idx, half = e.aux
+            return f"{self.names[('p', idx)]}[{half}]", "u", PREC["prim"]
+        if op == "vhalf":                                                 # 128비트 벡터 호출 결과의 한 조각
+            v = e.args[0]
+            if v.op == "var":
+                return f"{self.vname(v.aux)}[{e.aux}]", "u", PREC["prim"]
+            t, _s, p_ = self.P(v)
+            return f"{self._paren(t, p_, PREC['prim'])}[{e.aux}]", "u", PREC["prim"]
+        if op == "vcomb":                                                 # 두 조각을 묶은 128비트 벡터: (uint64x2_t){lo, hi}
+            lo, hi = (self.fit(x, "u", PREC["cond"] + 1) for x in e.args)
+            return f"(uint64x2_t){{{lo}, {hi}}}", None, PREC["prim"]
         if op == "stk":
             return self.stk_addr(e), "u", PREC["add"] if "+" in self.stk_addr(e) else PREC["unary"]
         if op == "mem":
@@ -776,6 +788,13 @@ class Renderer(FpRender, VecRender):
             return text, PREC["add"], None
         return None
 
+    def P128(self, e: X):
+        """128비트 벡터 값(uint64x2_t)의 문자열과 우선순위: 변수는 이름 그대로, 그 밖은 vcomb 등 P 가 만든 식."""
+        if e.op == "var":
+            return self.vname(e.aux), PREC["prim"]
+        t, _s, p = self.P(e)
+        return t, p
+
     def call_text(self, e: X) -> str:
         info = e.aux or {}
         tgt = e.args[0]
@@ -811,7 +830,10 @@ class Renderer(FpRender, VecRender):
                 t, p = f"(void *){self._paren(t, p, PREC['unary'])}", PREC["unary"]
             args.append(self._paren(t, p, PREC["cond"]))
         for a, kind in zip(fp_args, fk):
-            t, p = self.PF(a, kind)
+            if kind == 16:                                                      # 128비트 벡터 인자
+                t, p = self.P128(a)
+            else:
+                t, p = self.PF(a, kind)
             args.append(self._paren(t, p, PREC["cond"]))
         return f"{callee}({', '.join(args)})"
 
@@ -969,6 +991,8 @@ class Renderer(FpRender, VecRender):
 
     def ret_value(self, e: X) -> str:
         rk = getattr(self.fd, "ret_fp", None)
+        if rk == 16:
+            return self.P128(e)[0]
         if rk:
             return self.PF(e if e.sz == rk else (ir.trunc(e, rk) if e.sz > rk else ir.zext(e, rk)), rk)[0]
         sz, sign = self.ret_sz, self.ret_sign
@@ -1032,6 +1056,9 @@ class Renderer(FpRender, VecRender):
             self.emit(1, text, "decl", fd.addr)
         for w, text in decls:
             self.emit(1, text, "decl", fd.addr)
+        for w, (idx, half) in sorted(getattr(fd, "vec_entry", {}).items(), key=lambda kv: (kv[1][0], kv[1][1])):
+            if w in self.names:                                           # 벡터 매개변수의 아래·위 조각을 인자에서 꺼내 둔다
+                self.emit(1, self.assign_text(ir.var(w, 8), X("vparam", (), 8, (idx, half))), "stmt", fd.addr)
         if decls or fd.stack_names.has_decls():
             pass
         pos = len(self.lines)

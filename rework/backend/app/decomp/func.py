@@ -543,13 +543,18 @@ class FuncDecomp:
                 pr = protos.proto(name)
                 sp = (s.extra or {}).get("sp")
                 bound = bool((s.src.aux or {}).get("args_bound"))          # x86 꼬리 호출: 인자를 이미 문장에 묶어 두었다
+                ci = self.callee_info(tgt) if pr is None else None
                 if bound:
                     total = 0
                 elif (s.src.aux or {}).get("tail"):
-                    total = len(pr[1]) if pr is not None else self._tail_arity(flow, s)
+                    if pr is not None:
+                        total = len(pr[1])
+                    elif ci is not None and self.arch in ("x64", "arm64"):
+                        total = ci["nparams"]                              # 같은 파일의 함수면 매개변수 수를 안다(전달된 인자 레지스터를 세지 않는다)
+                    else:
+                        total = self._tail_arity(flow, s)
                 else:
                     total = self._arity(flow, s, name, pr, sp)
-                ci = self.callee_info(tgt) if pr is None else None
                 tail = bool((s.src.aux or {}).get("tail"))
                 lay = None if tail else self._x86_layout(flow, s, name, pr, ci, sp)
                 lay_arm = None if tail or bound else self._arm_soft_layout(flow, s, name, pr, ci, sp)
@@ -557,6 +562,8 @@ class FuncDecomp:
                 fp, rk = ([], None) if tail else self._fp_plan(flow, s, self.blocks[a], name, pr, ci)
                 if tail:                                                  # 꼬리 호출: 인자는 그대로 넘어가지만 반환형은 대상 함수의 것이다
                     rk = (pr and protos.FP_TYPES.get(pr[0])) or (ci or {}).get("ret_fp") or None
+                    if self.arch in ("x64", "arm64") and (pr is not None or ci is not None) and not (pr is not None and pr[2]):
+                        fp = self._fp_plan(flow, s, self.blocks[a], name, pr, ci)[0]        # 실수·벡터 인자는 대상 함수의 매개변수 목록을 따른다
                 x87w = (s.extra or {}).get("x87ret")                      # x87: 호출이 st(0) 에 남긴 값(리프터가 호출 뒤에 새 꼭대기 칸으로 옮겨 둔다)
                 if self.arch == "x86" and (x87w or (tail and rk)):
                     x87w = x87w or getattr(self.lifter, "W", 8)           # x86-32 의 부동소수점 반환값은 st(0)(폭 W)에 남는다 — float 를 돌려주는 함수도 W 폭 값으로 다룬다
@@ -586,7 +593,10 @@ class FuncDecomp:
                 else:
                     for k, kind in fp:
                         x = loc(f"{abi.fpr}{k}", 8)
-                        fargs.append(x if kind == 8 else ir.trunc(x, 4))
+                        if kind == 16:                                    # 128비트 벡터 인자: 아래·위 조각을 묶어서
+                            fargs.append(ir.vcomb(x, loc(f"{abi.fpr}{k}h", 8)))
+                        else:
+                            fargs.append(x if kind == 8 else ir.trunc(x, 4))
                         fkinds.append(kind)
                 if bound:
                     args = list(s.src.args[1:])
@@ -596,6 +606,12 @@ class FuncDecomp:
                 if rk and self.arch == "arm":
                     pending.append((self.blocks[a], s, abi_vfp.call_result(self, s, rk)))
                     csz = rk
+                    fp_ret = True
+                elif rk == 16:                                                # 128비트 벡터 반환: 호출 결과를 16바이트 값에 받아 두 조각으로 나눈다
+                    s.dst = loc("vrt", 16)
+                    csz = 16
+                    pending.append((self.blocks[a], s, [S("asg", s.addr, loc(abi.fp_ret, 8), ir.vhalf(loc("vrt", 16), 0)),
+                                                        S("asg", s.addr, loc(abi.fp_ret + "h", 8), ir.vhalf(loc("vrt", 16), 1))]))
                     fp_ret = True
                 elif rk:
                     s.dst = loc("x87ret" if x87w else abi.fp_ret, x87w or 8)
@@ -767,6 +783,8 @@ class FuncDecomp:
                 self.returns_value = rv = True
         if (self.arch in ("x64", "arm64") or (self.arch == "arm" and self.abi.hardfp)) and not self.x87_mode:
             fpk = self._fp_return_kind(flow)
+            if self._vec_return(flow):                                          # xmm0 의 윗 조각까지 계산해 돌려주면 128비트 벡터 반환(정수 원소 벡터도 포함)
+                fpk = 16
             if fpk:
                 pf = self._ret_pure(flow, self.abi.fp_ret)
                 pi = self._ret_pure(flow, self.abi.ret)
@@ -795,6 +813,10 @@ class FuncDecomp:
                     self.returns_value = rv = True
         for b in self.blocks.values():
             if b.term.k == "ret":
+                if self.ret_fp == 16:
+                    lo_n = self.abi.fp_ret
+                    b.term.src = ir.vcomb(loc(lo_n, 8), loc(lo_n + "h", 8))
+                    continue
                 if self.ret_fp:
                     if self.x87_mode:
                         v = loc("x87ret", self.lifter.W)
@@ -857,6 +879,44 @@ class FuncDecomp:
 
     def _ret_terms(self):
         return [b.term for b in self.blocks.values() if b.term.k == "ret"]
+
+    def _vec_return(self, flow) -> bool:
+        """ret 에 닿는 xmm0(v0) 의 윗 조각을 함수 안에서 '계산한' 값(상수 0·진입 값 복사가 아닌)으로 정의하고, 그 정의가 아래 조각의 마지막 정의보다 뒤이거나 같은
+        명령이면 128비트 벡터 반환으로 본다 — 스칼라 double 을 돌려주는 코드에 남는 윗 조각 찌꺼기(앞서 한 packed 연산의 결과 뒤에 아래 조각만 쓴 경우)와 구별한다.
+        ARM64 의 스칼라 쓰기는 윗 조각을 0 으로 만들므로 상수 0 으로 걸러진다."""
+        if self.arch not in ("x64", "arm64") or getattr(self, "variadic", False):
+            return False
+        lo_n = self.abi.fp_ret
+        hi_n = lo_n + "h"
+
+        def real(ds):
+            return [d for d in ds if d.kind in ("asg", "unk", "call") and d.stmt is not None]
+
+        def computed(d, depth=0):
+            if d.kind == "call":
+                info = d.stmt.src.aux or {}
+                return info.get("ret_fp") == 16
+            if d.kind != "asg" or d.stmt.src is None:
+                return False
+            src = d.stmt.src
+            if src.op == "c" or src.op in ("trunc", "zext", "sext", "ins"):
+                return False
+            if src.op == "loc":
+                if depth >= 3:
+                    return False
+                return any(computed(x, depth + 1) for x in real(flow.reaching(d.stmt, src.aux)))
+            return True
+
+        any_ret = False
+        for t in self._ret_terms():
+            los, his = real(flow.reaching_at(t, lo_n)), real(flow.reaching_at(t, hi_n))
+            if not los or not his:
+                return False
+            lo_min = min(d.stmt.addr for d in los)
+            if not all(computed(h) and h.stmt.addr >= lo_min for h in his):
+                return False
+            any_ret = True
+        return any_ret
 
     def _fp_return_kind(self, flow, regname=None):
         """xmm0 의 하위 조각(x87 은 x87ret)을 ret 직전에 실제로 쓰는 정의가 있으면 부동소수점 반환으로 보고 그 폭(4·8·10)을 돌려준다. 없으면 None."""
@@ -1400,13 +1460,29 @@ class FuncDecomp:
                 w = flow.web_of_def[d.id]
                 if w in used and self.webs[w].entry and not self.webs[w].param:
                     xw[k] = w
-        if not xw:
+        xh = {}                                   # 윗 조각(xmmNh·vNh)을 진입 값 그대로 읽는 인자 = 128비트 벡터 인자 (SysV·AAPCS64; Windows x64 는 포인터로 받는다)
+        if sequential:
+            for k in range(cnt):
+                d = flow.entry_def.get(f"{fpr}{k}h")
+                if d is not None:
+                    w = flow.web_of_def[d.id]
+                    if w in used and self.webs[w].entry and not self.webs[w].param:
+                        xh[k] = w
+        if not xw and not xh:
             return
         n_int = len(self.params)
+        self.vec_entry = {}
         if sequential:
-            top = max(xw)
+            top = max(list(xw) + list(xh))
             for k in range(top + 1):
                 w = xw.get(k)
+                if k in xh:
+                    self.fp_params.append((None, k, 16))
+                    idx = n_int + len(self.fp_params) - 1
+                    if w is not None:
+                        self.vec_entry[w] = (idx, 0)
+                    self.vec_entry[xh[k]] = (idx, 1)
+                    continue
                 kind = kinds.get(w, 8) if w is not None else 8
                 self.fp_params.append((w, k, kind))
         else:                                    # Windows x64: 위치가 정수·실수 인자 레지스터를 함께 정한다

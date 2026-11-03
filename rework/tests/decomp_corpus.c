@@ -242,6 +242,25 @@ FN STD double std_dmix(double a, int n, double b) { return a * n + b; }
 FN double std_dcalls(double a, double b) { return std_dmix(a, 3, b) * std_dmix(b, 2, a); }          /* 곱: 뺄셈의 상쇄로 x87 확장 정밀도 차이가 부풀지 않게 */
 #endif
 
+#if (defined(__x86_64__) && !defined(_WIN32)) || defined(__aarch64__)   /* 128비트 벡터를 값으로 주고받는 함수: SysV·AAPCS64 는 xmm/v 레지스터로 (Windows x64 는 포인터, ARM32·i386 은 아직) */
+typedef int vi4 __attribute__((vector_size(16)));
+typedef float vf4 __attribute__((vector_size(16)));
+typedef double vd2 __attribute__((vector_size(16)));
+FN vi4 vv_add(vi4 a, vi4 b) { return a + b; }
+FN vi4 vv_mix(vi4 a, vi4 b, vi4 c) { return a * b - c; }
+FN vf4 vv_fmul(vf4 a, vf4 b) { return a * b + a; }
+FN vd2 vv_dadd(vd2 a, vd2 b) { return a + b; }
+FN vd2 vv_dscale(vd2 a, double k) { return a * k; }
+FN vi4 vv_k(int k, vi4 a) { return a + k; }                      /* 정수 매개변수가 앞: 정수·벡터 레지스터는 따로 세므로 섞인 선언 순서는 복원할 수 없다 */
+FN int vv_sum(vi4 a) { return a[0] + a[1] + a[2] + a[3]; }
+FN vi4 vv_load(const int *p) { vi4 v; __builtin_memcpy(&v, p, 16); return v; }
+FN void vv_store(int *p, vi4 v) { __builtin_memcpy(p, &v, 16); }
+FN vi4 vv_calls(vi4 a, vi4 b) { return vv_add(vv_add(a, b), b); }
+FN vi4 vv_rev(vi4 a) { return __builtin_shufflevector(a, a, 3, 2, 1, 0); }
+FN vi4 vv_max(vi4 a, vi4 b) { vi4 m = a > b; return (a & m) | (b & ~m); }
+FN vf4 vv_fsum(vf4 a, vf4 b) { return a + b; }
+#endif
+
 FN unsigned hash(const unsigned char *s, int n) { unsigned h = 5381; for (int i = 0; i < n; i++) h = h * 33 + s[i]; return h; }
 FN int bsearch_(const int *a, int n, int key) {
     int lo = 0, hi = n - 1;
