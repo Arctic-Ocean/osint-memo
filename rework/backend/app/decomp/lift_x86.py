@@ -15,6 +15,7 @@ from .ir import C, X, S, loc, mem, add, sub, binop, unop, zext, sext, trunc, cmp
 from .x87 import X87Mixin, is_x87
 from .lift_sse_vec import X86Vec
 from .lift_vex import X86Vex
+from .lift_sse_ext import round_mode
 from .lift_bmi import X86Bmi, SCAN as _BMI_SCAN, BMI1 as _BMI1, SHIFTX as _BMI_SHIFTX
 
 FLAGS = "F"
@@ -188,6 +189,11 @@ class X86Lifter(X87Mixin, X86Vec, X86Vex, X86Bmi):
             return r
         if n == 0 or not any(self.is_xmm(o) for o in ops):
             return None
+        if m == "ptest" and n == 2 and self.is_xmm(ops[0]):
+            return self._ptest(insn, ops)
+        if m in ("roundss", "roundsd") and n == 3 and self.is_xmm(ops[0]) and ops[2].type == CS_OP_IMM:     # roundsd d, s, imm: 아래 조각만 반올림하고 윗 조각은 그대로
+            sz = 8 if m == "roundsd" else 4
+            return [self.f_write(insn, ops[0], X("fround", (self.f_read(insn, ops[1], sz),), sz, round_mode(ops[2].imm)), sz)]
         Z = C(0, 8)
         if m in ("movaps", "movups", "movdqa", "movdqu", "movapd", "movupd", "lddqu", "movntdq", "movntps", "movntpd") and n == 2:
             lo, hi = self.lanes_read(insn, ops[1])
@@ -359,9 +365,12 @@ class X86Lifter(X87Mixin, X86Vec, X86Vex, X86Bmi):
             sz = 8 if m == "cvtsi2sd" else 4
             src = self.read_op(insn, ops[1])
             return [self.f_write(insn, ops[0], X("i2f", (src,), sz, "s"), sz)]
-        if m in ("cvttsd2si", "cvttss2si") and n == 2 and (self.is_xmm(ops[1]) or ops[1].type == CS_OP_MEM):
-            fsz = 8 if m == "cvttsd2si" else 4
-            v = X("f2i", (self.f_read(insn, ops[1], fsz),), ops[0].size)
+        if m in ("cvttsd2si", "cvttss2si", "cvtsd2si", "cvtss2si") and n == 2 and (self.is_xmm(ops[1]) or ops[1].type == CS_OP_MEM):
+            fsz = 8 if m.endswith("sd2si") else 4
+            f = self.f_read(insn, ops[1], fsz)
+            if not m.startswith("cvtt"):                                       # cvtsd2si·cvtss2si 는 현재 반올림 모드(기본: 가장 가까운 짝수)로
+                f = X("fround", (f,), fsz, "rint")
+            v = X("f2i", (f,), ops[0].size)
             return [self.write_op(insn, ops[0], v)]
         if m == "cvtss2sd" and n == 2 and self.is_xmm(ops[0]):
             return [self.f_write(insn, ops[0], X("f2f", (self.f_read(insn, ops[1], 4),), 8), 8)]
@@ -572,7 +581,7 @@ class X86Lifter(X87Mixin, X86Vec, X86Vex, X86Bmi):
                     return r
 
         if m in ("nop", "endbr64", "endbr32", "fnop", "pause", "ud2", "int3", "hlt", "lfence", "mfence", "sfence", "prefetcht0",
-                 "prefetchnta", "prefetcht1", "prefetcht2", "prefetchw", "cld", "std", "nopw", "nopl", "data16", "xgetbv"):
+                 "prefetchnta", "prefetcht1", "prefetcht2", "prefetchw", "cld", "std", "nopw", "nopl", "data16", "xgetbv", "emms"):
             if m in ("hlt", "ud2", "int3"):
                 return [S("noret", a)]
             return []

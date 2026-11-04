@@ -13,6 +13,7 @@ from capstone.x86 import X86_OP_REG as OP_REG, X86_OP_IMM as OP_IMM, X86_OP_MEM 
 from . import ir
 from . import neon_core as nc
 from .neon_core import NeonUnsupported
+from .lift_sse_ext import X86VecExt, EXT_NAMES
 from .ir import C, X, S, loc, mem, binop, unop, zext, sext, trunc, cmp, ite, vop, vlane, vpack, vdup, vshuf, vsetlane, add
 
 # 이름 → (연산, 원소 폭, 부호/실수)  ← 2피연산자(목적지가 첫 입력)
@@ -29,19 +30,21 @@ PINT.update({"pmullw": ("mul", 2, "s"), "pmulld": ("mul", 4, "s"),
              "paddsb": ("qadd", 1, "s"), "paddsw": ("qadd", 2, "s"), "paddusb": ("qadd", 1, "u"), "paddusw": ("qadd", 2, "u"),
              "psubsb": ("qsub", 1, "s"), "psubsw": ("qsub", 2, "s"), "psubusb": ("qsub", 1, "u"), "psubusw": ("qsub", 2, "u"),
              "pavgb": ("rhadd", 1, "u"), "pavgw": ("rhadd", 2, "u")})
+PVSHIFT = {"psllvd": ("shl", 4), "psllvq": ("shl", 8), "psrlvd": ("shr", 4), "psrlvq": ("shr", 8), "psravd": ("sar", 4)}
+PSIGN = {"psignb": 1, "psignw": 2, "psignd": 4}
 PABS = {"pabsb": 1, "pabsw": 2, "pabsd": 4}
 # 실수 패킹: 이름 → (연산, 원소 폭)
 PFLT = {"addps": ("fadd", 4), "subps": ("fsub", 4), "mulps": ("fmul", 4), "divps": ("fdiv", 4), "maxps": ("fmax", 4), "minps": ("fmin", 4),
         "addpd": ("fadd", 8), "subpd": ("fsub", 8), "mulpd": ("fmul", 8), "divpd": ("fdiv", 8), "maxpd": ("fmax", 8), "minpd": ("fmin", 8)}
 CMPCODE = {"eq": 0, "lt": 1, "le": 2, "unord": 3, "neq": 4, "nlt": 5, "nle": 6, "ord": 7}
 WIDEN = {f"pmov{k}x{p}" for k in "zs" for p in ("bw", "bd", "bq", "wd", "wq", "dq")}
-VEX_UNARY = WIDEN | {"pabsb", "pabsw", "pabsd", "pshufd", "pshuflw", "pshufhw", "sqrtps", "sqrtpd", "cvtdq2ps", "cvttps2dq", "cvtps2dq",
+VEX_UNARY = WIDEN | {"roundps", "roundpd", "cvtps2pd", "cvtpd2ps", "cvtdq2pd", "cvtpd2dq", "cvttpd2dq", "pabsb", "pabsw", "pabsd", "pshufd", "pshuflw", "pshufhw", "sqrtps", "sqrtpd", "cvtdq2ps", "cvttps2dq", "cvtps2dq",
              "pextrw", "pextrb", "pextrd", "pextrq", "pmovmskb", "movmskps", "movmskpd"}
 SHIFT_IMM = {"psllw": ("shl", 2), "pslld": ("shl", 4), "psllq": ("shl", 8), "psrlw": ("shr", 2), "psrld": ("shr", 4), "psrlq": ("shr", 8),
              "psraw": ("sar", 2), "psrad": ("sar", 4)}
 
 
-class X86Vec:
+class X86Vec(X86VecExt):
     """X86Lifter 에 섞어 쓴다(is_xmm·xmm_name·lanes_read·lanes_write·tmp·mem_addr·load_mem·read_op·write_op 사용)."""
 
     _lane = 0                  # ymm 을 128비트 칸 둘로 나눠 풀 때 지금 풀고 있는 칸(0 하위 · 1 상위)
@@ -106,6 +109,46 @@ class X86Vec:
             return [self.load_mem(add(ad, C(8 * i, self.full)) if i else ad, 8) for i in range(cnt)]
         raise NeonUnsupported("operand")
 
+    CVT = {"cvtps2pd": (4, 8), "cvtpd2ps": (8, 4), "cvtdq2pd": (4, 8), "cvtpd2dq": (8, 4), "cvttpd2dq": (8, 4)}
+
+    def _vec_cvt(self, insn, m, d, src):
+        """cvtps2pd·cvtpd2ps·cvtdq2pd·cvtpd2dq·cvttpd2dq (SSE·VEX, xmm·ymm): 원소 하나씩 바꾸고 조각으로 묶는다."""
+        ssz, dsz = self.CVT[m]
+        dnames = self.ymm_names(d.reg)
+        dbytes = 8 * len(dnames)
+        if dsz > ssz:                                                                    # 넓히기: 목적지 폭만큼, 원본은 그 절반
+            n = dbytes // dsz
+        else:                                                                            # 좁히기: 원본 폭(xmm 16 · ymm/메모리 32)만큼
+            sb = 8 * len(self.ymm_names(src.reg)) if src.type == OP_REG else (32 if src.size == 32 else 16)
+            n = sb // ssz
+        if src.type == OP_MEM:
+            ad = self.mem_addr(insn, src)
+            raw = [self.load_mem(add(ad, C(i * ssz, self.full)) if i else ad, ssz) for i in range(n)]
+        else:
+            pcs = [loc(nm, 8) for nm in self.ymm_names(src.reg)]
+            raw = []
+            for i in range(n):
+                piece = pcs[(i * ssz) // 8]
+                if ssz == 8:
+                    raw.append(piece)
+                else:
+                    raw.append(vlane(piece, (i * ssz % 8) // ssz, ssz, "f" if m == "cvtps2pd" else "s"))
+        out = []
+        for e in raw:
+            if m == "cvtps2pd":
+                out.append(X("f2f", (e,), 8))
+            elif m == "cvtpd2ps":
+                out.append(X("f2f", (e,), 4))
+            elif m == "cvtdq2pd":
+                out.append(X("i2f", (e,), 8, "s"))
+            else:
+                out.append(X("f2i", (e if m == "cvttpd2dq" else X("fround", (e,), 8, "rint"),), 4))
+        per = 8 // dsz
+        pieces = [out[j] if per == 1 else vpack(out[j:j + per], dsz, "f" if m == "cvtpd2ps" else "s") for j in range(0, len(out), per)]
+        while len(pieces) < len(dnames):                                                 # 좁힌 결과 위쪽은 0
+            pieces.append(C(0, 8))
+        return self.vec_store4(insn, d, pieces[:len(dnames)])
+
     def _vec_widen(self, insn, m, d, src):
         """pmovzx·pmovsx(bw bd bq wd wq dq): 작은 원소를 넓혀 목적지(xmm 또는 ymm)를 채운다. 원본은 xmm 이거나 메모리다."""
         kind, pair = m[4:6], m[6:8]
@@ -161,6 +204,38 @@ class X86Vec:
             return self._vec_to_gpr(insn, m, ops)
         if m.startswith(("pmovzx", "pmovsx")) and len(rest) == 1:
             return self._vec_widen(insn, m, d, rest[0])
+        if m in self.CVT and len(rest) == 1:
+            return self._vec_cvt(insn, m, d, rest[0])
+        if m == "pshufb" and len(rest) == 1:                                    # 표 = 첫 입력, 인덱스 = 둘째: 상위 비트가 선 바이트는 0, 아니면 표[인덱스 & 15]
+            x = self.lanes_read(insn, s1)
+            y = self.lanes_read(insn, rest[0])
+            return self.vec_store(insn, d, *[ir.vtbl(x, binop("and", q, C(0x8f8f8f8f8f8f8f8f, 8), 8)) for q in y])
+        if m in PVSHIFT and len(rest) == 1:                                     # AVX2 원소별 가변 시프트: 개수는 부호 없는 원소 값, 폭 이상이면 0(산술 오른쪽은 부호 채움)
+            kind, esz = PVSHIFT[m]
+            x = self.lanes_read(insn, s1)
+            y = self.lanes_read(insn, rest[0])
+            outs = []
+            for p, q in zip(x, y):
+                if esz == 8:
+                    big = cmp("uge", q, C(64, 8))
+                    outs.append(ite(big, C(0, 8), binop(kind, p, trunc(q, 1), 8)))
+                else:
+                    lim = nc.bin_op("min", "u", 4, q, C(0x0000004000000040, 8), False)           # 64 이상은 모두 '폭 이상'
+                    if kind == "shl":
+                        outs.append(vop("shl", (p, lim), 4, "u"))
+                    else:                                                               # NEON 의 음수 개수 = 오른쪽 시프트
+                        outs.append(vop("shl", (p, nc.un_op("neg", "s", 4, lim)), 4, "u" if kind == "shr" else "s"))
+            return self.vec_store(insn, d, *outs)
+        if m in PSIGN and len(rest) == 1:                                       # d = y < 0 ? -x : y == 0 ? 0 : x
+            esz = PSIGN[m]
+            x = self.lanes_read(insn, s1)
+            y = self.lanes_read(insn, rest[0])
+            outs = []
+            for p, q in zip(x, y):
+                pos = nc.bin_op("cgt", "s", esz, q, C(0, 8), False)
+                neg = nc.bin_op("cgt", "s", esz, C(0, 8), q, False)
+                outs.append(binop("or", binop("and", p, pos, 8), binop("and", nc.un_op("neg", "s", esz, p), neg, 8), 8))
+            return self.vec_store(insn, d, *outs)
         x = self.lanes_read(insn, s1)
         # ---- 원소별 정수 2항 ----
         if m in PINT and len(rest) == 1:
@@ -194,10 +269,10 @@ class X86Vec:
                 outs.append(vpack(dws, 4, "s"))
             return self.vec_store(insn, d, *outs)
         # ---- 마스크로 고르기: vblendvpd d, a, b, m (VEX) · blendvpd d, b, xmm0 (SSE) → 마스크 원소의 부호 비트가 1 이면 b, 아니면 a ----
-        if m in ("blendvpd", "blendvps", "pblendvb") and len(rest) == 2:
+        if m in ("blendvpd", "blendvps", "pblendvb") and len(rest) in (1, 2):                # SSE 형식은 마스크가 암묵적인 xmm0 (Capstone 이 피연산자로 안 주기도 한다)
             esz = {"blendvpd": 8, "blendvps": 4, "pblendvb": 1}[m]
             y = self.lanes_read(insn, rest[0])
-            k = self.lanes_read(insn, rest[1])
+            k = self.lanes_read(insn, rest[1]) if len(rest) == 2 else (loc("xmm0", 8), loc("xmm0h", 8))
             outs = []
             for p, q, mk in zip(x, y, k):
                 if esz == 8 and mk.op == "neg" and mk.args[0].op == "zext" and mk.args[0].args[0].sz == 1:     # 비교 결과(0 또는 -1)로 만든 마스크
@@ -297,11 +372,11 @@ class X86Vec:
             cur = list(x)
             cur[half] = vsetlane(cur[half], sc, idx % per, esz, "u") if esz < 8 else sc
             return self.vec_store(insn, d, cur[0], cur[1])
-        return None
+        return self._sse_ext(insn, m, d, x, rest)
 
     def _vec_names(self):
         if not hasattr(self, "_vec_name_set"):
-            names = set(PINT) | set(PABS) | WIDEN | set(PFLT) | set(SHIFT_IMM) | {
+            names = (EXT_NAMES - {"ptest"}) | set(PINT) | set(PABS) | set(PSIGN) | set(PVSHIFT) | {"pshufb"} | WIDEN | set(X86Vec.CVT) | set(PFLT) | set(SHIFT_IMM) | {
                 "pmuludq", "pmulhw", "pmulhuw", "pmaddwd", "pslldq", "psrldq", "pshufd", "pshuflw", "pshufhw", "punpcklbw", "punpcklwd", "punpckldq",
                 "punpcklqdq", "punpckhbw", "punpckhwd", "punpckhdq", "punpckhqdq", "unpcklps", "unpckhps", "shufps", "palignr", "packsswb",
                 "packuswb", "packssdw", "packusdw", "sqrtps", "sqrtpd", "cvtdq2ps", "cvttps2dq", "cvtps2dq", "pinsrw", "pinsrb", "pinsrd", "pinsrq",

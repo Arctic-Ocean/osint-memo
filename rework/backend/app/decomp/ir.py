@@ -612,7 +612,7 @@ def pair(lo: X, hi: X) -> X:
 # 128비트 벡터 레지스터는 64비트 두 조각(8바이트 값)으로 다룬다. 한 조각은 폭 esz 바이트인 원소 8/esz 개를 담은 벡터 값이다.
 # 원소별 연산만 'vop' 로 두고(aux=(이름, esz, 's'|'u'|'f')), 원소 재배치는 vshuf·vdup·vpack·vsetlane, 원소 꺼내기는 vlane(정수)·vlanef(float) 이다.
 # 비트 연산(and/or/xor/not)과 폭 8 원소(= 조각 전체)의 연산은 평범한 정수·실수 연산이다.
-VEC_OPS = {"vop", "vshuf", "vdup", "vpack", "vsetlane"}                         # 8바이트 벡터 값을 만드는 연산
+VEC_OPS = {"vop", "vshuf", "vdup", "vpack", "vsetlane", "vtbl"}                         # 8바이트 벡터 값을 만드는 연산
 VEC_LANE_OPS = {"vlane", "vlanef", "vred", "vredf"}                             # 벡터에서 스칼라를 꺼내는 연산
 
 
@@ -676,6 +676,19 @@ def vsetlane(v: X, x: X, idx: int, esz: int, cls: str) -> X:
     if v.op in ("c", "vdup", "vpack"):
         return vpack([x if i == idx else vlane(v, i, esz, cls) for i in range(n)], esz, cls)
     return X("vsetlane", (v, x), 8, (idx, esz, cls))
+
+
+def vtbl(tbl, idx: X) -> X:
+    """바이트 표 조회(NEON tbl 의미): 결과 바이트 = 인덱스 바이트가 표 크기 미만이면 표[인덱스], 아니면 0.
+    tbl: 8바이트 조각 둘(16바이트 표) 또는 넷(32바이트), idx: 8바이트 조각(인덱스 8개). 인덱스가 상수면 재배치로 풀어 쓴다."""
+    tbl = tuple(tbl)
+    nb = 8 * len(tbl)
+    if idx.op == "c":
+        bs = [(idx.aux >> (8 * i)) & 0xff for i in range(8)]
+        if len(tbl) == 2 and all(b < nb for b in bs):
+            return vshuf(tbl[0], tbl[1], bs, 1, "u")
+        return vpack([vlane(tbl[b // 8], b % 8, 1, "u") if b < nb else C(0, 1) for b in bs], 1, "u")
+    return X("vtbl", tbl + (idx,), 8, len(tbl) // 2)
 
 
 def vop(name: str, args, esz: int, cls: str) -> X:
@@ -837,6 +850,12 @@ def reduce_cc(code: str, fl: X):
         if code in ("e", "ne", "s"):
             return by_result(r)
         return table.get(code)
+    if kind == "ptest":                           # ptest a, b: ZF = (a & b) == 0 · CF = (~a & b) == 0 · 나머지 플래그는 0
+        r1, r2 = a
+        z1, z2 = cmp("eq", r1, C(0, sz)), cmp("eq", r2, C(0, sz))
+        table = {"e": z1, "ne": invert(z1), "b": z2, "ae": invert(z2), "be": lor(z1, z2), "a": invert(lor(z1, z2)),
+                 "s": C(0, 1), "o": C(0, 1), "l": C(0, 1), "ge": C(1, 1), "le": z1, "g": invert(z1), "p": C(0, 1)}
+        return table.get(code)
     if kind == "add":
         x, y, r = a[0], a[1], a[2]
         if code in ("e", "ne", "s"):
@@ -978,6 +997,8 @@ def rebuild(e: X, args) -> X:
         return vshuf(args[0], args[1], e.aux[0], e.aux[1], e.aux[2])
     if op == "vsetlane":
         return vsetlane(args[0], args[1], e.aux[0], e.aux[1], e.aux[2])
+    if op == "vtbl":
+        return vtbl(args[:-1], args[-1])
     if op == "cc":
         fl = args[0]
         if fl.op == "fl" or (fl.op == "ite" and is_flagsrc(fl)):

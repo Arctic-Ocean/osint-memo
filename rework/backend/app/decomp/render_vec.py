@@ -79,6 +79,8 @@ def vop_types(e: X):
         return (e.aux[0], e.aux[1]), [None] * len(e.args)
     if op == "vsetlane":
         return (e.aux[1], e.aux[2]), [(e.aux[1], e.aux[2]), None]
+    if op == "vtbl":
+        return (1, "u"), [(1, "u")] * len(e.args)
     return None, []
 
 
@@ -266,6 +268,18 @@ class VecRender:
             idx, esz, cls = e.aux
             v, _ = self.PV(e.args[0], (esz, cls))
             return f"vset_lane_{SF[(esz, cls)]}({self._scal(e.args[1], esz, cls)}, {v}, {idx})", PREC["prim"]
+        if op == "vtbl":                                                      # 바이트 표 조회: 표 조각들을 128비트로 묶어 vqtbl1·vqtbl2
+            ix = e.args[-1]
+            if ix.op == "mem" and ix.sz == 8 and ix.args[0].op == "c":       # 인덱스가 읽기 전용 상수(리터럴 풀)면 재배치로 접는다
+                v = self._const_load(ix.args[0].aux)
+                if v is not None:
+                    f = ir.vtbl(e.args[:-1], ir.C(v, 8))
+                    if f.op != "vtbl" and (f.op in ir.VEC_OPS or f.op == "c"):
+                        return self.PV(f, (1, "u"))
+            ps = [self.PV(a, (1, "u"))[0] for a in e.args]
+            if len(ps) == 3:
+                return f"vqtbl1_u8(vcombine_u8({ps[0]}, {ps[1]}), {ps[2]})", PREC["prim"]
+            return (f"vqtbl2_u8((uint8x16x2_t){{{{vcombine_u8({ps[0]}, {ps[1]}), vcombine_u8({ps[2]}, {ps[3]})}}}}, {ps[4]})", PREC["prim"])
         return "0", PREC["prim"]
 
     def _vop_text(self, e: X, vt):

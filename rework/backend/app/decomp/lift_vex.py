@@ -27,6 +27,7 @@ from .ir import C, X, S, loc, binop, unop, zext, trunc, insert, vdup, add
 from . import neon_core as nc
 from .neon_core import NeonUnsupported
 from .lift_sse_vec import SHIFT_IMM
+from .lift_sse_ext import round_mode
 
 SC_ARITH = {"add": "fadd", "sub": "fsub", "mul": "fmul", "div": "fdiv", "min": "fmin", "max": "fmax"}
 LOGIC = {"xorps": "xor", "xorpd": "xor", "pxor": "xor", "andps": "and", "andpd": "and", "pand": "and",
@@ -37,7 +38,7 @@ CMP_PRED = {"eq": 0, "lt": 1, "le": 2, "unord": 3, "neq": 4, "nlt": 5, "nle": 6,
             "eq_os": 16, "lt_oq": 17, "le_oq": 18, "unord_s": 19, "neq_us": 20, "nlt_uq": 21, "nle_uq": 22, "ord_s": 23,
             "eq_us": 24, "nge_uq": 25, "ngt_uq": 26, "false_os": 27, "neq_os": 28, "ge_oq": 29, "gt_oq": 30, "true_us": 31}
 TWO_OP = {"movaps", "movups", "movapd", "movupd", "movdqa", "movdqu", "lddqu", "movntdq", "movntps", "movntpd", "movd", "movq",
-          "movsd", "movss", "movhps", "movhpd", "movlps", "movlpd", "comisd", "ucomisd", "comiss", "ucomiss", "cvttsd2si", "cvttss2si"}
+          "movsd", "movss", "movhps", "movhpd", "movlps", "movlpd", "comisd", "ucomisd", "comiss", "ucomiss", "cvttsd2si", "cvttss2si", "cvtsd2si", "cvtss2si"}
 FMA_RE = re.compile(r"^(fmadd|fmsub|fnmadd|fnmsub)(132|213|231)(sd|ss|pd|ps)$")
 BROADCAST = {"pbroadcastb": 1, "pbroadcastw": 2, "pbroadcastd": 4, "pbroadcastq": 8, "broadcastss": 4, "broadcastsd": 8, "movddup": 8}
 STORE_MOVES = {"movaps", "movups", "movapd", "movupd", "movdqa", "movdqu", "movntdq", "movntps", "movntpd"}
@@ -99,8 +100,11 @@ class X86Vex:
             return None
         out = []
         self._ymm = True
+        # 시프트 개수 xmm 이 목적지 ymm 의 아래 칸과 같은 레지스터면, 아래 칸을 먼저 쓰기 전에 위 칸이 개수를 읽어야 한다
+        alias = (base in SHIFT_IMM and ops[-1].type == OP_REG and not self._is_ymm(ops[-1]) and ops[0].type == OP_REG
+                 and self.ymm_names(ops[-1].reg)[0] == self.ymm_names(ops[0].reg)[0])
         try:
-            for lane in (0, 1):
+            for lane in ((1, 0) if alias else (0, 1)):
                 self._lane = lane
                 r = self._vex_body(insn, base, list(ops))
                 if r is None:
@@ -125,8 +129,7 @@ class X86Vex:
             if o.type == OP_REG:
                 if not self.is_xmm(o):
                     return False
-                if not self._is_ymm(o) and not (base in SHIFT_IMM and i == last and o.reg != ops[0].reg
-                                                and self.xmm_name(o.reg) != self.xmm_name(ops[0].reg)):
+                if not self._is_ymm(o) and not (base in SHIFT_IMM and i == last):
                     return False                                                  # 그 밖의 xmm 피연산자는 칸을 넘나드는 명령이다
             elif o.type == OP_MEM and base in SHIFT_IMM and i == last:
                 return False                                                      # 메모리 시프트 개수는 칸마다 다른 주소가 아니다
@@ -161,6 +164,8 @@ class X86Vex:
             return self.vec_store4(insn, d, [src[(ops[2].imm >> (2 * i)) & 3] for i in range(4)])
         if base in ("pmovmskb", "movmskps", "movmskpd") and n == 2 and self._is_ymm(ops[1]) and d.type == OP_REG and not self.is_xmm(d):
             return self._vec_to_gpr(insn, base, ops)                                     # 32비트(바이트)·8비트(float)·4비트(double) 마스크
+        if base == "ptest" and n == 2 and self._is_ymm(d) and self._is_ymm(ops[1]):
+            return self._ptest(insn, ops)
         if base in BROADCAST and n == 2 and self._is_ymm(d):
             return self._vex_broadcast(insn, base, ops)
         if base in ("broadcastf128", "broadcasti128") and n == 2 and self._is_ymm(d) and ops[1].type == OP_MEM:
@@ -168,6 +173,9 @@ class X86Vex:
             return self.vec_store4(insn, d, [lo, hi, lo, hi])
         if base.startswith(("pmovzx", "pmovsx")) and n == 2 and self._is_ymm(d) and not self._is_ymm(ops[1]):
             return self._vec_widen(insn, base, d, ops[1])
+        if base in self.CVT and n == 2 and d.type == OP_REG and self.is_xmm(d) and (self._is_ymm(d) or self._is_ymm(ops[1]) or (
+                ops[1].type == OP_MEM and ops[1].size == 32)):
+            return self._vec_cvt(insn, base, d, ops[1])
         return None
 
     def _vex(self, insn, base, ops):
@@ -194,6 +202,8 @@ class X86Vex:
             if n == 3 and self.is_xmm(ops[1]):
                 return self._vex_move3(insn, base, ops)
             return None
+        if base == "ptest" and n == 2 and self.is_xmm(ops[1]):
+            return self._ptest(insn, ops)
         if n >= 3 and self.is_xmm(ops[1]):
             r = self._vex_scalar(insn, base, ops)
             if r is not None:
@@ -225,6 +235,8 @@ class X86Vex:
         if base[:3] in SC_ARITH and len(base) == 5 and n == 3:
             val = X(SC_ARITH[base[:3]], (self.f_read(insn, s1, sz), self.f_read(insn, s2, sz)), sz)
             return self._vex_sc_store(insn, d, s1, val, sz)
+        if base in ("roundsd", "roundss") and n == 4 and ops[3].type == OP_IMM:
+            return self._vex_sc_store(insn, d, s1, X("fround", (self.f_read(insn, s2, sz),), sz, round_mode(ops[3].imm)), sz)
         if base in ("sqrtsd", "sqrtss") and n == 3:
             return self._vex_sc_store(insn, d, s1, X("fsqrt", (self.f_read(insn, s2, sz),), sz), sz)
         if base in ("cvtsi2sd", "cvtsi2ss") and n == 3:

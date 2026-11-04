@@ -184,7 +184,7 @@ class A64Neon:
         if m in ("shl", "sshr", "ushr", "ssra", "usra") and n == 3 and ops[2].type == OP_IMM:
             return self._neon_shift(a, d, ops, m, esz, total)
         # ---- 재배치 ----
-        if m in ("dup", "ins", "mov") or m in ("zip1", "zip2", "uzp1", "uzp2", "trn1", "trn2", "ext", "rev16", "rev32", "rev64"):
+        if m in ("dup", "ins", "mov") or m in ("zip1", "zip2", "uzp1", "uzp2", "trn1", "trn2", "ext", "rev16", "rev32", "rev64", "tbl"):
             r = self._neon_perm(insn, m, ops, a, esz, total)
             if r is not None:
                 return r
@@ -378,6 +378,17 @@ class A64Neon:
             return self._zip_like(a, d, ops, m, esz, total)
         if m == "ext" and n == 4 and ops[3].type == OP_IMM:
             return self._ext(a, d, ops, esz, total)
+        if m == "tbl" and n >= 3 and esz == 1:                                                 # tbl vd.16b, {vn.16b[, vn+1.16b]}, vm.16b
+            regs = ops[1:-1]
+            if len(regs) not in (1, 2) or not all(r.type == OP_REG for r in regs):
+                return None
+            tbl = []
+            for r in regs:
+                k_, n_ = self.fp_info(r.reg)
+                tbl += [loc(f"v{n_}", 8), loc(f"v{n_}h", 8)]
+            idx = self.vhalves(ops[-1], total)
+            outs = [ir.vtbl(tbl, idx[0])] + ([ir.vtbl(tbl, idx[1])] if total == 16 else [])
+            return self.vout(a, d, outs[0], outs[1] if len(outs) > 1 else None, total)
         if m in ("rev16", "rev32", "rev64") and n == 2:
             blk = {"rev16": 2, "rev32": 4, "rev64": 8}[m]
             if blk <= esz:

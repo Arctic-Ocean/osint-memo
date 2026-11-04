@@ -27,6 +27,12 @@ typedef int64_t int64x2_t __attribute__((vector_size(16)));
 typedef uint64_t uint64x2_t __attribute__((vector_size(16)));
 typedef double float64x2_t __attribute__((vector_size(16)));
 
+/* 바이트 표 조회(tbl): 인덱스가 표 크기 이상이면 0 */
+typedef struct { uint8x16_t val[2]; } uint8x16x2_t;
+static inline uint8x16_t vcombine_u8(uint8x8_t lo, uint8x8_t hi) { uint8x16_t r; __builtin_memcpy(&r, &lo, 8); __builtin_memcpy((char *)&r + 8, &hi, 8); return r; }
+static inline uint8x8_t vqtbl1_u8(uint8x16_t t, uint8x8_t idx) { uint8x8_t r; for (int i = 0; i < 8; i++) r[i] = idx[i] < 16 ? t[idx[i]] : 0; return r; }
+static inline uint8x8_t vqtbl2_u8(uint8x16x2_t t, uint8x8_t idx) { uint8x8_t r; for (int i = 0; i < 8; i++) r[i] = idx[i] < 16 ? t.val[0][idx[i]] : idx[i] < 32 ? t.val[1][idx[i] - 16] : 0; return r; }
+
 #define VC_N(T) ((int)(sizeof(T) / sizeof(((T){0})[0])))
 
 /* 정수 형 하나(sfx: 접미사, ET: 원소형, UT: 부호 없는 원소형, VT: 벡터형, UV: 부호 없는 벡터형, SV: 부호 있는 벡터형, BITS: 원소 비트 수) */
@@ -95,6 +101,9 @@ static inline float32x2_t vcvt_f32_s32(int32x2_t a) { float32x2_t r = {(float)a[
 static inline float32x2_t vcvt_f32_u32(uint32x2_t a) { float32x2_t r = {(float)a[0], (float)a[1]}; return r; }
 static inline int32x2_t vcvt_s32_f32(float32x2_t a) { int32x2_t r; for (int i = 0; i < 2; i++) r[i] = (a[i] >= 2147483648.0f || a[i] != a[i]) ? (a[i] != a[i] ? 0 : 0x7fffffff) : (a[i] <= -2147483648.0f ? (int32_t)0x80000000 : (int32_t)a[i]); return r; }
 static inline float vc_rintf(float x) { volatile float big = 8388608.0f; float ax = x < 0 ? -x : x; if (!(ax < big)) return x; volatile float t = ax + big; float r = t - big; return x < 0 ? -r : r; }   /* 가장 가까운 짝수로(x87 은 중간값을 확장 정밀도로 들고 있으니 volatile 로 float 에 맞춘다) */
+static inline float32x2_t vrndm_f32(float32x2_t a) { float32x2_t r; for (int i = 0; i < 2; i++) r[i] = __builtin_floorf(a[i]); return r; }
+static inline float32x2_t vrndp_f32(float32x2_t a) { float32x2_t r; for (int i = 0; i < 2; i++) r[i] = __builtin_ceilf(a[i]); return r; }
+static inline float32x2_t vrnd_f32(float32x2_t a) { float32x2_t r; for (int i = 0; i < 2; i++) r[i] = __builtin_truncf(a[i]); return r; }
 static inline float32x2_t vrndn_f32(float32x2_t a) { float32x2_t r; for (int i = 0; i < 2; i++) r[i] = vc_rintf(a[i]); return r; }
 static inline float32x2_t vld1_f32(const float *p) { float32x2_t r; __builtin_memcpy(&r, p, sizeof r); return r; }
 static inline void vst1_f32(float *p, float32x2_t v) { __builtin_memcpy(p, &v, sizeof v); }
