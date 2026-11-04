@@ -2411,19 +2411,33 @@ NK void nxd_cvtpd2dq(double *p, double *q) { XASM("movdqu xmm0, [" PA "]\n movdq
 NK void nxd_cvttpd2dq(double *p, double *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n cvttpd2dq xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
 NK void nxd_cvtpd2dq_m(double *p, double *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n cvtpd2dq xmm2, xmmword ptr [" QA "]\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
 NK void nxf_cvtss2si(float *p, float *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n cvtss2si eax, xmm1\n movd xmm2, eax\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+#if defined(__x86_64__)
 NK void nxf_cvtss2si_q(float *p, float *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n cvtss2si rax, xmm1\n movq xmm2, rax\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+#endif
 NK void nxf_cvtss2si_m(float *p, float *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n cvtss2si eax, dword ptr [" QA "]\n movd xmm2, eax\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
 NK void nxf_cvtsd2si_half(float *p, float *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n cvtss2sd xmm1, xmm1\n cvtsd2si eax, xmm1\n movd xmm2, eax\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+#if defined(__x86_64__)
 NK void nxf_cvtsd2si_half_q(float *p, float *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n cvtss2sd xmm1, xmm1\n cvtsd2si rax, xmm1\n movq xmm2, rax\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+#endif
 NK void nxd_cvtsd2si(double *p, double *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n cvtsd2si eax, xmm1\n movd xmm2, eax\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+#if defined(__x86_64__)
 NK void nxd_cvtsd2si_q(double *p, double *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n cvtsd2si rax, qword ptr [" QA "]\n movq xmm2, rax\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+#endif
 NK void nxf_emms_nop(float *p, float *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n movdqa xmm2, xmm1\n emms\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
 NK void nxi_pshufb(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n pshufb xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
 NK void nxi_pshufb_m(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n pshufb xmm2, [" QA "]\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+#if defined(__x86_64__)
 NK void nxi_pshufb_c_rev(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n movabs rax, 0x0001020304050607\n movq xmm1, rax\n movabs rax, 0x08090a0b0c0d0e0f\n pinsrq xmm1, rax, 1\n pshufb xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+#endif
+#if defined(__x86_64__)
 NK void nxi_pshufb_c_zero(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n movabs rax, 0x8001028004058007\n movq xmm1, rax\n movabs rax, 0x08090a0b0c0d0e0f\n pinsrq xmm1, rax, 1\n pshufb xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+#endif
+#if defined(__x86_64__)
 NK void nxi_pshufb_c_hibits(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n movabs rax, 0x1f1e1d1c1b1a1918\n movq xmm1, rax\n movabs rax, 0x7071727374757677\n pinsrq xmm1, rax, 1\n pshufb xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+#endif
+#if defined(__x86_64__)
 NK void nxi_pshufb_c_splat(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n movabs rax, 0x0303030303030303\n movq xmm1, rax\n movabs rax, 0x0f0f0f0f0f0f0f0f\n pinsrq xmm1, rax, 1\n pshufb xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+#endif
 NK void nxi_psignb(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n psignb xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
 NK void nxi_psignb_m(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n psignb xmm2, [" QA "]\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
 NK void nxi_psignw(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n psignw xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
@@ -2448,7 +2462,9 @@ NK void nxi_phaddsw(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1,
 NK void nxi_phaddsw_m(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n phaddsw xmm2, [" QA "]\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
 NK void nxi_phsubsw(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n phsubsw xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
 NK void nxi_phsubsw_m(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n phsubsw xmm2, [" QA "]\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+#if defined(__x86_64__)
 NK void nxi_pmulhrsw_ext(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n movabs rax, 0x8000800080007fff\n movq xmm1, rax\n pinsrq xmm1, rax, 1\n movdqa xmm3, xmm1\n pmulhrsw xmm1, xmm3\n movdqa xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+#endif
 NK void nxf_haddps(float *p, float *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n haddps xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
 NK void nxf_hsubps(float *p, float *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n hsubps xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
 NK void nxd_haddpd(double *p, double *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n haddpd xmm2, xmm1\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
@@ -2512,10 +2528,18 @@ NK void nxf_roundss_11(float *p, float *q) { XASM("movdqu xmm0, [" PA "]\n movdq
 NK void nxd_roundsd_11(double *p, double *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n roundsd xmm2, xmm1, 11\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
 NK void nxf_roundpd_half(float *p, float *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n cvtps2pd xmm1, xmm1\n roundpd xmm2, xmm1, 0\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
 NK void nxf_roundsd_half_floor(float *p, float *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n cvtps2pd xmm1, xmm1\n roundsd xmm2, xmm1, 9\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+#if defined(__x86_64__)
 NK void nxi_ptest_rand(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n ptest xmm0, xmm1\n sete al\n setb cl\n seta dl\n movzx eax, al\n movzx ecx, cl\n movzx edx, dl\n shl ecx, 8\n shl edx, 16\n or eax, ecx\n or eax, edx\n movd xmm2, eax\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+#endif
+#if defined(__x86_64__)
 NK void nxi_ptest_zero(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n pxor xmm1, xmm1\nptest xmm0, xmm1\n sete al\n setb cl\n seta dl\n movzx eax, al\n movzx ecx, cl\n movzx edx, dl\n shl ecx, 8\n shl edx, 16\n or eax, ecx\n or eax, edx\n movd xmm2, eax\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+#endif
+#if defined(__x86_64__)
 NK void nxi_ptest_same(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n movdqa xmm1, xmm0\nptest xmm0, xmm1\n sete al\n setb cl\n seta dl\n movzx eax, al\n movzx ecx, cl\n movzx edx, dl\n shl ecx, 8\n shl edx, 16\n or eax, ecx\n or eax, edx\n movd xmm2, eax\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+#endif
+#if defined(__x86_64__)
 NK void nxi_ptest_inv(int *p, int *q) { XASM("movdqu xmm0, [" PA "]\n movdqu xmm1, [" QA "]\n movdqa xmm2, xmm0\n pcmpeqd xmm1, xmm1\n pxor xmm1, xmm0\nptest xmm0, xmm1\n sete al\n setb cl\n seta dl\n movzx eax, al\n movzx ecx, cl\n movzx edx, dl\n shl ecx, 8\n shl edx, 16\n or eax, ecx\n or eax, edx\n movd xmm2, eax\n movdqu [" PA "], xmm0\n movdqu [" QA "], xmm2"); }
+#endif
 #endif
 
 #if defined(AVX_ASM) && defined(__x86_64__)   /* naked 어셈 함수(생성): x86 VEX(AVX·AVX2·FMA3) 명령을 직접 시험한다(ny: 128비트 xmm0=*p, xmm1=*q, xmm2=*p, xmm3=p[4..7] · nz: 256비트 ymm0=*p, ymm1=*q, ymm2=*p, ymm3=p[8..15]) → 결과(대개 3번)를 *q 에. AVX 를 실행하는 호스트가 필요하다 */

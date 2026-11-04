@@ -92,12 +92,22 @@ static inline uint32_t __rev1632(uint32_t x) { return ((x & 0x00ff00ffu) << 8) |
 SUPPORT = """
 void *memcpy(void *d, const void *s, unsigned long n) { char *a = d; const char *b = s; while (n--) *a++ = *b++; return d; }
 void *memset(void *d, int c, unsigned long n) { char *a = d; while (n--) *a++ = (char)c; return d; }
+/* 반올림 라이브러리 함수(독립 실행 환경에는 libm 이 없다): 의사코드의 floor·ceil·trunc·rint(스칼라 roundsd, 벡터 vrndm·vrndp·vrnd, cvtss2si 의 rintf).
+   2^23(2^52)을 더했다 빼서 가장 가까운 짝수로 돌린 뒤 고친다. 합을 volatile 변수에 저장해 x87 의 확장 정밀도에서도 정밀도가 잘리게 한다 */
+float rintf(float x) { volatile float big = 8388608.0f; float ax = x < 0 ? -x : x; if (!(ax < big)) return x; volatile float t = ax + big; float r = t - big; return x < 0 ? -r : r; }
+float truncf(float x) { volatile float big = 8388608.0f; float ax = x < 0 ? -x : x; if (!(ax < big)) return x; volatile float t = ax + big; float r = t - big; if (r > ax) r -= 1.0f; return x < 0 ? -r : r; }
+float floorf(float x) { float t = truncf(x); return t > x ? t - 1.0f : t; }
+float ceilf(float x) { float t = truncf(x); return t < x ? t + 1.0f : t; }
+#ifndef X87_TESTS
+double rint(double x) { volatile double big = 4503599627370496.0; double ax = x < 0 ? -x : x; if (!(ax < big)) return x; volatile double t = ax + big; double r = t - big; return x < 0 ? -r : r; }
+double trunc(double x) { volatile double big = 4503599627370496.0; double ax = x < 0 ? -x : x; if (!(ax < big)) return x; volatile double t = ax + big; double r = t - big; if (r > ax) r -= 1.0; return x < 0 ? -r : r; }
+double floor(double x) { double t = trunc(x); return t > x ? t - 1.0 : t; }
+double ceil(double x) { double t = trunc(x); return t < x ? t + 1.0 : t; }
+#endif
 """
 
 # VFP 시험 지원: ARMv7 의 VFP 에는 반올림 명령(vrint*)이 없어 rint 계열이 라이브러리 호출로 남는다 — 2^52(2^23) 더했다 빼기로 가장 가까운 짝수로 돌린다
 SUPPORT_VFP = r"""
-double rint(double x) { volatile double big = 4503599627370496.0; double ax = x < 0 ? -x : x; if (!(ax < big)) return x; double r = (ax + big) - big; return x < 0 ? -r : r; }
-float rintf(float x) { volatile float big = 8388608.0f; float ax = x < 0 ? -x : x; if (!(ax < big)) return x; float r = (ax + big) - big; return x < 0 ? -r : r; }
 """
 
 # x87 시험 지원: 컴파일러가 라이브러리 호출로 남기는 초월함수를 x87 명령으로 구현한다(인라인한 쪽과 같은 명령이라 결과가 같다)
