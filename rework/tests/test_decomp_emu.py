@@ -94,6 +94,7 @@ void *memcpy(void *d, const void *s, unsigned long n) { char *a = d; const char 
 void *memset(void *d, int c, unsigned long n) { char *a = d; while (n--) *a++ = (char)c; return d; }
 /* 반올림 라이브러리 함수(독립 실행 환경에는 libm 이 없다): 의사코드의 floor·ceil·trunc·rint(스칼라 roundsd, 벡터 vrndm·vrndp·vrnd, cvtss2si 의 rintf).
    2^23(2^52)을 더했다 빼서 가장 가까운 짝수로 돌린 뒤 고친다. 합을 volatile 변수에 저장해 x87 의 확장 정밀도에서도 정밀도가 잘리게 한다 */
+#ifndef NO_FP
 float rintf(float x) { volatile float big = 8388608.0f; float ax = x < 0 ? -x : x; if (!(ax < big)) return x; volatile float t = ax + big; float r = t - big; return x < 0 ? -r : r; }
 float truncf(float x) { volatile float big = 8388608.0f; float ax = x < 0 ? -x : x; if (!(ax < big)) return x; volatile float t = ax + big; float r = t - big; if (r > ax) r -= 1.0f; return x < 0 ? -r : r; }
 float floorf(float x) { float t = truncf(x); return t > x ? t - 1.0f : t; }
@@ -103,6 +104,7 @@ double rint(double x) { volatile double big = 4503599627370496.0; double ax = x 
 double trunc(double x) { volatile double big = 4503599627370496.0; double ax = x < 0 ? -x : x; if (!(ax < big)) return x; volatile double t = ax + big; double r = t - big; if (r > ax) r -= 1.0; return x < 0 ? -r : r; }
 double floor(double x) { double t = trunc(x); return t > x ? t - 1.0 : t; }
 double ceil(double x) { double t = trunc(x); return t < x ? t + 1.0 : t; }
+#endif
 #endif
 """
 
