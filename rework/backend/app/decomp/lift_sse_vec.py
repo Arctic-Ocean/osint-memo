@@ -38,7 +38,7 @@ PFLT = {"addps": ("fadd", 4), "subps": ("fsub", 4), "mulps": ("fmul", 4), "divps
         "addpd": ("fadd", 8), "subpd": ("fsub", 8), "mulpd": ("fmul", 8), "divpd": ("fdiv", 8), "maxpd": ("fmax", 8), "minpd": ("fmin", 8)}
 CMPCODE = {"eq": 0, "lt": 1, "le": 2, "unord": 3, "neq": 4, "nlt": 5, "nle": 6, "ord": 7}
 WIDEN = {f"pmov{k}x{p}" for k in "zs" for p in ("bw", "bd", "bq", "wd", "wq", "dq")}
-VEX_UNARY = WIDEN | {"roundps", "roundpd", "cvtps2pd", "cvtpd2ps", "cvtdq2pd", "cvtpd2dq", "cvttpd2dq", "pabsb", "pabsw", "pabsd", "pshufd", "pshuflw", "pshufhw", "sqrtps", "sqrtpd", "cvtdq2ps", "cvttps2dq", "cvtps2dq",
+VEX_UNARY = WIDEN | {"aesimc", "aeskeygenassist", "roundps", "roundpd", "cvtps2pd", "cvtpd2ps", "cvtdq2pd", "cvtpd2dq", "cvttpd2dq", "pabsb", "pabsw", "pabsd", "pshufd", "pshuflw", "pshufhw", "sqrtps", "sqrtpd", "cvtdq2ps", "cvttps2dq", "cvtps2dq",
              "pextrw", "pextrb", "pextrd", "pextrq", "pmovmskb", "movmskps", "movmskpd"}
 SHIFT_IMM = {"psllw": ("shl", 2), "pslld": ("shl", 4), "psllq": ("shl", 8), "psrlw": ("shr", 2), "psrld": ("shr", 4), "psrlq": ("shr", 8),
              "psraw": ("sar", 2), "psrad": ("sar", 4)}

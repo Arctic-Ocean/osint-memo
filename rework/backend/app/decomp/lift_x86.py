@@ -563,6 +563,8 @@ class X86Lifter(X87Mixin, X86Vec, X86Vex, X86Bmi):
                 toks.pop(0)
             if len(toks) == 2 and toks[0] == "rep" and toks[1] in ("movsb", "movsw", "movsd", "movsq", "stosb", "stosw", "stosd", "stosq"):
                 return self._rep_string(insn, toks[1])
+            if len(toks) == 2 and toks[0] in ("rep", "repz", "repe") and toks[1] in ("ret", "retf"):               # `repz ret`: AMD 분기 예측 우회용 접두사일 뿐 ret 와 같다
+                toks = toks[1:]
             if len(toks) > 1:
                 raise Unsupported(m)                   # lock·repne 등은 알 수 없는 명령으로 보존한다
             m = toks[0]

@@ -582,6 +582,11 @@ def vhalf(v: X, h: int) -> X:
     return X("vhalf", (v,), 8, h)
 
 
+def vx128(name: str, args, imm=None) -> X:
+    """도우미 함수로 계산하는 128비트 값(AES‑NI·pclmulqdq): args 는 128비트 입력들을 (아래, 위) 8바이트 조각으로 이어 놓은 것."""
+    return X("vx128", tuple(args), 16, (name, imm))
+
+
 def hi_half(x: X) -> X:
     """x 의 위쪽 절반(x.sz 의 절반 폭). pair(trunc(x), hi_half(x)) 는 x 로 되돌아온다."""
     h = x.sz // 2

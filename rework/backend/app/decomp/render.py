@@ -404,6 +404,8 @@ class Renderer(FpRender, VecRender):
             return FTYPE_[self.fkind[w]] + " "
         if w in self.vkind:
             return VTN_[self.vkind[w]] + " "
+        if self.webs[w].sz == 16:                                      # 128비트 값(도우미 함수의 결과 등)
+            return "uint64x2_t "
         return itype(self.webs[w].sz, self.vsign[w]) + " "
 
     def fit(self, e: X, want, prec=0) -> str:
@@ -463,6 +465,11 @@ class Renderer(FpRender, VecRender):
                 return f"{self.vname(v.aux)}[{e.aux}]", "u", PREC["prim"]
             t, _s, p_ = self.P(v)
             return f"{self._paren(t, p_, PREC['prim'])}[{e.aux}]", "u", PREC["prim"]
+        if op == "vx128":                                                 # 도우미 함수가 계산하는 128비트 값: __aesenc(a, b) · __pclmulqdq(a, b, imm)
+            nm, imm = e.aux
+            ps = [self.fit(x, "u", PREC["cond"] + 1) for x in e.args]
+            vs = [f"(uint64x2_t){{{ps[i]}, {ps[i + 1]}}}" for i in range(0, len(ps), 2)] + ([str(imm)] if imm is not None else [])
+            return f"__{nm}({', '.join(vs)})", None, PREC["prim"]
         if op == "vcomb":                                                 # 두 조각을 묶은 128비트 벡터: (uint64x2_t){lo, hi}
             lo, hi = (self.fit(x, "u", PREC["cond"] + 1) for x in e.args)
             return f"(uint64x2_t){{{lo}, {hi}}}", None, PREC["prim"]

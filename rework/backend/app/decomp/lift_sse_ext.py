@@ -5,20 +5,25 @@
 - `pblendw`·`blendps/pd`·`pblendd`(즉값 마스크 블렌드. ymm 은 칸마다 마스크의 해당 비트를 쓴다)
 - `roundps/pd`(즉값 반올림 방식: 가장 가까운 짝수·내림·올림·버림)
 - `ptest`(ZF = (a & b) == 0, CF = (~a & b) == 0 — 플래그 종류 `ptest`)
+- AES‑NI(`aesenc`·`aesenclast`·`aesdec`·`aesdeclast`·`aesimc`·`aeskeygenassist`)·`pclmulqdq`: 128비트 값을 받아 128비트 값을 내는 도우미 `__aesenc(a, b)` 로 낸다
+  (IR 연산 `vx128`; 시험 하네스가 도우미를 C 로 구현한다). SHA 확장 명령은 호스트에 없어 검증할 수 없으니 풀지 않는다.
 """
 from __future__ import annotations
 
 from capstone.x86 import X86_OP_IMM as OP_IMM
 
 from . import neon_core as nc
-from .ir import C, X, S, loc, binop, unop, zext, sext, trunc, cmp, ite, vlane, vpack, flags
+from .ir import C, X, S, loc, binop, unop, zext, sext, trunc, cmp, ite, vlane, vpack, flags, vhalf, vx128
 
 HADD = {"phaddw": (2, "add"), "phaddd": (4, "add"), "phsubw": (2, "sub"), "phsubd": (4, "sub"), "phaddsw": (2, "qadd"), "phsubsw": (2, "qsub")}
 HADDF = {"haddps": ("fadd", 4), "hsubps": ("fsub", 4), "haddpd": ("fadd", 8), "hsubpd": ("fsub", 8)}
 BLEND = {"pblendw": 2, "blendps": 4, "blendpd": 8, "pblendd": 4}
 ROUND_MODE = {0: "rint", 1: "floor", 2: "ceil", 3: "trunc"}
 ROUND_VEC = {"rint": "frintn", "floor": "frintm", "ceil": "frintp", "trunc": "frintz"}
-EXT_NAMES = {"pmaddubsw", "pmulhrsw", "pmuldq", "roundps", "roundpd", "ptest"} | set(HADD) | set(HADDF) | set(BLEND)
+AES2 = {"aesenc", "aesenclast", "aesdec", "aesdeclast"}
+PCLMUL_ALIAS = {"pclmullqlqdq": 0x00, "pclmulhqlqdq": 0x01, "pclmullqhqdq": 0x10, "pclmulhqhqdq": 0x11}      # Capstone 이 즉값 대신 이 이름으로 줄 때
+EXT_NAMES = ({"pmaddubsw", "pmulhrsw", "pmuldq", "roundps", "roundpd", "ptest", "aesimc", "aeskeygenassist", "pclmulqdq"}
+             | set(HADD) | set(HADDF) | set(BLEND) | AES2 | set(PCLMUL_ALIAS))
 
 
 def round_mode(imm: int) -> str:
@@ -102,6 +107,19 @@ class X86VecExt:
                 else:
                     outs.append(vpack([vlane((y if b else x)[pc], j, esz, "u") for j, b in enumerate(bits)], esz, "u"))
             return self.vec_store(insn, d, *outs)
+        if m in AES2 and len(rest) == 1:                                        # 라운드 키는 둘째 입력
+            y = self.lanes_read(insn, rest[0])
+            return self._crypto(insn, d, vx128(m, (x[0], x[1], y[0], y[1])))
+        if m in ("aesimc", "aeskeygenassist") and len(rest) >= 1:               # 입력은 (목적지가 아니라) 원본 하나
+            y = self.lanes_read(insn, rest[0])
+            imm = rest[1].imm & 0xff if m == "aeskeygenassist" and len(rest) == 2 and rest[1].type == OP_IMM else None
+            if m == "aeskeygenassist" and imm is None:
+                return None
+            return self._crypto(insn, d, vx128(m, (y[0], y[1]), imm))
+        if (m == "pclmulqdq" and len(rest) == 2 and rest[1].type == OP_IMM) or (m in PCLMUL_ALIAS and len(rest) == 1):
+            y = self.lanes_read(insn, rest[0])
+            imm = rest[1].imm & 0x11 if m == "pclmulqdq" else PCLMUL_ALIAS[m]                  # 비트 0·4 만 쓴다
+            return self._crypto(insn, d, vx128("pclmulqdq", (x[0], x[1], y[0], y[1]), imm))
         if m in ("roundps", "roundpd") and len(rest) == 2 and rest[1].type == OP_IMM:
             mode = round_mode(rest[1].imm)
             y = self.lanes_read(insn, rest[0])
@@ -109,6 +127,11 @@ class X86VecExt:
                 return self.vec_store(insn, d, *[X("fround", (p,), 8, mode) for p in y])
             return self.vec_store(insn, d, *[nc.fun_op(ROUND_VEC[mode], 4, p) for p in y])
         return None
+
+    def _crypto(self, insn, d, v):
+        """128비트 값 v(vx128)를 임시에 받아 두 조각으로 목적지에 쓴다."""
+        t = loc("vrt", 16)
+        return [S("asg", insn.address, t, v)] + self.vec_store(insn, d, vhalf(t, 0), vhalf(t, 1))
 
     def _ptest(self, insn, ops):
         """ptest·vptest: ZF = (a & b) == 0 · CF = (~a & b) == 0."""
