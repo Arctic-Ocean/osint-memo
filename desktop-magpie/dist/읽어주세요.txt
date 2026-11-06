@@ -1,0 +1,28 @@
+﻿데스크톱 까치 (Desktop Magpie)
+==============================
+
+실행: DesktopMagpie.exe 더블클릭
+종료: ESC 키를 1초 정도 꾹 누르기  (또는 Close_Magpie.bat 실행)
+
+까치가 하는 일
+ - 화면을 돌아다니며 가끔 "까악" 웁니다
+ - 마우스 커서를 물고 끌고 갑니다
+ - 화면 밖에서 사진 창 / 메모 창을 물어 옵니다 (창은 그냥 닫으면 됩니다)
+ - 진흙 발자국을 남기고 다닙니다 (잠시 후 사라집니다)
+
+꾸미기 (exe 옆 Assets 폴더)
+ - Assets\Images\   : png/jpg/gif/bmp 를 넣으면 그 사진을 물어 옵니다
+ - Assets\Notes\    : txt 를 넣으면 그 글을 메모 창에 씁니다 (UTF-8 권장)
+ - Assets\Sound\Call\ , Bite\ , Step\ : mp3/wav 를 넣으면 기본 소리 대신 재생합니다
+ 실행 중에 넣은 사진/메모도 바로 반영됩니다. (소리는 다시 실행해야 반영)
+
+설정 (config.ini)
+ SilenceSounds         True 면 소리 끔
+ Task_CanAttackMouse   False 면 마우스를 훔치지 않음
+ AttackRandomly        True 면 돌아다니다가도 갑자기 마우스를 습격
+ UseCustomColors       True 면 아래 Magpie... 색을 사용
+ Min/MaxWanderingTimeSeconds  다음 장난까지 어슬렁거리는 시간 (초)
+ FirstWanderTimeSeconds       처음 장난까지의 시간 (초)
+ Scale                 까치 크기 배율 (예: 1.5)
+ FrameRate             초당 프레임. 30 으로 낮추면 더 가벼워짐
+ ShowTrayIcon          True 면 작업표시줄 트레이에 아이콘 (우클릭 → 종료)
