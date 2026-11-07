@@ -132,6 +132,8 @@ class Pet {
   float maxSpeed_ = 0.f;
   bool hasTarget_ = false;
   bool backward_ = false;  // 뒷걸음 (뭔가 끌고 갈 때)
+  bool lookAt_ = false;    // 가까이 오면 이동 방향 대신 lookPoint_ 쪽을 봄 (커서 물기 직전)
+  Vec2 lookPoint_{0.f, 0.f};
 
   // 애니메이션
   float callT_ = -1.f, beakOpen_ = 0.f, headTurn_ = 0.f, lookPhase_ = 0.f;

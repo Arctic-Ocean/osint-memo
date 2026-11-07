@@ -143,6 +143,66 @@ void runStress(const Config& baseCfg, float unit, const RectF& work, const RectF
     }
   }
   std::printf("stress: longest leg while circling cursor = %.1f units (normal ~0-6)\n", worstLeg);
+
+  // 진짜 클릭처럼: 커서가 까치 몸 위에 있는 상태에서 찌르면, 뒤로 물러나 돌아서 커서를 물어야 함
+  int clickGrabs = 0, clickTrials = 0;
+  float worstClickGrab = 0.f;
+  Config idleCfg = baseCfg;  // 클릭 전에 스스로 다른 장난을 시작하지 않게
+  idleCfg.firstWander = idleCfg.minWander = idleCfg.maxWander = 999.f;
+  for (int trial = 0; trial < 16; ++trial) {
+    FakePlatform plat;
+    Pet pet(idleCfg, plat, unit, 1300u + trial);
+    pet.setScreens({work}, {mon});
+    for (int i = 0; i < 90 + 13 * trial; ++i) pet.update(dt);
+    MagpiePose p = pet.pose();
+    Vec2 off{(float)((trial % 5) - 2) * 4.f * unit, (float)((trial / 5) - 1) * 4.f * unit};
+    plat.cursor = p.pos + Vec2{0.f, -17.f * unit} + off;  // 몸통 한가운데 근처
+    ++clickTrials;
+    if (!pet.poke()) {
+      std::printf("  click trial %d: poke refused (task %s, carrying %d)\n", trial, taskName(pet.task()), pet.carrying());
+      continue;
+    }
+    float t = 0.f;
+    bool got = false;
+    for (int i = 0; i < 60 * 9 && pet.task() == TaskId::NabMouse; ++i, t += dt) {
+      pet.update(dt);
+      if (pet.holdingMouse()) {
+        got = true;
+        break;
+      }
+    }
+    if (got) {
+      ++clickGrabs;
+      worstClickGrab = std::max(worstClickGrab, t);
+    }
+  }
+  std::printf("stress: clicked on its body -> grabbed the cursor %d/%d times (slowest %.1fs)\n", clickGrabs,
+              clickTrials, worstClickGrab);
+  CHECK(clickGrabs == clickTrials, "after a click on its body the magpie failed to grab the cursor (%d/%d)",
+        clickGrabs, clickTrials);
+  CHECK(worstClickGrab < 4.f, "grabbing after a click took too long (%.1fs)", worstClickGrab);
+
+  // 커서가 멀리 가만히 있으면 반드시 물어야 함 (방향 8가지)
+  int farGrabs = 0;
+  for (int k = 0; k < 8; ++k) {
+    FakePlatform plat;
+    Pet pet(baseCfg, plat, unit, 1400u + k);
+    pet.setScreens({work}, {mon});
+    for (int i = 0; i < 90; ++i) pet.update(dt);
+    plat.cursor = pet.position() + fromAngle(k * kPi / 4.f) * (300.f * unit);
+    plat.cursor.x = clampf(plat.cursor.x, 50.f, 1870.f);
+    plat.cursor.y = clampf(plat.cursor.y, 50.f, 1000.f);
+    pet.forceTask(TaskId::NabMouse);
+    for (int i = 0; i < 60 * 9 && pet.task() == TaskId::NabMouse; ++i) {
+      pet.update(dt);
+      if (pet.holdingMouse()) {
+        ++farGrabs;
+        break;
+      }
+    }
+  }
+  std::printf("stress: still cursor 300 units away in 8 directions -> grabbed %d/8\n", farGrabs);
+  CHECK(farGrabs == 8, "failed to grab a still cursor (%d/8)", farGrabs);
   CHECK(worstLeg < 9.f, "spider legs: leg stretched to %.1f units", worstLeg);
 
   float worstSpin = 0.f, worstDropTime = 0.f;

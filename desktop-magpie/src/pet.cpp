@@ -154,13 +154,20 @@ void Pet::thinkNab(float dt) {
   taskTimer_ += dt;
   if (sub_ == 0) {
     Vec2 cur = plat_.cursorPos();
-    Vec2 toCur = cur - pos_;
-    float faceCur = length(toCur) > 1.f ? std::atan2(toCur.y, toCur.x) : heading_;
-    goTo(cur - beakOffsetFor(faceCur), kRunSpeed);
+    // 부리는 몸보다 위(화면상 위쪽)에 있으니, 커서 바로 "아래 바닥" 지점을 기준으로 생각한다:
+    // 그 지점을 바라보고 부리 길이만큼 떨어져 서면 부리 끝이 정확히 커서에 닿음.
+    const Vec2 o = beakOffsetFor(0.f);  // 오른쪽을 볼 때: x = 부리 길이, -y = 부리 높이
+    const Vec2 ground = cur + Vec2{0.f, -o.y};
+    Vec2 toG = ground - pos_;
+    Vec2 face = length(toG) > 0.5f * u_ ? normalize(toG) : fromAngle(heading_);
+    goTo(ground - face * o.x, kRunSpeed);
+    lookAt_ = true;
+    lookPoint_ = ground;
     if (length(beakTip() - cur) < kGrabRadius * u_) {
       plat_.playSound(SoundId::Bite);
       holdingMouse_ = true;
       backward_ = true;
+      lookAt_ = false;
       sub_ = 1;
       taskTimer_ = 0.f;
       subTimer_ = rnd(2.5f, 4.5f);
@@ -245,6 +252,7 @@ void Pet::startTask(TaskId t) {
   subTimer_ = 0.f;
   taskTimer_ = 0.f;
   backward_ = false;
+  lookAt_ = false;
   switch (t) {
     case TaskId::Wander: break;
     case TaskId::NabMouse:
@@ -264,6 +272,7 @@ void Pet::startTask(TaskId t) {
 void Pet::endTask() {
   holdingMouse_ = false;
   backward_ = false;
+  lookAt_ = false;
   muddy_ = false;
   if (carried_) {
     carried_->release();
@@ -308,7 +317,13 @@ void Pet::move(float dt) {
   pos_ += vel_ * dt;
 
   float prev = heading_;
-  if (length(vel_) > 6.f * u_) {
+  const float spd = length(vel_);
+  const bool near = hasTarget_ && length(target_ - pos_) < 30.f * u_;
+  if (lookAt_ && (near || spd < 25.f * u_) && length(lookPoint_ - pos_) > 0.5f * u_) {
+    // 거의 다 왔으면 이동 방향이 아니라 물 대상 쪽으로 몸을 돌림
+    Vec2 d = lookPoint_ - pos_;
+    heading_ = approachAngle(heading_, std::atan2(d.y, d.x), kTurnRate * 1.3f * dt);
+  } else if (spd > 6.f * u_) {
     float want = std::atan2(vel_.y, vel_.x) + (backward_ ? kPi : 0.f);
     heading_ = approachAngle(heading_, want, kTurnRate * dt);
   }
