@@ -19,6 +19,7 @@ add_executable(DesktopMagpie WIN32
   src/win/main.cpp
   src/win/win_platform.cpp
   src/win/audio_win.cpp
+  src/win/log.cpp
   res/app.rc)
 
 target_compile_definitions(DesktopMagpie PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)

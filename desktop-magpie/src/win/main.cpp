@@ -2,9 +2,13 @@
 //
 // 구조 (원본 데스크톱 펫들과 같은 원리, 다만 가볍게):
 //   [발자국 레이어]  투명·클릭통과·항상 위 창. 발자국이 있을 때만 보이고, 바뀔 때만 다시 그린다.
-//   [까치 레이어]    까치 주변만 덮는 작은 투명 창(약 170×170). 까치를 따라 움직인다.
+//   [까치 레이어]    까치 주변만 덮는 작은 투명 창(약 190×190). 까치를 따라 움직인다.
 //                   → 화면 전체를 매 프레임 다시 그리는 방식보다 그릴 픽셀이 수백 배 적다.
 //   게임 루프: 메시지 처리 → 두뇌/몸 업데이트 → 변한 게 있을 때만 그리기 → 다음 프레임까지 잠들기
+//
+// 진단: 실행할 때마다 exe 옆에 DesktopMagpie.log 를 남긴다.
+// 자가 진단: DesktopMagpie.exe --selftest [초]  → 모든 행동을 차례로 시키고,
+//            까치가 실제 화면에 보이는지까지 확인한 뒤 종료 코드로 결과를 알려준다 (0 = 통과).
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
@@ -28,21 +32,58 @@
 #include "../pet.h"
 #include "../raster.h"
 #include "audio_win.h"
+#include "log.h"
 #include "win_platform.h"
 
 namespace {
 
+constexpr const char* kVersion = "1.0.1";
 constexpr float kQuitHoldSeconds = 1.2f;  // ESC 를 이만큼 누르고 있으면 종료
 constexpr UINT WM_TRAY = WM_APP + 1;
 constexpr UINT ID_TRAY_QUIT = 1001;
 const wchar_t* const kOverlayClass = L"DesktopMagpieOverlay";
 const wchar_t* const kControlClass = L"DesktopMagpieControl";
+const wchar_t* const kTitle = L"데스크톱 까치";
 
 UINT g_taskbarCreated = 0;
 bool g_screensDirty = true;
 bool g_trayWanted = false;
 bool g_trayAdded = false;
+bool g_selftest = false;
 HICON g_trayIcon = nullptr;
+
+// ---- 오류 처리 ----
+
+void showError(const std::wstring& msg) {
+  if (g_selftest) return;  // 자동 테스트 중엔 대화상자로 멈추지 않음
+  std::wstring full = msg;
+  if (!mlog::path().empty()) full += L"\n\n자세한 내용: " + mlog::path();
+  MessageBoxW(nullptr, full.c_str(), kTitle, MB_ICONERROR | MB_OK | MB_TOPMOST | MB_SETFOREGROUND);
+}
+
+int fatal(const char* what, const wchar_t* userMsg) {
+  DWORD err = GetLastError();
+  mlog::line("FATAL: %s (GetLastError=%lu)", what, err);
+  showError(userMsg);
+  mlog::close();
+  return 1;
+}
+
+LONG WINAPI crashFilter(EXCEPTION_POINTERS* ep) {
+  const DWORD code = ep->ExceptionRecord->ExceptionCode;
+  void* addr = ep->ExceptionRecord->ExceptionAddress;
+  HMODULE mod = nullptr;
+  GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                     (LPCWSTR)addr, &mod);
+  wchar_t name[MAX_PATH] = L"?";
+  if (mod) GetModuleFileNameW(mod, name, MAX_PATH);
+  mlog::line("CRASH: exception 0x%08lX at %s+0x%llx", code, mlog::utf8(name).c_str(),
+             (unsigned long long)((const char*)addr - (const char*)mod));
+  showError(L"까치가 오류로 멈췄어요.\nDesktopMagpie.log 파일을 보내주시면 고칠게요.");
+  mlog::close();
+  ExitProcess(3);
+  return EXCEPTION_EXECUTE_HANDLER;
+}
 
 // ---- 레이어드 윈도우 (투명 창) + 그 뒤의 DIB ----
 struct Layer {
@@ -53,6 +94,8 @@ struct Layer {
   uint32_t* bits = nullptr;
   int capW = 0, capH = 0;
   bool shown = false;
+  int failures = 0;
+  const char* name = "";
 
   bool reserve(int w, int h) {
     if (bits && w <= capW && h <= capH) return true;
@@ -70,7 +113,10 @@ struct Layer {
     bi.bmiHeader.biCompression = BI_RGB;
     void* p = nullptr;
     HBITMAP nb = CreateDIBSection(nullptr, &bi, DIB_RGB_COLORS, &p, nullptr, 0);
-    if (!nb) return false;
+    if (!nb) {
+      mlog::line("%s: CreateDIBSection %dx%d failed (err=%lu)", name, nw, nh, GetLastError());
+      return false;
+    }
     if (!dc) dc = CreateCompatibleDC(nullptr);
     if (bmp) {
       SelectObject(dc, oldBmp);
@@ -85,6 +131,7 @@ struct Layer {
   }
 
   Canvas canvas(int w, int h, Vec2 origin) const {
+    GdiFlush();  // DIB 비트를 직접 만지기 전에 GDI 작업을 끝내 둔다
     Canvas c;
     c.px = bits;
     c.w = w;
@@ -94,15 +141,20 @@ struct Layer {
     return c;
   }
 
-  void present(int x, int y, int w, int h, BYTE alpha) {
+  bool present(int x, int y, int w, int h, BYTE alpha) {
     POINT dst{x, y}, src{0, 0};
     SIZE sz{w, h};
     BLENDFUNCTION bf{AC_SRC_OVER, 0, alpha, AC_SRC_ALPHA};
-    UpdateLayeredWindow(hwnd, nullptr, &dst, &sz, dc, &src, 0, &bf, ULW_ALPHA);
+    if (!UpdateLayeredWindow(hwnd, nullptr, &dst, &sz, dc, &src, 0, &bf, ULW_ALPHA)) {
+      if (++failures <= 5) mlog::line("%s: UpdateLayeredWindow failed (err=%lu)", name, GetLastError());
+      return false;
+    }
     if (!shown) {
       ShowWindow(hwnd, SW_SHOWNOACTIVATE);
       shown = true;
+      mlog::line("%s: first frame shown at (%d,%d) size %dx%d", name, x, y, w, h);
     }
+    return true;
   }
 
   void hide() {
@@ -131,6 +183,14 @@ std::wstring exeDir() {
   return k == std::wstring::npos ? L"." : s.substr(0, k);
 }
 
+std::wstring tempDir() {
+  wchar_t buf[MAX_PATH + 1];
+  DWORD n = GetTempPathW(MAX_PATH + 1, buf);
+  std::wstring s(buf, n);
+  while (!s.empty() && (s.back() == L'\\' || s.back() == L'/')) s.pop_back();
+  return s;
+}
+
 Config loadConfig(const std::wstring& dir) {
   Config cfg;
   const std::wstring path = dir + L"\\config.ini";
@@ -146,6 +206,7 @@ Config loadConfig(const std::wstring& dir) {
     }
     CloseHandle(h);
     parseConfig(text, cfg);
+    mlog::line("config: loaded %s", mlog::utf8(path).c_str());
   } else {
     // 없으면 기본 설정 파일을 만들어 준다
     h = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
@@ -154,9 +215,25 @@ Config loadConfig(const std::wstring& dir) {
       DWORD wrote = 0;
       WriteFile(h, t.data(), (DWORD)t.size(), &wrote, nullptr);
       CloseHandle(h);
+      mlog::line("config: not found, wrote defaults to %s", mlog::utf8(path).c_str());
+    } else {
+      mlog::line("config: not found and could not create (err=%lu), using defaults", GetLastError());
     }
   }
   return cfg;
+}
+
+void logWindowsVersion() {
+  using RtlGetVersionFn = LONG(WINAPI*)(OSVERSIONINFOW*);
+  HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+  auto fn = ntdll ? (RtlGetVersionFn)(void*)GetProcAddress(ntdll, "RtlGetVersion") : nullptr;
+  OSVERSIONINFOW v = {};
+  v.dwOSVersionInfoSize = sizeof(v);
+  if (fn && fn(&v) == 0)
+    mlog::line("windows %lu.%lu build %lu", v.dwMajorVersion, v.dwMinorVersion, v.dwBuildNumber);
+  SYSTEM_INFO si;
+  GetNativeSystemInfo(&si);
+  mlog::line("cpu arch %u, %lu logical processors", (unsigned)si.wProcessorArchitecture, si.dwNumberOfProcessors);
 }
 
 void enableDpiAwareness() {
@@ -175,16 +252,7 @@ float systemDpiScale() {
   return (d > 0 ? d : 96) / 96.f;
 }
 
-double nowSeconds() {
-  static LARGE_INTEGER freq = [] {
-    LARGE_INTEGER f;
-    QueryPerformanceFrequency(&f);
-    return f;
-  }();
-  LARGE_INTEGER t;
-  QueryPerformanceCounter(&t);
-  return (double)t.QuadPart / (double)freq.QuadPart;
-}
+double nowSeconds() { return mlog::seconds(); }
 
 LRESULT CALLBACK OverlayProc(HWND h, UINT m, WPARAM w, LPARAM l) {
   switch (m) {
@@ -206,6 +274,7 @@ void addTray(HWND hwnd) {
   nid.hIcon = g_trayIcon;
   lstrcpynW(nid.szTip, L"데스크톱 까치 (ESC 길게 = 종료)", (int)(sizeof(nid.szTip) / sizeof(nid.szTip[0])));
   g_trayAdded = Shell_NotifyIconW(NIM_ADD, &nid) != FALSE;
+  mlog::line("tray icon: %s", g_trayAdded ? "added" : "FAILED");
 }
 
 void removeTray(HWND hwnd) {
@@ -234,7 +303,10 @@ LRESULT CALLBACK ControlProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         UINT cmd = (UINT)TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_NONOTIFY, pt.x, pt.y, 0, h, nullptr);
         DestroyMenu(menu);
         PostMessageW(h, WM_NULL, 0, 0);
-        if (cmd == ID_TRAY_QUIT) PostQuitMessage(0);
+        if (cmd == ID_TRAY_QUIT) {
+          mlog::line("quit: tray menu");
+          PostQuitMessage(0);
+        }
       }
       return 0;
     case WM_DISPLAYCHANGE:
@@ -245,19 +317,103 @@ LRESULT CALLBACK ControlProc(HWND h, UINT m, WPARAM w, LPARAM l) {
   return DefWindowProcW(h, m, w, l);
 }
 
+// 자가 진단: 화면을 실제로 캡처해서, 우리가 그린 불투명 픽셀이 화면에 그대로 보이는지 비율로 확인
+double measureOnScreen(const Layer& L, int x, int y, int w, int h, int& total) {
+  total = 0;
+  HDC screen = GetDC(nullptr);
+  if (!screen) return 0.0;
+  HDC mem = CreateCompatibleDC(screen);
+  BITMAPINFO bi = {};
+  bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+  bi.bmiHeader.biWidth = w;
+  bi.bmiHeader.biHeight = -h;
+  bi.bmiHeader.biPlanes = 1;
+  bi.bmiHeader.biBitCount = 32;
+  bi.bmiHeader.biCompression = BI_RGB;
+  void* p = nullptr;
+  HBITMAP bmp = CreateDIBSection(screen, &bi, DIB_RGB_COLORS, &p, nullptr, 0);
+  double ratio = 0.0;
+  if (bmp && mem) {
+    HGDIOBJ old = SelectObject(mem, bmp);
+    BitBlt(mem, 0, 0, w, h, screen, x, y, SRCCOPY | CAPTUREBLT);
+    GdiFlush();
+    const uint32_t* shot = static_cast<const uint32_t*>(p);
+    int match = 0;
+    for (int j = 0; j < h; ++j)
+      for (int i = 0; i < w; ++i) {
+        uint32_t c = L.bits[(size_t)j * L.capW + i];
+        if ((c >> 24) != 255u) continue;
+        ++total;
+        uint32_t s = shot[(size_t)j * w + i];
+        int db = std::abs((int)(c & 255) - (int)(s & 255));
+        int dg = std::abs((int)((c >> 8) & 255) - (int)((s >> 8) & 255));
+        int dr = std::abs((int)((c >> 16) & 255) - (int)((s >> 16) & 255));
+        if (db < 24 && dg < 24 && dr < 24) ++match;
+      }
+    ratio = total ? (double)match / total : 0.0;
+    SelectObject(mem, old);
+  }
+  if (bmp) DeleteObject(bmp);
+  if (mem) DeleteDC(mem);
+  ReleaseDC(nullptr, screen);
+  return ratio;
+}
+
+struct SelfTest {
+  bool on = false;
+  double limit = 120.0;
+  const TaskId plan[4] = {TaskId::CollectImage, TaskId::CollectNote, TaskId::TrackMud, TaskId::NabMouse};
+  int next = 0;
+  bool visChecked = false;
+  double visRatio = -1.0;
+  int visPixels = 0;
+  bool grabbed = false;
+  size_t maxPrints = 0;
+};
+
 }  // namespace
 
 int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
-  enableDpiAwareness();
+  SelfTest st;
+  {
+    int argc = 0;
+    LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+    for (int i = 1; argv && i < argc; ++i) {
+      if (lstrcmpiW(argv[i], L"--selftest") == 0) {
+        st.on = true;
+        if (i + 1 < argc) {
+          double v = _wtof(argv[i + 1]);
+          if (v > 0) st.limit = v;
+        }
+      }
+    }
+    if (argv) LocalFree(argv);
+  }
+  g_selftest = st.on;
+  SetUnhandledExceptionFilter(crashFilter);
+
   const std::wstring dir = exeDir();
-  const Config cfg = loadConfig(dir);
-  CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+  mlog::open(dir + L"\\DesktopMagpie.log", tempDir() + L"\\DesktopMagpie.log");
+  mlog::line("Desktop Magpie %s start%s", kVersion, st.on ? " (selftest)" : "");
+  mlog::line("exe dir: %s", mlog::utf8(dir).c_str());
+  logWindowsVersion();
+
+  enableDpiAwareness();
+  Config cfg = loadConfig(dir);
+  if (st.on) {  // 자가 진단에선 정해진 순서로만 행동하게
+    cfg.firstWander = cfg.minWander = cfg.maxWander = 9999.f;
+    cfg.attackRandomly = false;
+    cfg.canAttackMouse = true;
+  }
+  if (FAILED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED))) mlog::line("CoInitializeEx failed");
   timeBeginPeriod(1);
 
   const float dpi = systemDpiScale();
   const float unit = 1.25f * dpi * cfg.scale;
   const MagpiePalette pal = makePalette(cfg);
   const uint32_t seed = (uint32_t)GetTickCount64() ^ (GetCurrentProcessId() << 16);
+  mlog::line("dpi scale %.2f, unit %.2f, fps %d, sounds %s, attack mouse %s", dpi, unit, cfg.frameRate,
+             cfg.silenceSounds ? "off" : "on", cfg.canAttackMouse ? "on" : "off");
 
   HICON bigIcon = (HICON)LoadImageW(inst, MAKEINTRESOURCEW(1), IMAGE_ICON, GetSystemMetrics(SM_CXICON),
                                     GetSystemMetrics(SM_CYICON), 0);
@@ -273,23 +429,28 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
   wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
   wc.lpfnWndProc = OverlayProc;
   wc.lpszClassName = kOverlayClass;
-  RegisterClassExW(&wc);
+  if (!RegisterClassExW(&wc)) return fatal("RegisterClassEx(overlay)", L"창을 만들 수 없어요.");
   wc.lpfnWndProc = ControlProc;
   wc.lpszClassName = kControlClass;
   wc.hIcon = bigIcon;
   wc.hIconSm = smallIcon;
-  RegisterClassExW(&wc);
+  if (!RegisterClassExW(&wc)) return fatal("RegisterClassEx(control)", L"창을 만들 수 없어요.");
 
   // 투명 + 클릭 통과 + Alt+Tab/작업표시줄에서 숨김 + 포커스 안 뺏음 + 항상 위
   const DWORD overlayEx = WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TOPMOST;
   Layer prints, magpie;
+  prints.name = "tracks layer";
+  magpie.name = "magpie layer";
   prints.hwnd = CreateWindowExW(overlayEx, kOverlayClass, L"Desktop Magpie Tracks", WS_POPUP, 0, 0, 1, 1, nullptr,
                                 nullptr, inst, nullptr);
+  if (!prints.hwnd) return fatal("CreateWindowEx(tracks)", L"투명 창을 만들 수 없어요.");
   magpie.hwnd = CreateWindowExW(overlayEx, kOverlayClass, L"Desktop Magpie", WS_POPUP, 0, 0, 1, 1, nullptr, nullptr,
                                 inst, nullptr);
+  if (!magpie.hwnd) return fatal("CreateWindowEx(magpie)", L"투명 창을 만들 수 없어요.");
   HWND control = CreateWindowExW(WS_EX_TOOLWINDOW, kControlClass, L"Desktop Magpie Control", WS_POPUP, 0, 0, 0, 0,
                                  nullptr, nullptr, inst, nullptr);
-  if (!prints.hwnd || !magpie.hwnd || !control) return 1;
+  if (!control) return fatal("CreateWindowEx(control)", L"창을 만들 수 없어요.");
+  mlog::line("windows created");
 
   g_taskbarCreated = RegisterWindowMessageW(L"TaskbarCreated");
   g_trayWanted = cfg.showTrayIcon;
@@ -302,14 +463,20 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
   Pet pet(cfg, plat, unit, seed);
 
   const int petSize = (int)std::ceil(150.f * unit);
-  if (!magpie.reserve(petSize, petSize)) return 1;
+  if (!magpie.reserve(petSize, petSize)) return fatal("magpie bitmap", L"그림 버퍼를 만들 수 없어요.");
 
   const double frame = 1.0 / cfg.frameRate;
-  double last = nowSeconds(), next = last, lastScreens = -100.0, lastRaise = 0.0;
+  const double start = nowSeconds();
+  double last = start, next = start, lastScreens = -100.0, lastRaise = 0.0, lastBeat = start, lastTaskEnd = start;
   float escHold = 0.f, printsTimer = 0.f;
   MagpiePose lastPose;
   bool havePose = false;
   BYTE lastAlpha = 0;
+  long long frames = 0, draws = 0;
+  size_t lastMonitorCount = 0;
+  TaskId prevTask = TaskId::Wander;
+  bool prevHold = false;
+  int exitCode = 0;
 
   bool running = true;
   while (running) {
@@ -334,23 +501,49 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
     if (next < now) next = now + frame;  // 많이 밀렸으면 따라잡으려 하지 않음
     const float dt = (float)std::min(0.05, now - last);
     last = now;
+    ++frames;
 
     if (g_screensDirty || now - lastScreens > 3.0) {
       std::vector<RectF> work, mons;
       WinPlatform::queryScreens(work, mons);
+      if (mons.size() != lastMonitorCount) {
+        lastMonitorCount = mons.size();
+        for (size_t i = 0; i < mons.size(); ++i)
+          mlog::line("monitor %zu: (%.0f,%.0f)-(%.0f,%.0f) work (%.0f,%.0f)-(%.0f,%.0f)%s", i, mons[i].x0, mons[i].y0,
+                     mons[i].x1, mons[i].y1, work[i].x0, work[i].y0, work[i].x1, work[i].y1,
+                     i == 0 ? " primary" : "");
+        if (mons.empty()) mlog::line("monitor list EMPTY - using fallback 1920x1080");
+      }
       pet.setScreens(work, mons);
       g_screensDirty = false;
       lastScreens = now;
     }
 
     // ESC 길게 누르기 → 종료. 포커스가 없는 창이라 키 이벤트 대신 키 '상태'를 직접 확인.
-    if (GetAsyncKeyState(VK_ESCAPE) & 0x8000)
+    if (!st.on && (GetAsyncKeyState(VK_ESCAPE) & 0x8000))
       escHold += dt;
     else
       escHold = std::max(0.f, escHold - dt * 3.f);
-    if (escHold >= kQuitHoldSeconds) break;
+    if (escHold >= kQuitHoldSeconds) {
+      mlog::line("quit: ESC held");
+      break;
+    }
 
     pet.update(dt);
+
+    // 상태 변화 기록
+    if (pet.task() != prevTask) {
+      Vec2 p = pet.position();
+      mlog::line("task: %s -> %s at (%.0f,%.0f)", taskName(prevTask), taskName(pet.task()), p.x, p.y);
+      if (pet.task() == TaskId::Wander) lastTaskEnd = now;
+      prevTask = pet.task();
+    }
+    if (pet.holdingMouse() != prevHold) {
+      prevHold = pet.holdingMouse();
+      mlog::line("%s", prevHold ? "grabbed the mouse cursor" : "released the mouse cursor");
+      if (prevHold) st.grabbed = true;
+    }
+    st.maxPrints = std::max(st.maxPrints, pet.footprints().size());
 
     // 발자국 레이어: 새 발자국이 생겼거나 흐려지는 중일 때만 (최대 10Hz) 다시 그림
     printsTimer += dt;
@@ -382,13 +575,13 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
     // 까치 레이어: 자세가 바뀌었을 때만 다시 그림
     const MagpiePose pose = pet.pose();
     const BYTE alpha = (BYTE)std::lround(255.f * (1.f - 0.85f * escHold / kQuitHoldSeconds));
+    const int px = (int)std::lround(pose.pos.x - petSize * 0.5f);
+    const int py = (int)std::lround(pose.pos.y - petSize * 0.5f - 10.f * unit);
     if (!havePose || alpha != lastAlpha || std::memcmp(&pose, &lastPose, sizeof pose) != 0) {
-      const int x = (int)std::lround(pose.pos.x - petSize * 0.5f);
-      const int y = (int)std::lround(pose.pos.y - petSize * 0.5f - 10.f * unit);
-      Canvas c = magpie.canvas(petSize, petSize, Vec2{(float)x, (float)y});
+      Canvas c = magpie.canvas(petSize, petSize, Vec2{(float)px, (float)py});
       c.clear();
       drawMagpie(c, pose, pal);
-      magpie.present(x, y, petSize, petSize, alpha);
+      if (magpie.present(px, py, petSize, petSize, alpha)) ++draws;
       lastPose = pose;
       lastAlpha = alpha;
       havePose = true;
@@ -399,8 +592,57 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
       plat.raiseOverlays();
       lastRaise = now;
     }
+
+    if (now - lastBeat > 10.0) {
+      Vec2 p = pet.position();
+      mlog::line("alive: %lld frames, %lld drawn, task %s at (%.0f,%.0f)", frames, draws, taskName(pet.task()), p.x,
+                 p.y);
+      lastBeat = now;
+    }
+
+    // ---- 자가 진단 ----
+    if (st.on) {
+      const RectF prim{0.f, 0.f, (float)GetSystemMetrics(SM_CXSCREEN), (float)GetSystemMetrics(SM_CYSCREEN)};
+      const bool fullyVisible = px >= prim.x0 && py >= prim.y0 && px + petSize <= prim.x1 && py + petSize <= prim.y1;
+      if (!st.visChecked && now - start > 1.5 && fullyVisible && magpie.shown) {
+        Sleep(300);  // 데스크톱 합성이 이번 프레임을 화면에 올릴 때까지 대기 (까치는 이 동안 멈춰 있음)
+        st.visRatio = measureOnScreen(magpie, px, py, petSize, petSize, st.visPixels);
+        st.visChecked = true;
+        mlog::line("visibility check: %.1f%% of %d opaque magpie pixels found on screen", st.visRatio * 100.0,
+                   st.visPixels);
+        next = nowSeconds();
+        last = next;
+      }
+      const bool idle = pet.task() == TaskId::Wander && now - lastTaskEnd > 1.0;
+      if (st.visChecked && idle && st.next < 4) {
+        mlog::line("selftest: start %s", taskName(st.plan[st.next]));
+        if (st.plan[st.next] == TaskId::NabMouse)  // 커서를 화면 가운데에 두고 잡게 함
+          SetCursorPos((int)(prim.x1 * 0.5f), (int)(prim.y1 * 0.5f));
+        pet.forceTask(st.plan[st.next++]);
+      }
+      // 방금 작업을 시작했을 수 있으니 상태를 다시 확인
+      const bool finished = st.next == 4 && pet.task() == TaskId::Wander && now - lastTaskEnd > 1.0;
+      if (finished || now - start > st.limit) {
+        bool ok = true;
+        auto req = [&](bool cond, const char* what) {
+          mlog::line("  [%s] %s", cond ? "ok" : "FAIL", what);
+          ok = ok && cond;
+        };
+        mlog::line("selftest summary after %.1fs:", now - start);
+        req(finished, "all four tasks ran to completion");
+        req(draws > 0 && magpie.failures == 0 && prints.failures == 0, "frames presented without errors");
+        req(st.visChecked && st.visRatio >= 0.8, "magpie actually visible on screen");
+        req(plat.spawned >= 2 && plat.spawnFailed == 0, "image + note windows created");
+        req(st.grabbed, "mouse cursor grabbed");
+        req(st.maxPrints > 0, "footprints drawn");
+        mlog::line("SELFTEST %s (%lld frames, %.1f fps)", ok ? "PASS" : "FAIL", frames, frames / (now - start));
+        exitCode = ok ? 0 : 2;
+        break;
+      }
+    }
   }
 
+  mlog::line("exiting (%lld frames, %lld drawn)", frames, draws);
   removeTray(control);
   audio.shutdown();
   prints.destroy();
@@ -408,5 +650,6 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
   DestroyWindow(control);
   timeEndPeriod(1);
   CoUninitialize();
-  return 0;
+  mlog::close();
+  return exitCode;
 }

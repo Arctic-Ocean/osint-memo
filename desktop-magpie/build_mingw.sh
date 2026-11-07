@@ -21,7 +21,7 @@ mkdir -p "$obj"
   -DUNICODE -D_UNICODE -DNOMINMAX -DWIN32_LEAN_AND_MEAN \
   -Wall -Wextra \
   src/config.cpp src/magpie_draw.cpp src/pet.cpp src/synth.cpp \
-  src/win/main.cpp src/win/win_platform.cpp src/win/audio_win.cpp \
+  src/win/main.cpp src/win/win_platform.cpp src/win/audio_win.cpp src/win/log.cpp \
   "$obj/app.res" -o "$obj/DesktopMagpie.exe" \
   -static -s -lwinmm -lole32 -lwindowscodecs -luuid -lshell32 -lgdi32 -luser32
 
@@ -29,5 +29,15 @@ dist="build/DesktopMagpie"
 rm -rf "$dist" build/DesktopMagpie.zip
 mkdir -p "$dist/Assets/Images" "$dist/Assets/Notes" "$dist/Assets/Sound/Call" "$dist/Assets/Sound/Bite" "$dist/Assets/Sound/Step"
 cp "$obj/DesktopMagpie.exe" dist/config.ini dist/Close_Magpie.bat dist/읽어주세요.txt "$dist/"
-(cd build && zip -qr DesktopMagpie.zip DesktopMagpie)
+# 파이썬 zipfile 은 한글 파일 이름에 UTF-8 플래그를 붙여서 Windows 탐색기에서도 안 깨진다
+python3 - <<'PY'
+import os, zipfile
+with zipfile.ZipFile("build/DesktopMagpie.zip", "w", zipfile.ZIP_DEFLATED) as z:
+    for root, dirs, files in os.walk("build/DesktopMagpie"):
+        rel = os.path.relpath(root, "build")
+        if not files and not dirs:
+            z.writestr(rel + "/", "")
+        for f in files:
+            z.write(os.path.join(root, f), os.path.join(rel, f))
+PY
 ls -la "$obj/DesktopMagpie.exe" build/DesktopMagpie.zip

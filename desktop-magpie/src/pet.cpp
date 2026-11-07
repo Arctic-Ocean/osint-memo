@@ -65,13 +65,12 @@ void Pet::setScreens(std::vector<RectF> work, std::vector<RectF> monitors) {
   }
 }
 
-// 시작: 주 모니터 왼쪽/오른쪽 바깥에서 걸어 들어온다
+// 시작: 주 모니터 왼쪽/오른쪽 가장자리에서 바로 보이게 나타나 "까악" 하고 걸어 들어온다
 void Pet::placeAtStart() {
-  const RectF& m = mon_[0];
   const RectF& w = work_[0];
   bool fromLeft = rnd01() < 0.5f;
   float y = rnd(w.y0 + w.h() * 0.35f, w.y0 + w.h() * 0.8f);
-  pos_ = {fromLeft ? m.x0 - 70.f * u_ : m.x1 + 70.f * u_, y};
+  pos_ = {fromLeft ? w.x0 + 30.f * u_ : w.x1 - 30.f * u_, y};
   heading_ = fromLeft ? 0.f : kPi;
   Vec2 f = fromAngle(heading_), r{-f.y, f.x};
   feet_[0].pos = pos_ - r * (4.2f * u_);
@@ -80,6 +79,7 @@ void Pet::placeAtStart() {
   goTo({tx, clampf(y + rnd(-80.f, 80.f) * u_, w.y0 + 60.f * u_, w.y1 - 30.f * u_)}, kWalkSpeed);
   task_ = TaskId::Wander;
   sub_ = 0;
+  call();
 }
 
 void Pet::update(float dt) {

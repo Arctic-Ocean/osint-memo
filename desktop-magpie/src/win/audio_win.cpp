@@ -5,6 +5,7 @@
 #include <algorithm>
 
 #include "../synth.h"
+#include "log.h"
 
 namespace {
 
@@ -65,7 +66,10 @@ void Audio::init(const std::wstring& soundDir, bool silent, uint32_t seed) {
   fmt.wBitsPerSample = 16;
   fmt.nBlockAlign = 2;
   fmt.nAvgBytesPerSec = kRate * 2;
-  if (waveOutOpen(&wo_, WAVE_MAPPER, &fmt, (DWORD_PTR)ev_, 0, CALLBACK_EVENT) != MMSYSERR_NOERROR) {
+  mlog::line("custom sounds: call=%zu bite=%zu step=%zu", custom_[0].size(), custom_[1].size(), custom_[2].size());
+  MMRESULT mr = waveOutOpen(&wo_, WAVE_MAPPER, &fmt, (DWORD_PTR)ev_, 0, CALLBACK_EVENT);
+  if (mr != MMSYSERR_NOERROR) {
+    mlog::line("audio: waveOutOpen failed (%u) - running without synthesized sound", (unsigned)mr);
     wo_ = nullptr;
     return;  // 소리 장치가 없어도 프로그램은 계속 돈다
   }
@@ -78,6 +82,7 @@ void Audio::init(const std::wstring& soundDir, bool silent, uint32_t seed) {
   run_ = 1;
   thread_ = CreateThread(nullptr, 0, threadMain, this, 0, nullptr);
   started_ = thread_ != nullptr;
+  mlog::line("audio: %s", started_ ? "ok" : "thread failed");
   SetEvent(ev_);
 }
 

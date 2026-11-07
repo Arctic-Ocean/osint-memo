@@ -28,6 +28,8 @@ class WinPlatform : public IPlatform {
   // 모니터 목록 (주 모니터가 0번)
   static void queryScreens(std::vector<RectF>& work, std::vector<RectF>& monitors);
 
+  int spawned = 0, spawnFailed = 0;  // 진단용
+
  private:
   HBITMAP pickImage(int& w, int& h);
   std::wstring pickNote();

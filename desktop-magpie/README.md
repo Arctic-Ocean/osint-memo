@@ -33,6 +33,7 @@ src/
   win/main.cpp      진입점: 투명·클릭통과 오버레이 창, 게임 루프, ESC 종료, 트레이
   win/win_platform.* 커서 조작, 모니터 목록, 물어 오는 창(사진/메모)
   win/audio_win.*   waveOut 믹서 + 사용자 mp3/wav (MCI)
+  win/log.*         진단 로그 (DesktopMagpie.log)
 tests/sim_test.cpp  리눅스에서 두뇌/그림/소리 검증 (가짜 바탕화면 시뮬레이션)
 ```
 
@@ -82,6 +83,12 @@ cmake --build build --config Release
 - 땅에 붙은 발이 미끄러지지 않는지
 - 내려놓은 창이 화면 안에 완전히 들어오는지
 - 합성한 소리의 음량이 정상 범위인지
+
+## 진단
+
+- 실행할 때마다 exe 옆에 `DesktopMagpie.log`가 생깁니다(쓸 수 없으면 `%TEMP%`). 시작 과정, 모니터, 오디오, 작업 변화, 오류, 충돌 위치가 남습니다.
+- `DesktopMagpie.exe --selftest [초]`: 사진 → 메모 → 진흙 → 마우스 순서로 모든 행동을 시키고, **화면을 실제로 캡처해서 까치가 보이는지**까지 확인한 뒤 종료합니다. 종료 코드 0이면 통과입니다.
+- GitHub Actions(`.github/workflows/desktop-magpie.yml`)가 MinGW 빌드와 MSVC 빌드를 진짜 Windows에서 `--selftest`로 돌립니다.
 
 ## 꾸미기 (exe 옆 `Assets` 폴더)
 

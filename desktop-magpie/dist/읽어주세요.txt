@@ -26,3 +26,15 @@
  Scale                 까치 크기 배율 (예: 1.5)
  FrameRate             초당 프레임. 30 으로 낮추면 더 가벼워짐
  ShowTrayIcon          True 면 작업표시줄 트레이에 아이콘 (우클릭 → 종료)
+
+실행이 안 될 때
+ 1) 압축을 먼저 풀고 실행하세요 (zip 안에서 바로 더블클릭하지 말고)
+ 2) 파란 "Windows의 PC 보호" 창이 뜨면: [추가 정보] → [실행]
+ 3) 아무 반응이 없으면 exe 옆에 DesktopMagpie.log 가 생겼는지 보세요
+    - 생겼으면: 그 파일을 보내주세요 (어디서 멈췄는지 적혀 있어요)
+    - 안 생겼으면: Windows 가 실행 자체를 막은 것입니다
+      Windows 보안 → 바이러스 및 위협 방지 → 보호 기록 에서 DesktopMagpie 를 확인
+    (exe 폴더에 쓸 수 없으면 로그는 %TEMP%\DesktopMagpie.log 에 생깁니다)
+ 4) 자가 진단: exe 가 있는 폴더 주소창에 cmd 입력 → 아래 명령 실행
+      DesktopMagpie.exe --selftest
+    40초쯤 혼자 모든 행동을 해 보고 꺼집니다. 로그 맨 아래 SELFTEST PASS / FAIL

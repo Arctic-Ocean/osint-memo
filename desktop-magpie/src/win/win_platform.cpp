@@ -8,6 +8,7 @@
 #include <cstring>
 
 #include "audio_win.h"
+#include "log.h"
 
 namespace {
 
@@ -379,6 +380,7 @@ HBITMAP WinPlatform::pickImage(int& w, int& h) {
   for (const auto& f : files) {
     HBITMAP b = loadImageFile(f, (int)(420 * ui_), (int)(360 * ui_), (int)(160 * ui_), w, h);
     if (b) return b;
+    mlog::line("could not load image: %s", mlog::utf8(f).c_str());
   }
   return renderPortrait(pal_, ui_, w, h);
 }
@@ -407,6 +409,8 @@ std::unique_ptr<ICarriedWindow> WinPlatform::spawnWindow(CarryKind kind, Vec2 at
     d->bmp = pickImage(d->w, d->h);
     if (!d->bmp) {
       delete d;
+      ++spawnFailed;
+      mlog::line("image load/render FAILED");
       return nullptr;
     }
     cw = d->w;
@@ -432,7 +436,13 @@ std::unique_ptr<ICarriedWindow> WinPlatform::spawnWindow(CarryKind kind, Vec2 at
   const Vec2 anchor{ww * 0.5f, std::max(4.f, -rc.top * 0.55f)};  // 제목 표시줄 가운데를 문다
   const int x = (int)std::lround(at.x - anchor.x), y = (int)std::lround(at.y - anchor.y);
   HWND h = CreateWindowExW(ex, cls, title, style, x, y, ww, wh, nullptr, nullptr, inst_, data);
-  if (!h) return nullptr;  // WM_NCDESTROY 가 data 를 정리함
+  if (!h) {  // WM_NCDESTROY 가 data 를 정리함
+    ++spawnFailed;
+    mlog::line("spawn %s window FAILED (err=%lu)", kind == CarryKind::Image ? "image" : "note", GetLastError());
+    return nullptr;
+  }
+  ++spawned;
+  mlog::line("spawned %s window %dx%d at (%d,%d)", kind == CarryKind::Image ? "image" : "note", ww, wh, x, y);
   ShowWindow(h, SW_SHOWNOACTIVATE);
   UpdateWindow(h);
   raiseOverlays();

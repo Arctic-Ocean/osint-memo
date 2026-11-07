@@ -1,0 +1,98 @@
+name: desktop-magpie
+
+on:
+  push:
+    paths:
+      - "desktop-magpie/**"
+      - ".github/workflows/desktop-magpie.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # 1) 리눅스에서 MinGW 로 크로스 빌드 (사용자에게 보내는 exe 와 같은 방식) + 시뮬레이션 테스트
+  mingw-build:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: desktop-magpie
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install MinGW-w64
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq g++-mingw-w64-x86-64-posix
+      - name: Simulation tests (pet brain / drawing / sound)
+        run: ./tests/run_tests.sh
+      - name: Cross-compile Windows exe
+        run: ./build_mingw.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DesktopMagpie-mingw
+          path: desktop-magpie/build/DesktopMagpie/
+
+  # 2) 그 exe 를 진짜 Windows 에서 자가 진단
+  mingw-selftest-windows:
+    needs: mingw-build
+    runs-on: windows-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: DesktopMagpie-mingw
+          path: app
+      - name: Run --selftest on Windows
+        shell: pwsh
+        run: |
+          $exe = Resolve-Path app/DesktopMagpie.exe
+          $p = Start-Process -FilePath $exe -ArgumentList '--selftest','150' -PassThru
+          $null = $p.Handle
+          Start-Sleep -Seconds 6
+          Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+          $b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+          $bmp = New-Object System.Drawing.Bitmap $b.Width, $b.Height
+          $g = [System.Drawing.Graphics]::FromImage($bmp)
+          $g.CopyFromScreen($b.Location, [System.Drawing.Point]::Empty, $b.Size)
+          $bmp.Save("$PWD/app/screenshot.png")
+          if (-not $p.WaitForExit(200000)) { $p.Kill(); Write-Host "selftest hung" }
+          Get-Content app/DesktopMagpie.log -Encoding UTF8
+          Write-Host "exit code: $($p.ExitCode)"
+          if ($p.ExitCode -ne 0) { exit 1 }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: selftest-mingw-windows
+          path: |
+            app/DesktopMagpie.log
+            app/screenshot.png
+
+  # 3) Visual Studio(MSVC) 빌드도 같은 자가 진단
+  msvc-windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: desktop-magpie
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build (MSVC)
+        run: |
+          cmake -S . -B build -A x64
+          cmake --build build --config Release
+      - name: Run --selftest on Windows
+        shell: pwsh
+        run: |
+          $exe = Resolve-Path build/Release/DesktopMagpie.exe
+          $p = Start-Process -FilePath $exe -ArgumentList '--selftest','150' -PassThru
+          $null = $p.Handle
+          if (-not $p.WaitForExit(200000)) { $p.Kill(); Write-Host "selftest hung" }
+          Get-Content build/Release/DesktopMagpie.log -Encoding UTF8
+          Write-Host "exit code: $($p.ExitCode)"
+          if ($p.ExitCode -ne 0) { exit 1 }
+      - name: Package
+        shell: pwsh
+        run: |
+          $d = "pkg/DesktopMagpie"
+          New-Item -ItemType Directory -Force "$d/Assets/Images","$d/Assets/Notes","$d/Assets/Sound/Call","$d/Assets/Sound/Bite","$d/Assets/Sound/Step" | Out-Null
+          Copy-Item build/Release/DesktopMagpie.exe, dist/config.ini, dist/Close_Magpie.bat, "dist/읽어주세요.txt" $d
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DesktopMagpie-msvc
+          path: desktop-magpie/pkg/
