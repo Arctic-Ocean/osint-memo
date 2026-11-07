@@ -64,6 +64,7 @@ void parseConfig(const std::string& textIn, Config& cfg) {
     if (key == "silencesounds") cfg.silenceSounds = parseBool(val, cfg.silenceSounds);
     else if (key == "task_canattackmouse") cfg.canAttackMouse = parseBool(val, cfg.canAttackMouse);
     else if (key == "attackrandomly") cfg.attackRandomly = parseBool(val, cfg.attackRandomly);
+    else if (key == "chasewhenclicked") cfg.chaseWhenClicked = parseBool(val, cfg.chaseWhenClicked);
     else if (key == "usecustomcolors") cfg.useCustomColors = parseBool(val, cfg.useCustomColors);
     else if (key == "magpieblack") parseColor(val, cfg.black);
     else if (key == "magpiewhite") parseColor(val, cfg.white);
@@ -90,6 +91,7 @@ std::string defaultConfigText() {
          "SilenceSounds=False\r\n"
          "Task_CanAttackMouse=True\r\n"
          "AttackRandomly=False\r\n"
+         "ChaseWhenClicked=True\r\n"
          "UseCustomColors=False\r\n"
          "MagpieBlack=#1d1d24\r\n"
          "MagpieWhite=#f4f4f0\r\n"

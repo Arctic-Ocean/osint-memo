@@ -8,9 +8,9 @@
 
 #include "config.h"
 #include "magpie_draw.h"
+#include "sound_ids.h"
 #include "vec2.h"
 
-enum class SoundId { Call = 0, Bite = 1, Step = 2 };
 enum class CarryKind { Image, Note };
 enum class TaskId { Wander, NabMouse, CollectImage, CollectNote, TrackMud };
 const char* taskName(TaskId t);
@@ -65,6 +65,8 @@ class Pet {
     return c;
   }
   void forceTask(TaskId t) { startTask(t); }  // 테스트용
+  // 사용자가 까치를 클릭함 → 화나서 커서를 쫓아감. 쫓기 시작했으면 true.
+  bool poke();
 
  private:
   struct Foot {
@@ -89,6 +91,7 @@ class Pet {
   void animate(float dt);
   void ageFootprints(float dt);
   void call();
+  void voice(SoundId id);  // 소리 + 부리 벌리기
 
   // 이동 헬퍼
   void goTo(Vec2 p, float speed) {

@@ -27,8 +27,15 @@ mkdir -p "$obj"
 
 dist="build/DesktopMagpie"
 rm -rf "$dist" build/DesktopMagpie.zip
-mkdir -p "$dist/Assets/Images" "$dist/Assets/Notes" "$dist/Assets/Sound/Call" "$dist/Assets/Sound/Bite" "$dist/Assets/Sound/Step"
+mkdir -p "$dist/Assets/Images" "$dist/Assets/Notes"
+for k in Call Chatter Bite Step Flap Drop; do mkdir -p "$dist/Assets/Sound/$k"; done
 cp "$obj/DesktopMagpie.exe" dist/config.ini dist/Close_Magpie.bat dist/읽어주세요.txt "$dist/"
+# 내장 소리 미리듣기 WAV (이 폴더는 프로그램이 읽지 않음, 들어보고 골라 쓰는 용도)
+if command -v g++ >/dev/null; then
+  g++ -O2 -std=c++17 tests/sim_test.cpp src/pet.cpp src/magpie_draw.cpp src/config.cpp src/synth.cpp -o build/sim_test
+  mkdir -p "$dist/Assets/Sound/미리듣기"
+  build/sim_test wav "$dist/Assets/Sound/미리듣기" >/dev/null
+fi
 # 파이썬 zipfile 은 한글 파일 이름에 UTF-8 플래그를 붙여서 Windows 탐색기에서도 안 깨진다
 python3 - <<'PY'
 import os, zipfile

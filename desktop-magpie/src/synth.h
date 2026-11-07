@@ -1,10 +1,11 @@
 #pragma once
 // 소리를 파일 없이 코드로 합성한다 (44.1kHz 모노 float, -1..1).
-#include <cstdint>
+// 종류마다 여러 가지 버전(1, 2, 3...)이 있고, 재생할 때 무작위로 고른다.
 #include <vector>
+
+#include "sound_ids.h"
 
 constexpr int kSynthRate = 44100;
 
-std::vector<float> synthCall(uint32_t seed);  // "까악 까악" 울음
-std::vector<float> synthBite(uint32_t seed);  // "딱" 무는 소리
-std::vector<float> synthStep(uint32_t seed);  // 톡 발소리
+int soundVariants(SoundId id);                         // 그 종류의 버전 수
+std::vector<float> synthSound(SoundId id, int variant); // variant: 0 .. soundVariants-1

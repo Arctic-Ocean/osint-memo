@@ -5,7 +5,8 @@ Desktop Goose 같은 장난 프로그램과 하는 일은 비슷하지만 캐릭
 
 - 실행 파일 하나(약 370KB). .NET이나 VC++ 런타임이 필요 없고 Windows 기본 DLL만 씁니다.
 - 기존 `config.ini` 형식(`key=value`)과 주요 키(`SilenceSounds`, `Task_CanAttackMouse`, `AttackRandomly`, `Min/Max/FirstWander...`)를 그대로 읽습니다.
-- 종료: **ESC를 1초 정도 꾹** 누르거나 `Close_Magpie.bat`을 실행합니다.
+- 종료: **ESC를 1초 정도 꾹** 누르거나 `Close_Magpie.bat`을 실행합니다(`DesktopMagpie.exe --quit`과 같음. 관리자 권한으로 실행된 까치나 이름이 바뀐 exe도 끕니다).
+- 까치를 **클릭하면** 화나서 커서를 쫓아옵니다(`ChaseWhenClicked`). 평소엔 느긋하게 걷고 쫓아갈 때만 빠릅니다.
 
 ## 가볍게 만든 방법
 
@@ -28,7 +29,9 @@ src/
   raster.h          SDF 래스터라이저 (원, 캡슐, 타원, 삼각형, 둥근 원뿔)
   magpie_draw.*     까치 그리기 (도형 조합, 색 변경 가능), 발자국
   pet.*             두뇌 + 몸: 스티어링 이동, 절차적 다리, 작업 상태 머신
-  synth.*           소리 합성 ("까악", 무는 소리, 발소리) — 파일 없이 코드로 생성
+  synth.*           소리 합성 — 파일 없이 코드로 생성. 종류마다 여러 버전:
+                    Call 4(까악), Chatter 2(깍깍깍), Bite 4(딱/아작/딱딱/콱), Step 4, Flap 2(푸드덕), Drop 2(툭)
+  sound_ids.h       소리 종류 = Assets\Sound\ 아래 폴더 이름
   config.*          config.ini 파서
   win/main.cpp      진입점: 투명·클릭통과 오버레이 창, 게임 루프, ESC 종료, 트레이
   win/win_platform.* 커서 조작, 모니터 목록, 물어 오는 창(사진/메모)
@@ -87,7 +90,7 @@ cmake --build build --config Release
 ## 진단
 
 - 실행할 때마다 exe 옆에 `DesktopMagpie.log`가 생깁니다(쓸 수 없으면 `%TEMP%`). 시작 과정, 모니터, 오디오, 작업 변화, 오류, 충돌 위치가 남습니다.
-- `DesktopMagpie.exe --selftest [초]`: 사진 → 메모 → 진흙 → 마우스 순서로 모든 행동을 시키고, **화면을 실제로 캡처해서 까치가 보이는지**까지 확인한 뒤 종료합니다. 종료 코드 0이면 통과입니다.
+- `DesktopMagpie.exe --selftest [초]`: 사진 → 메모 → 진흙 → 마우스 → 까치 클릭 순서로 모든 행동을 시키고, **화면을 실제로 캡처해서 까치가 보이는지**까지 확인한 뒤 종료합니다. 종료 코드 0이면 통과입니다.
 - GitHub Actions(`.github/workflows/desktop-magpie.yml`)가 MinGW 빌드와 MSVC 빌드를 진짜 Windows에서 `--selftest`로 돌립니다.
 
 ## 꾸미기 (exe 옆 `Assets` 폴더)
@@ -96,7 +99,8 @@ cmake --build build --config Release
 |---|---|
 | `Assets\Images\` | png/jpg/gif/bmp → 까치가 물어 오는 사진 (없으면 까치 자화상) |
 | `Assets\Notes\` | txt → 메모 창 내용 (없으면 기본 문구) |
-| `Assets\Sound\Call\`, `Bite\`, `Step\` | mp3/wav → 합성음 대신 재생 |
+| `Assets\Sound\Call\`, `Chatter\`, `Bite\`, `Step\`, `Flap\`, `Drop\` | mp3/wav → 그 종류는 합성음 대신 넣은 파일 중 하나를 무작위 재생 |
+| `Assets\Sound\미리듣기\` | 내장 소리를 WAV로 들어 보는 곳 (프로그램은 읽지 않음) |
 
 ## 설정 (`config.ini`)
 
@@ -105,6 +109,7 @@ cmake --build build --config Release
 | `SilenceSounds` | False | 소리 끄기 |
 | `Task_CanAttackMouse` | True | 마우스 훔치기 사용 |
 | `AttackRandomly` | False | 어슬렁거리다가도 아무 때나 마우스 습격 |
+| `ChaseWhenClicked` | True | 까치를 클릭하면 커서를 쫓아옴 (끄면 까치가 클릭을 그대로 통과시킴) |
 | `UseCustomColors` | False | 아래 `Magpie*` 색 사용 |
 | `MagpieBlack` / `MagpieWhite` / `MagpieBlue` / `MagpieOutline` | | 몸 / 어깨깃 / 날개·꼬리 광택 / 외곽선 색 |
 | `MinWanderingTimeSeconds` | 20 | 장난 사이 최소 대기 |

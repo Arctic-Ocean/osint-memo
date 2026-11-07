@@ -89,7 +89,7 @@ void drawMagpie(Canvas& c, const MagpiePose& p, const MagpiePalette& pal) {
   const Basis B = basisOf(p);
   const float u = p.unit;
   const float bz = kBodyZ + p.bob;
-  const float ow = std::max(1.f, 1.05f * u);  // 외곽선 두께 (픽셀)
+  const float ow = std::max(1.f, 1.3f * u);  // 외곽선 두께 (픽셀)
   const Vec2 up{0.f, -u};
 
   // 1) 그림자
@@ -108,9 +108,9 @@ void drawMagpie(Canvas& c, const MagpiePose& p, const MagpiePalette& pal) {
   Vec2 tailBaseG = B.ground(-8.f, 0.f);
   Vec2 tailDir = rotate(-B.f, p.tailSway);
   Vec2 tailBase = tailBaseG + Vec2{0.f, -(bz + 0.5f) * u};
-  Vec2 tailTip = tailBaseG + tailDir * (28.f * u) + Vec2{0.f, -(bz - 1.f + p.tailLift) * u};
-  RoundCone tail(tailBase, tailTip, 3.3f * u, 4.7f * u);
-  Ellipse body(B.P(0.f, 0.f, bz), 15.f * u, 10.f * u, p.heading);
+  Vec2 tailTip = tailBaseG + tailDir * (24.f * u) + Vec2{0.f, -(bz - 1.f + p.tailLift) * u};
+  RoundCone tail(tailBase, tailTip, 3.6f * u, 5.0f * u);
+  Ellipse body(B.P(0.f, 0.f, bz), 14.f * u, 10.5f * u, p.heading);
   HeadGeo H = headGeo(p);
   Capsule neck(H.neckBase, H.center, 5.2f * u);
   Circle head(H.center, 6.6f * u);
@@ -131,23 +131,15 @@ void drawMagpie(Canvas& c, const MagpiePose& p, const MagpiePalette& pal) {
   c.fill(beakLow, pal.outline, ow);
   c.fill(beakUp, pal.outline, ow);
 
-  // 5) 꼬리 (검정 + 푸른 광택)
-  c.fill(tail, pal.black);
-  Vec2 td = normalize(tailTip - tailBase);
-  c.fill(RoundCone(tailBase + td * (6.f * u), tailTip - td * (2.5f * u), 1.2f * u, 2.3f * u),
-         withAlpha(pal.blue, 0.6f));
+  // 5) 꼬리: 푸른빛 도는 검정 한 가지 색 (단순하게)
+  c.fill(tail, mixColor(pal.black, pal.blue, 0.4f));
 
-  // 6) 몸통 + 날개 광택 + 흰 어깨깃
+  // 6) 몸통 + 양옆 흰 무늬
   c.fill(body, pal.black);
   for (int i = 0; i < 2; ++i) {
     float s = i == 0 ? -1.f : 1.f;
-    Ellipse wing(B.P(-8.f, s * 4.0f, bz + 0.4f), 8.5f * u, 2.8f * u, p.heading + s * 0.22f);
-    fillClipped(c, wing, body, 1.2f * u, withAlpha(pal.blue, 0.85f));
-  }
-  for (int i = 0; i < 2; ++i) {
-    float s = i == 0 ? -1.f : 1.f;
-    Ellipse patch(B.P(0.5f, s * 6.6f, bz + 0.3f), 9.5f * u, 2.7f * u, p.heading + s * 0.12f);
-    fillClipped(c, patch, body, 0.8f * u, pal.white);
+    Ellipse patch(B.P(0.f, s * 6.8f, bz + 0.3f), 9.f * u, 3.2f * u, p.heading + s * 0.1f);
+    fillClipped(c, patch, body, 0.9f * u, pal.white);
   }
 
   // 7) 목, 머리, 눈
@@ -155,10 +147,9 @@ void drawMagpie(Canvas& c, const MagpiePose& p, const MagpiePalette& pal) {
   c.fill(head, pal.black);
   for (int i = 0; i < 2; ++i) {
     float s = i == 0 ? -1.f : 1.f;
-    Vec2 e = H.center + rotate(H.dir, s * 1.0f) * (4.2f * u) + up * 0.9f;
-    c.fill(Circle(e, 1.9f * u), pal.eyeRing);
-    c.fill(Circle(e, 1.4f * u), pal.eye);
-    c.fill(Circle(e + Vec2{-0.45f * u, -0.45f * u}, 0.55f * u), pal.glint);
+    Vec2 e = H.center + rotate(H.dir, s * 1.0f) * (4.0f * u) + up * 0.9f;
+    c.fill(Circle(e, 1.7f * u), pal.white);  // 흰자 + 까만 눈동자 (단순한 만화 눈)
+    c.fill(Circle(e + H.dir * (0.45f * u), 0.95f * u), pal.eye);
   }
 
   // 8) 부리 (벌리면 입 안이 보임)

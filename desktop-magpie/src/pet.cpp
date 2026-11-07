@@ -4,11 +4,12 @@
 #include <cmath>
 
 namespace {
-// 속도는 "디자인 단위/초" (unit 을 곱하면 픽셀/초)
-constexpr float kWalkSpeed = 85.f;
-constexpr float kRunSpeed = 230.f;
-constexpr float kDragSpeed = 75.f;
-constexpr float kMudSpeed = 110.f;
+// 속도는 "디자인 단위/초" (unit 을 곱하면 픽셀/초). 평소엔 느긋하게, 쫓아갈 때만 빠르게.
+constexpr float kWalkSpeed = 55.f;
+constexpr float kRunSpeed = 240.f;       // 커서 쫓아갈 때
+constexpr float kDragSpeed = 48.f;       // 창 끌고 올 때
+constexpr float kMouseDragSpeed = 55.f;  // 커서 물고 끌고 갈 때
+constexpr float kMudSpeed = 62.f;
 constexpr float kTurnRate = 8.f;            // 라디안/초
 constexpr float kFootprintLife = 16.f;      // 발자국 수명 (초)
 constexpr float kFootprintFade = 5.f;       // 마지막 몇 초 동안 흐려짐
@@ -162,7 +163,7 @@ void Pet::thinkNab(float dt) {
       endTask();  // 너무 오래 못 잡으면 포기
     }
   } else {
-    goTo(dragTarget_, kDragSpeed * 1.3f);
+    goTo(dragTarget_, kMouseDragSpeed);
     if (taskTimer_ > subTimer_ || arrived(8.f)) {
       holdingMouse_ = false;
       call();
@@ -182,6 +183,7 @@ void Pet::thinkCollect(float dt) {
         endTask();
         return;
       }
+      plat_.playSound(SoundId::Bite);
       dropBeak_ = pickDropPoint(*carried_);
       backward_ = true;
       sub_ = 1;
@@ -197,6 +199,7 @@ void Pet::thinkCollect(float dt) {
     if (length(beakTip() - dropBeak_) < 8.f * u_ || taskTimer_ > 30.f) {
       carried_->release();
       carried_.reset();
+      plat_.playSound(SoundId::Drop);
       call();
       endTask();
     }
@@ -234,9 +237,12 @@ void Pet::startTask(TaskId t) {
   backward_ = false;
   switch (t) {
     case TaskId::Wander: break;
-    case TaskId::NabMouse: call(); break;
+    case TaskId::NabMouse:
+      voice(SoundId::Chatter);
+      plat_.playSound(SoundId::Flap);
+      break;
     case TaskId::CollectImage:
-    case TaskId::CollectNote: goTo(exitPoint(), kWalkSpeed * 1.5f); break;
+    case TaskId::CollectNote: goTo(exitPoint(), kWalkSpeed); break;
     case TaskId::TrackMud:
       muddy_ = true;
       taskTimer_ = rnd(9.f, 14.f);
@@ -397,9 +403,23 @@ bool Pet::footprintsFading() const {
   return !prints_.empty() && prints_.front().age > kFootprintLife - kFootprintFade;
 }
 
-void Pet::call() {
-  plat_.playSound(SoundId::Call);
+void Pet::call() { voice(SoundId::Call); }
+
+void Pet::voice(SoundId id) {
+  plat_.playSound(id);
   callT_ = 0.f;
+}
+
+bool Pet::poke() {
+  if (task_ == TaskId::NabMouse) return false;  // 이미 쫓는 중
+  if (carried_) {                               // 창 끌고 오는 중엔 투덜대기만
+    voice(SoundId::Chatter);
+    return false;
+  }
+  muddy_ = false;
+  backward_ = false;
+  startTask(TaskId::NabMouse);
+  return true;
 }
 
 MagpiePose Pet::pose() const {

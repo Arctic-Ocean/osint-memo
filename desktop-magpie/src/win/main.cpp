@@ -37,9 +37,10 @@
 
 namespace {
 
-constexpr const char* kVersion = "1.0.1";
+constexpr const char* kVersion = "1.0.2";
 constexpr float kQuitHoldSeconds = 1.2f;  // ESC 를 이만큼 누르고 있으면 종료
 constexpr UINT WM_TRAY = WM_APP + 1;
+constexpr UINT WM_MAGPIE_QUIT = WM_APP + 2;  // Close_Magpie.bat (DesktopMagpie.exe --quit) 가 보내는 "집에 가" 신호
 constexpr UINT ID_TRAY_QUIT = 1001;
 const wchar_t* const kOverlayClass = L"DesktopMagpieOverlay";
 const wchar_t* const kControlClass = L"DesktopMagpieControl";
@@ -51,6 +52,8 @@ bool g_trayWanted = false;
 bool g_trayAdded = false;
 bool g_selftest = false;
 HICON g_trayIcon = nullptr;
+HWND g_clickable = nullptr;  // 클릭할 수 있는 까치 창 (ChaseWhenClicked=True 일 때)
+bool g_poked = false;        // 까치가 클릭됨
 
 // ---- 오류 처리 ----
 
@@ -257,11 +260,55 @@ double nowSeconds() { return mlog::seconds(); }
 LRESULT CALLBACK OverlayProc(HWND h, UINT m, WPARAM w, LPARAM l) {
   switch (m) {
     case WM_NCHITTEST:
-      return HTTRANSPARENT;  // 클릭은 아래 창으로
+      // 까치 몸(투명하지 않은 픽셀)만 클릭을 받고, 나머지는 아래 창으로 통과
+      return h == g_clickable ? HTCLIENT : HTTRANSPARENT;
     case WM_MOUSEACTIVATE:
       return MA_NOACTIVATE;
+    case WM_SETCURSOR:
+      if (h == g_clickable) {
+        SetCursor(LoadCursor(nullptr, IDC_HAND));
+        return TRUE;
+      }
+      break;
+    case WM_LBUTTONDOWN:
+    case WM_RBUTTONDOWN:
+      if (h == g_clickable) g_poked = true;
+      return 0;
   }
   return DefWindowProcW(h, m, w, l);
+}
+
+// DesktopMagpie.exe --quit : 실행 중인 까치(들)에게 종료 신호를 보낸다.
+// taskkill 과 달리 관리자 권한으로 실행된 까치도 끌 수 있고, exe 이름이 바뀌어도 된다.
+int quitRunning() {
+  std::vector<HWND> wins;
+  for (HWND w = FindWindowExW(nullptr, nullptr, kControlClass, nullptr); w;
+       w = FindWindowExW(nullptr, w, kControlClass, nullptr))
+    wins.push_back(w);
+  if (wins.empty()) return 0;
+  for (HWND w : wins) PostMessageW(w, WM_MAGPIE_QUIT, 0, 0);
+  for (int i = 0; i < 40; ++i) {
+    bool any = false;
+    for (HWND w : wins) any = any || IsWindow(w);
+    if (!any) return 0;
+    Sleep(100);
+  }
+  int left = 0;  // 신호에 응답이 없으면 강제 종료
+  for (HWND w : wins) {
+    if (!IsWindow(w)) continue;
+    DWORD pid = 0;
+    GetWindowThreadProcessId(w, &pid);
+    HANDLE p = OpenProcess(PROCESS_TERMINATE | SYNCHRONIZE, FALSE, pid);
+    if (p && TerminateProcess(p, 0))
+      WaitForSingleObject(p, 2000);
+    else
+      ++left;
+    if (p) CloseHandle(p);
+  }
+  if (left)
+    MessageBoxW(nullptr, L"까치를 끄지 못했어요.\nESC 키를 1초 정도 꾹 눌러 주세요.", kTitle,
+                MB_ICONWARNING | MB_OK | MB_TOPMOST);
+  return left ? 1 : 0;
 }
 
 void addTray(HWND hwnd) {
@@ -308,6 +355,10 @@ LRESULT CALLBACK ControlProc(HWND h, UINT m, WPARAM w, LPARAM l) {
           PostQuitMessage(0);
         }
       }
+      return 0;
+    case WM_MAGPIE_QUIT:
+      mlog::line("quit: requested by Close_Magpie.bat (--quit)");
+      PostQuitMessage(0);
       return 0;
     case WM_DISPLAYCHANGE:
     case WM_SETTINGCHANGE:  // 해상도/작업표시줄 변경
@@ -363,7 +414,9 @@ struct SelfTest {
   bool on = false;
   double limit = 120.0;
   const TaskId plan[4] = {TaskId::CollectImage, TaskId::CollectNote, TaskId::TrackMud, TaskId::NabMouse};
-  int next = 0;
+  int next = 0;  // 0..3 = plan, 4 = 까치 클릭해 보기, 5 = 끝
+  double clickAt = 0.0;
+  bool pokeChased = false;
   bool visChecked = false;
   double visRatio = -1.0;
   int visPixels = 0;
@@ -379,6 +432,10 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
     int argc = 0;
     LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
     for (int i = 1; argv && i < argc; ++i) {
+      if (lstrcmpiW(argv[i], L"--quit") == 0) {
+        LocalFree(argv);
+        return quitRunning();  // 로그도 건드리지 않고 바로 끝
+      }
       if (lstrcmpiW(argv[i], L"--selftest") == 0) {
         st.on = true;
         if (i + 1 < argc) {
@@ -444,13 +501,22 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
   prints.hwnd = CreateWindowExW(overlayEx, kOverlayClass, L"Desktop Magpie Tracks", WS_POPUP, 0, 0, 1, 1, nullptr,
                                 nullptr, inst, nullptr);
   if (!prints.hwnd) return fatal("CreateWindowEx(tracks)", L"투명 창을 만들 수 없어요.");
-  magpie.hwnd = CreateWindowExW(overlayEx, kOverlayClass, L"Desktop Magpie", WS_POPUP, 0, 0, 1, 1, nullptr, nullptr,
+  // ChaseWhenClicked 면 까치 창은 클릭을 받는다 (투명한 픽셀은 여전히 통과)
+  const DWORD magpieEx = cfg.chaseWhenClicked ? (overlayEx & ~(DWORD)WS_EX_TRANSPARENT) : overlayEx;
+  magpie.hwnd = CreateWindowExW(magpieEx, kOverlayClass, L"Desktop Magpie", WS_POPUP, 0, 0, 1, 1, nullptr, nullptr,
                                 inst, nullptr);
+  if (cfg.chaseWhenClicked) g_clickable = magpie.hwnd;
   if (!magpie.hwnd) return fatal("CreateWindowEx(magpie)", L"투명 창을 만들 수 없어요.");
   HWND control = CreateWindowExW(WS_EX_TOOLWINDOW, kControlClass, L"Desktop Magpie Control", WS_POPUP, 0, 0, 0, 0,
                                  nullptr, nullptr, inst, nullptr);
   if (!control) return fatal("CreateWindowEx(control)", L"창을 만들 수 없어요.");
-  mlog::line("windows created");
+  {  // 관리자 권한으로 실행돼도 Close_Magpie.bat 의 종료 신호는 받도록
+    using FilterFn = BOOL(WINAPI*)(HWND, UINT, DWORD, void*);
+    HMODULE user = GetModuleHandleW(L"user32.dll");
+    auto filter = user ? (FilterFn)(void*)GetProcAddress(user, "ChangeWindowMessageFilterEx") : nullptr;
+    if (filter) filter(control, WM_MAGPIE_QUIT, 1 /* MSGFLT_ALLOW */, nullptr);
+  }
+  mlog::line("windows created (click to chase: %s)", cfg.chaseWhenClicked ? "on" : "off");
 
   g_taskbarCreated = RegisterWindowMessageW(L"TaskbarCreated");
   g_trayWanted = cfg.showTrayIcon;
@@ -527,6 +593,13 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
     if (escHold >= kQuitHoldSeconds) {
       mlog::line("quit: ESC held");
       break;
+    }
+
+    if (g_poked) {
+      g_poked = false;
+      const bool chase = pet.poke();
+      mlog::line("magpie clicked -> %s", chase ? "chasing the cursor" : "busy, only grumbles");
+      if (chase && st.on && st.next == 5) st.pokeChased = true;
     }
 
     pet.update(dt);
@@ -620,8 +693,24 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
           SetCursorPos((int)(prim.x1 * 0.5f), (int)(prim.y1 * 0.5f));
         pet.forceTask(st.plan[st.next++]);
       }
+      else if (st.visChecked && idle && st.next == 4) {
+        st.next = 5;
+        if (cfg.chaseWhenClicked) {  // 까치 몸통 한가운데를 진짜 마우스 클릭으로 눌러 봄
+          const Vec2 body = pose.pos + Vec2{0.f, -17.f * unit};
+          SetCursorPos((int)std::lround(body.x), (int)std::lround(body.y));
+          INPUT in[2] = {};
+          in[0].type = in[1].type = INPUT_MOUSE;
+          in[0].mi.dwFlags = MOUSEEVENTF_LEFTDOWN;
+          in[1].mi.dwFlags = MOUSEEVENTF_LEFTUP;
+          SendInput(2, in, sizeof(INPUT));
+          Sleep(60);  // 클릭이 처리될 동안 까치를 멈춰 둠
+          mlog::line("selftest: click the magpie at (%.0f,%.0f)", body.x, body.y);
+        }
+        st.clickAt = nowSeconds();
+      }
       // 방금 작업을 시작했을 수 있으니 상태를 다시 확인
-      const bool finished = st.next == 4 && pet.task() == TaskId::Wander && now - lastTaskEnd > 1.0;
+      const bool finished = st.next == 5 && pet.task() == TaskId::Wander && now - lastTaskEnd > 1.0 &&
+                            now - st.clickAt > 2.0;
       if (finished || now - start > st.limit) {
         bool ok = true;
         auto req = [&](bool cond, const char* what) {
@@ -630,6 +719,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
         };
         mlog::line("selftest summary after %.1fs:", now - start);
         req(finished, "all four tasks ran to completion");
+        if (cfg.chaseWhenClicked) req(st.pokeChased, "clicking the magpie makes it chase");
         req(draws > 0 && magpie.failures == 0 && prints.failures == 0, "frames presented without errors");
         req(st.visChecked && st.visRatio >= 0.8, "magpie actually visible on screen");
         req(plat.spawned >= 2 && plat.spawnFailed == 0, "image + note windows created");

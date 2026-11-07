@@ -2,7 +2,8 @@
 // waveOut 위의 아주 작은 믹서.
 //  - 합성 소리는 여러 개가 겹쳐도 같이 재생된다.
 //  - 1초 이상 조용하면 장치를 일시정지 → CPU 0, 절전 방해 없음.
-//  - Assets\Sound\Call|Bite|Step 폴더에 mp3/wav 를 넣으면 그 소리를 대신 쓴다 (MCI 재생).
+//  - Assets\Sound\<종류>\ 폴더(Call, Chatter, Bite, Step, Flap, Drop)에 mp3/wav 를 넣으면
+//    그 종류는 합성음 대신 그 파일들 중 하나를 무작위로 재생한다 (MCI).
 #include <windows.h>
 #include <mmsystem.h>
 
@@ -10,7 +11,7 @@
 #include <string>
 #include <vector>
 
-#include "../pet.h"
+#include "../sound_ids.h"
 
 class Audio {
  public:
@@ -23,8 +24,6 @@ class Audio {
   static constexpr int kRate = 44100;
   static constexpr int kBufSamples = 1024;  // ~23ms
   static constexpr int kBufs = 4;
-  static constexpr int kKinds = 3;
-  static constexpr int kVariants = 3;
 
   struct Voice {
     const float* s;
@@ -39,9 +38,9 @@ class Audio {
   bool silent_ = true;
   bool started_ = false;
   std::mt19937 rng_;
-  std::vector<float> bank_[kKinds][kVariants];
-  float vol_[kKinds] = {0.55f, 0.75f, 0.14f};
-  std::vector<std::wstring> custom_[kKinds];
+  std::vector<std::vector<float>> bank_[kSoundKinds];  // 종류별 여러 버전
+  int last_[kSoundKinds] = {};                          // 같은 버전 연속 재생 피하기
+  std::vector<std::wstring> custom_[kSoundKinds];
 
   HWAVEOUT wo_ = nullptr;
   HANDLE ev_ = nullptr, thread_ = nullptr;

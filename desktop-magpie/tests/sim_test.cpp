@@ -54,7 +54,7 @@ class FakePlatform : public IPlatform {
  public:
   Vec2 cursor{960.f, 540.f};
   int setCursorCount = 0;
-  int sounds[3] = {0, 0, 0};
+  int sounds[kSoundKinds] = {};
   std::vector<std::shared_ptr<FakeWinState>> wins;
 
   Vec2 cursorPos() override { return cursor; }
@@ -149,6 +149,8 @@ int runSim(const std::string& outdir) {
   int dumped = 0;
   float minX = 1e9f, maxX = -1e9f, minY = 1e9f, maxY = -1e9f;
   float worstFootSlip = 0.f;
+  float maxWalkSpeed = 0.f, maxChaseSpeed = 0.f, sinceChase = 10.f;
+  Vec2 prevPos = pet.position();
 
   for (int i = 0; i < frames; ++i) {
     float t = i * dt;
@@ -176,6 +178,16 @@ int runSim(const std::string& outdir) {
 
     Vec2 p = pet.position();
     CHECK(std::isfinite(p.x) && std::isfinite(p.y), "NaN position at t=%.2f", t);
+    {
+      float sp = length(p - prevPos) / dt;
+      if (pet.task() == TaskId::NabMouse) {
+        if (!pet.holdingMouse()) maxChaseSpeed = std::max(maxChaseSpeed, sp);
+      } else if (t > 2.f) {  // 추격 직후 감속 구간은 제외
+        if (sinceChase > 1.f) maxWalkSpeed = std::max(maxWalkSpeed, sp);
+      }
+      sinceChase = pet.task() == TaskId::NabMouse ? 0.f : sinceChase + dt;
+      prevPos = p;
+    }
     minX = std::min(minX, p.x);
     maxX = std::max(maxX, p.x);
     minY = std::min(minY, p.y);
@@ -228,9 +240,10 @@ int runSim(const std::string& outdir) {
 
   std::printf("\n--- summary ---\n");
   for (auto& kv : taskCount) std::printf("%-13s x%d\n", taskName(kv.first), kv.second);
-  std::printf("grabs=%d setCursor=%d windows=%zu maxFootprints=%d sounds(call/bite/step)=%d/%d/%d frames=%d\n",
-              grabs, plat.setCursorCount, plat.wins.size(), maxPrints, plat.sounds[0], plat.sounds[1],
-              plat.sounds[2], dumped);
+  std::printf("grabs=%d setCursor=%d windows=%zu maxFootprints=%d frames=%d\nsounds:", grabs, plat.setCursorCount,
+              plat.wins.size(), maxPrints, dumped);
+  for (int k = 0; k < kSoundKinds; ++k) std::printf(" %s=%d", soundName((SoundId)k), plat.sounds[k]);
+  std::printf("\n");
   std::printf("pos range x[%.0f..%.0f] y[%.0f..%.0f]  worst planted-foot slip=%.3fpx\n", minX, maxX, minY, maxY,
               worstFootSlip);
 
@@ -240,7 +253,30 @@ int runSim(const std::string& outdir) {
   CHECK(taskCount[TaskId::TrackMud] > 0, "TrackMud never ran");
   CHECK(grabs > 0, "never grabbed the mouse");
   CHECK(maxPrints > 10, "too few footprints (%d)", maxPrints);
-  CHECK(plat.sounds[0] > 5 && plat.sounds[1] > 0 && plat.sounds[2] > 20, "sounds not played enough");
+  for (int k = 0; k < kSoundKinds; ++k) CHECK(plat.sounds[k] > 0, "sound %s never played", soundName((SoundId)k));
+  CHECK(plat.sounds[(int)SoundId::Call] > 5 && plat.sounds[(int)SoundId::Step] > 20, "sounds not played enough");
+
+  // 클릭하면 쫓아오기: 어슬렁거릴 때 찌르면 바로 NabMouse
+  {
+    FakePlatform p2;
+    Pet pk(cfg, p2, unit, 777u);
+    pk.setScreens({work}, {mon});
+    for (int i = 0; i < 120; ++i) pk.update(dt);
+    CHECK(pk.task() == TaskId::Wander, "expected Wander before poke");
+    CHECK(pk.poke(), "poke did not start a chase");
+    CHECK(pk.task() == TaskId::NabMouse, "poke did not switch to NabMouse");
+    CHECK(!pk.poke(), "second poke during chase should be ignored");
+    bool grabbed = false;
+    for (int i = 0; i < 60 * 12 && pk.task() == TaskId::NabMouse; ++i) {
+      pk.update(dt);
+      grabbed |= pk.holdingMouse();
+    }
+    CHECK(grabbed, "poke chase never grabbed the cursor");
+  }
+
+  // 속도: 평소 걷기는 느리게, 추격만 빠르게
+  CHECK(maxWalkSpeed < 75.f * unit, "walking too fast: %.0f px/s", maxWalkSpeed);
+  CHECK(maxChaseSpeed > 200.f * unit, "chase too slow: %.0f px/s", maxChaseSpeed);
   CHECK(worstFootSlip < 0.001f, "planted foot slid %.3fpx", worstFootSlip);
   CHECK(minX > -400.f && maxX < 2320.f && minY > -400.f && maxY < 1480.f, "wandered too far off screen");
   int dropped = 0;
@@ -336,20 +372,20 @@ void writeWav(const std::string& path, const std::vector<float>& s) {
 }
 
 int runWav(const std::string& dir) {
-  struct Item {
-    const char* name;
-    std::vector<float> s;
-  } items[] = {{"call", synthCall(1)}, {"call2", synthCall(2)}, {"bite", synthBite(3)}, {"step", synthStep(4)}};
-  for (auto& it : items) {
-    float peak = 0.f, rms = 0.f;
-    for (float v : it.s) {
-      peak = std::max(peak, std::fabs(v));
-      rms += v * v;
+  for (int k = 0; k < kSoundKinds; ++k) {
+    SoundId id = (SoundId)k;
+    for (int v = 0; v < soundVariants(id); ++v) {
+      std::vector<float> s = synthSound(id, v);
+      float peak = 0.f, rms = 0.f;
+      for (float x : s) {
+        peak = std::max(peak, std::fabs(x));
+        rms += x * x;
+      }
+      rms = s.empty() ? 0.f : std::sqrt(rms / s.size());
+      std::printf("%-8s %d  %.3fs peak=%.2f rms=%.3f\n", soundName(id), v + 1, (float)s.size() / kSynthRate, peak, rms);
+      CHECK(!s.empty() && peak > 0.3f && peak <= 1.f && rms > 0.01f, "%s%d level out of range", soundName(id), v + 1);
+      if (!dir.empty()) writeWav(dir + "/" + soundName(id) + std::to_string(v + 1) + ".wav", s);
     }
-    rms = std::sqrt(rms / it.s.size());
-    std::printf("%-6s %.3fs peak=%.2f rms=%.3f\n", it.name, (float)it.s.size() / kSynthRate, peak, rms);
-    CHECK(peak > 0.3f && peak <= 1.f && rms > 0.02f, "%s sound level out of range", it.name);
-    writeWav(dir + "/" + it.name + ".wav", it.s);
   }
   return g_fail ? 1 : 0;
 }

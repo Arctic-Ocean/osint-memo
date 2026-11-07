@@ -1,25 +1,30 @@
 ﻿데스크톱 까치 (Desktop Magpie)
 ==============================
 
-실행: DesktopMagpie.exe 더블클릭
+실행: DesktopMagpie.exe 더블클릭  (화면 가장자리에 까치가 나타나 "까악" 해요)
 종료: ESC 키를 1초 정도 꾹 누르기  (또는 Close_Magpie.bat 실행)
 
 까치가 하는 일
- - 화면을 돌아다니며 가끔 "까악" 웁니다
- - 마우스 커서를 물고 끌고 갑니다
+ - 화면을 느긋하게 돌아다니며 가끔 "까악" 웁니다
+ - 마우스 커서를 쫓아와서 물고 끌고 갑니다 (쫓아올 때만 빨라요)
+ - 까치를 클릭하면 화나서 커서를 쫓아옵니다
  - 화면 밖에서 사진 창 / 메모 창을 물어 옵니다 (창은 그냥 닫으면 됩니다)
  - 진흙 발자국을 남기고 다닙니다 (잠시 후 사라집니다)
 
 꾸미기 (exe 옆 Assets 폴더)
  - Assets\Images\   : png/jpg/gif/bmp 를 넣으면 그 사진을 물어 옵니다
  - Assets\Notes\    : txt 를 넣으면 그 글을 메모 창에 씁니다 (UTF-8 권장)
- - Assets\Sound\Call\ , Bite\ , Step\ : mp3/wav 를 넣으면 기본 소리 대신 재생합니다
+ - Assets\Sound\ 아래 Call(까악) Chatter(깍깍깍) Bite(물기) Step(발소리) Flap(날갯짓) Drop(툭)
+   폴더에 mp3/wav 를 넣으면 그 종류는 기본 소리 대신 넣은 파일들 중 하나를 골라 재생합니다
+ - Assets\Sound\미리듣기\ : 기본 소리들(Call1~4, Bite1~4, Step1~4 ...)을 들어볼 수 있어요
+   마음에 드는 것만 위 폴더에 복사해 두면 그 소리만 나옵니다
  실행 중에 넣은 사진/메모도 바로 반영됩니다. (소리는 다시 실행해야 반영)
 
 설정 (config.ini)
  SilenceSounds         True 면 소리 끔
  Task_CanAttackMouse   False 면 마우스를 훔치지 않음
  AttackRandomly        True 면 돌아다니다가도 갑자기 마우스를 습격
+ ChaseWhenClicked      True 면 까치를 클릭했을 때 커서를 쫓아옴 (기본 True)
  UseCustomColors       True 면 아래 Magpie... 색을 사용
  Min/MaxWanderingTimeSeconds  다음 장난까지 어슬렁거리는 시간 (초)
  FirstWanderTimeSeconds       처음 장난까지의 시간 (초)

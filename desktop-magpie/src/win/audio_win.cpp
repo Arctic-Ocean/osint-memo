@@ -3,6 +3,7 @@
 #include <mmsystem.h>
 
 #include <algorithm>
+#include <cstring>
 
 #include "../synth.h"
 #include "log.h"
@@ -30,31 +31,46 @@ std::vector<std::wstring> listSoundFiles(const std::wstring& dir) {
 
 }  // namespace
 
+namespace {
+// 종류별 음량 (발소리는 작게)
+constexpr float kVolume[kSoundKinds] = {0.55f, 0.5f, 0.75f, 0.14f, 0.35f, 0.5f};
+constexpr int kMciVolume[kSoundKinds] = {800, 750, 900, 250, 550, 750};
+}  // namespace
+
 void Audio::init(const std::wstring& soundDir, bool silent, uint32_t seed) {
   silent_ = silent;
   rng_.seed(seed);
-  if (silent_) return;
-
-  for (int v = 0; v < kVariants; ++v) {
-    bank_[0][v] = synthCall(seed + 11u * v + 1u);
-    bank_[1][v] = synthBite(seed + 13u * v + 2u);
-    bank_[2][v] = synthStep(seed + 17u * v + 3u);
+  if (silent_) {
+    mlog::line("audio: silenced by config");
+    return;
   }
 
-  // 사용자 소리 파일 (있으면 합성음 대신 사용)
-  static const wchar_t* kDirs[kKinds] = {L"Call", L"Bite", L"Step"};
-  static const int kMciVol[kKinds] = {800, 900, 250};
+  // 합성음: 종류마다 여러 버전
+  for (int k = 0; k < kSoundKinds; ++k) {
+    SoundId id = (SoundId)k;
+    for (int v = 0; v < soundVariants(id); ++v) bank_[k].push_back(synthSound(id, v));
+    last_[k] = -1;
+  }
+
+  // 사용자 소리 파일 (있으면 그 종류는 합성음 대신 사용)
   int aliasN = 0;
-  for (int k = 0; k < kKinds; ++k) {
-    for (const auto& path : listSoundFiles(soundDir + L"\\" + kDirs[k])) {
+  std::string summary;
+  for (int k = 0; k < kSoundKinds; ++k) {
+    std::wstring sub(soundName((SoundId)k), soundName((SoundId)k) + std::strlen(soundName((SoundId)k)));
+    for (const auto& path : listSoundFiles(soundDir + L"\\" + sub)) {
       std::wstring alias = L"magpie_snd_" + std::to_wstring(aliasN++);
       std::wstring cmd = L"open \"" + path + L"\" type mpegvideo alias " + alias;
-      if (mciSendStringW(cmd.c_str(), nullptr, 0, nullptr) != 0) continue;
-      mciSendStringW((L"setaudio " + alias + L" volume to " + std::to_wstring(kMciVol[k])).c_str(), nullptr, 0,
+      if (mciSendStringW(cmd.c_str(), nullptr, 0, nullptr) != 0) {
+        mlog::line("could not open sound file: %s", mlog::utf8(path).c_str());
+        continue;
+      }
+      mciSendStringW((L"setaudio " + alias + L" volume to " + std::to_wstring(kMciVolume[k])).c_str(), nullptr, 0,
                      nullptr);
       custom_[k].push_back(alias);
     }
+    summary += std::string(" ") + soundName((SoundId)k) + "=" + std::to_string(custom_[k].size());
   }
+  mlog::line("custom sound files:%s", summary.c_str());
 
   InitializeCriticalSection(&cs_);
   csInit_ = true;
@@ -66,7 +82,6 @@ void Audio::init(const std::wstring& soundDir, bool silent, uint32_t seed) {
   fmt.wBitsPerSample = 16;
   fmt.nBlockAlign = 2;
   fmt.nAvgBytesPerSec = kRate * 2;
-  mlog::line("custom sounds: call=%zu bite=%zu step=%zu", custom_[0].size(), custom_[1].size(), custom_[2].size());
   MMRESULT mr = waveOutOpen(&wo_, WAVE_MAPPER, &fmt, (DWORD_PTR)ev_, 0, CALLBACK_EVENT);
   if (mr != MMSYSERR_NOERROR) {
     mlog::line("audio: waveOutOpen failed (%u) - running without synthesized sound", (unsigned)mr);
@@ -89,15 +104,21 @@ void Audio::init(const std::wstring& soundDir, bool silent, uint32_t seed) {
 void Audio::play(SoundId id) {
   if (silent_) return;
   const int k = (int)id;
+  if (k < 0 || k >= kSoundKinds) return;
   if (!custom_[k].empty()) {
     const std::wstring& alias = custom_[k][rng_() % custom_[k].size()];
     mciSendStringW((L"play " + alias + L" from 0").c_str(), nullptr, 0, nullptr);
     return;
   }
-  if (!started_) return;
-  const std::vector<float>& s = bank_[k][rng_() % kVariants];
+  if (!started_ || bank_[k].empty()) return;
+  // 무작위 버전 (바로 전과 같은 건 피함)
+  int n = (int)bank_[k].size();
+  int v = (int)(rng_() % n);
+  if (n > 1 && v == last_[k]) v = (v + 1 + (int)(rng_() % (n - 1))) % n;
+  last_[k] = v;
+  const std::vector<float>& s = bank_[k][v];
   EnterCriticalSection(&cs_);
-  if (voices_.size() < 16) voices_.push_back({s.data(), s.size(), 0, vol_[k]});
+  if (voices_.size() < 16) voices_.push_back({s.data(), s.size(), 0, kVolume[k]});
   idleBufs_ = 0;
   if (paused_) {
     // 쌓여 있던 무음 버퍼를 버리고 바로 재생 (지연 최소화)

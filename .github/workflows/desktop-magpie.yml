@@ -43,7 +43,7 @@ jobs:
         shell: pwsh
         run: |
           $exe = Resolve-Path app/DesktopMagpie.exe
-          $p = Start-Process -FilePath $exe -ArgumentList '--selftest','150' -PassThru
+          $p = Start-Process -FilePath $exe -ArgumentList '--selftest','240' -PassThru
           $null = $p.Handle
           Start-Sleep -Seconds 6
           Add-Type -AssemblyName System.Windows.Forms, System.Drawing
@@ -52,10 +52,21 @@ jobs:
           $g = [System.Drawing.Graphics]::FromImage($bmp)
           $g.CopyFromScreen($b.Location, [System.Drawing.Point]::Empty, $b.Size)
           $bmp.Save("$PWD/app/screenshot.png")
-          if (-not $p.WaitForExit(200000)) { $p.Kill(); Write-Host "selftest hung" }
+          if (-not $p.WaitForExit(300000)) { $p.Kill(); Write-Host "selftest hung" }
           Get-Content app/DesktopMagpie.log -Encoding UTF8
           Write-Host "exit code: $($p.ExitCode)"
           if ($p.ExitCode -ne 0) { exit 1 }
+      - name: Close_Magpie.bat stops a running magpie
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath (Resolve-Path app/DesktopMagpie.exe) -PassThru
+          $null = $p.Handle
+          Start-Sleep -Seconds 5
+          if ($p.HasExited) { throw "magpie exited on its own" }
+          cmd /c app\Close_Magpie.bat
+          if (-not $p.WaitForExit(10000)) { $p.Kill(); throw "Close_Magpie.bat did not stop the magpie" }
+          Get-Content app/DesktopMagpie.log -Encoding UTF8 -Tail 2
+          Write-Host "stopped by Close_Magpie.bat"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -80,9 +91,9 @@ jobs:
         shell: pwsh
         run: |
           $exe = Resolve-Path build/Release/DesktopMagpie.exe
-          $p = Start-Process -FilePath $exe -ArgumentList '--selftest','150' -PassThru
+          $p = Start-Process -FilePath $exe -ArgumentList '--selftest','240' -PassThru
           $null = $p.Handle
-          if (-not $p.WaitForExit(200000)) { $p.Kill(); Write-Host "selftest hung" }
+          if (-not $p.WaitForExit(300000)) { $p.Kill(); Write-Host "selftest hung" }
           Get-Content build/Release/DesktopMagpie.log -Encoding UTF8
           Write-Host "exit code: $($p.ExitCode)"
           if ($p.ExitCode -ne 0) { exit 1 }
@@ -90,7 +101,8 @@ jobs:
         shell: pwsh
         run: |
           $d = "pkg/DesktopMagpie"
-          New-Item -ItemType Directory -Force "$d/Assets/Images","$d/Assets/Notes","$d/Assets/Sound/Call","$d/Assets/Sound/Bite","$d/Assets/Sound/Step" | Out-Null
+          New-Item -ItemType Directory -Force "$d/Assets/Images","$d/Assets/Notes" | Out-Null
+          foreach ($k in "Call","Chatter","Bite","Step","Flap","Drop") { New-Item -ItemType Directory -Force "$d/Assets/Sound/$k" | Out-Null }
           Copy-Item build/Release/DesktopMagpie.exe, dist/config.ini, dist/Close_Magpie.bat, "dist/읽어주세요.txt" $d
       - uses: actions/upload-artifact@v4
         with:
