@@ -37,7 +37,7 @@
 
 namespace {
 
-constexpr const char* kVersion = "1.0.2";
+constexpr const char* kVersion = "1.0.3";
 constexpr float kQuitHoldSeconds = 1.2f;  // ESC 를 이만큼 누르고 있으면 종료
 constexpr UINT WM_TRAY = WM_APP + 1;
 constexpr UINT WM_MAGPIE_QUIT = WM_APP + 2;  // Close_Magpie.bat (DesktopMagpie.exe --quit) 가 보내는 "집에 가" 신호

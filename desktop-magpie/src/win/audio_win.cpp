@@ -33,7 +33,7 @@ std::vector<std::wstring> listSoundFiles(const std::wstring& dir) {
 
 namespace {
 // 종류별 음량 (발소리는 작게)
-constexpr float kVolume[kSoundKinds] = {0.55f, 0.5f, 0.75f, 0.14f, 0.35f, 0.5f};
+constexpr float kVolume[kSoundKinds] = {0.45f, 0.4f, 0.55f, 0.12f, 0.25f, 0.4f};
 constexpr int kMciVolume[kSoundKinds] = {800, 750, 900, 250, 550, 750};
 }  // namespace
 

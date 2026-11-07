@@ -6,7 +6,7 @@ Desktop Goose 같은 장난 프로그램과 하는 일은 비슷하지만 캐릭
 - 실행 파일 하나(약 370KB). .NET이나 VC++ 런타임이 필요 없고 Windows 기본 DLL만 씁니다.
 - 기존 `config.ini` 형식(`key=value`)과 주요 키(`SilenceSounds`, `Task_CanAttackMouse`, `AttackRandomly`, `Min/Max/FirstWander...`)를 그대로 읽습니다.
 - 종료: **ESC를 1초 정도 꾹** 누르거나 `Close_Magpie.bat`을 실행합니다(`DesktopMagpie.exe --quit`과 같음. 관리자 권한으로 실행된 까치나 이름이 바뀐 exe도 끕니다).
-- 까치를 **클릭하면** 화나서 커서를 쫓아옵니다(`ChaseWhenClicked`). 평소엔 느긋하게 걷고 쫓아갈 때만 빠릅니다.
+- 까치를 **클릭하면** 화나서 커서를 쫓아옵니다(`ChaseWhenClicked`). 평소엔 느긋하게 걷고, 쫓아갈 때만 두 발 모아 깡충깡충 빠르게 뜁니다.
 
 ## 가볍게 만든 방법
 
@@ -30,7 +30,7 @@ src/
   magpie_draw.*     까치 그리기 (도형 조합, 색 변경 가능), 발자국
   pet.*             두뇌 + 몸: 스티어링 이동, 절차적 다리, 작업 상태 머신
   synth.*           소리 합성 — 파일 없이 코드로 생성. 종류마다 여러 버전:
-                    Call 4(까악), Chatter 2(깍깍깍), Bite 4(딱/아작/딱딱/콱), Step 4, Flap 2(푸드덕), Drop 2(툭)
+                    Call 4(까악/깍깍/까아~?/꺄!), Chatter 2(깍깍깍), Bite 4(뽁/뾱/뽁뽁/냠), Step 4(톡), Flap 2(파닥), Drop 2(통)
   sound_ids.h       소리 종류 = Assets\Sound\ 아래 폴더 이름
   config.*          config.ini 파서
   win/main.cpp      진입점: 투명·클릭통과 오버레이 창, 게임 루프, ESC 종료, 트레이

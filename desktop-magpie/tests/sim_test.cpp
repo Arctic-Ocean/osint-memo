@@ -112,6 +112,65 @@ void renderScene(Canvas& c, const Pet& pet, const FakePlatform& plat, const Magp
   c.fill(arrow, rgba(255, 255, 255));
 }
 
+// 다리 길이 = 엉덩이 바로 아래 바닥 지점 ~ 발 (단위). 거미 다리 검사용.
+float legLength(const MagpiePose& p, int i) {
+  Vec2 f = fromAngle(p.heading), r{-f.y, f.x};
+  float side = i == 0 ? -1.f : 1.f;
+  Vec2 hip = p.pos + r * (side * 4.2f * p.unit) + f * (0.5f * p.unit);
+  return length(p.feet[i] - hip) / p.unit;
+}
+
+// 사용자가 화난 까치 주위로 커서를 빙빙 돌리는 상황 + 창을 내려놓는 상황
+void runStress(const Config& baseCfg, float unit, const RectF& work, const RectF& mon) {
+  const float dt = 1.f / 60.f;
+  float worstLeg = 0.f;
+  for (int trial = 0; trial < 6; ++trial) {
+    FakePlatform plat;
+    Pet pet(baseCfg, plat, unit, 900u + trial);
+    pet.setScreens({work}, {mon});
+    for (int i = 0; i < 120; ++i) pet.update(dt);
+    pet.poke();
+    float ang = 0.f;
+    const float radius = (50.f + 25.f * trial) * unit, spin = 3.f + 1.5f * trial;  // 반지름, 돌리는 속도(rad/s)
+    for (int i = 0; i < 60 * 8; ++i) {
+      if (!pet.holdingMouse()) {
+        ang += spin * dt;
+        plat.cursor = pet.position() + Vec2{std::cos(ang), std::sin(ang)} * radius;
+      }
+      pet.update(dt);
+      MagpiePose p = pet.pose();
+      worstLeg = std::max({worstLeg, legLength(p, 0), legLength(p, 1)});
+    }
+  }
+  std::printf("stress: longest leg while circling cursor = %.1f units (normal ~0-6)\n", worstLeg);
+  CHECK(worstLeg < 9.f, "spider legs: leg stretched to %.1f units", worstLeg);
+
+  float worstSpin = 0.f, worstDropTime = 0.f;
+  for (int trial = 0; trial < 12; ++trial) {
+    FakePlatform plat;
+    Pet pet(baseCfg, plat, unit, 500u + trial);
+    pet.setScreens({work}, {mon});
+    for (int i = 0; i < 60; ++i) pet.update(dt);
+    pet.forceTask(trial % 2 ? TaskId::CollectImage : TaskId::CollectNote);
+    float spin = 0.f, carryTime = 0.f, prevH = pet.pose().heading;
+    for (int i = 0; i < 60 * 60 && pet.task() != TaskId::Wander; ++i) {
+      pet.update(dt);
+      float h = pet.pose().heading;
+      if (pet.carrying()) {
+        spin += std::fabs(wrapAngle(h - prevH));
+        carryTime += dt;
+      }
+      prevH = h;
+    }
+    worstSpin = std::max(worstSpin, spin);
+    worstDropTime = std::max(worstDropTime, carryTime);
+  }
+  std::printf("stress: while dragging a window, most turning = %.1f rad (%.2f turns), longest drag %.1fs\n",
+              worstSpin, worstSpin / (2.f * kPi), worstDropTime);
+  CHECK(worstSpin < kPi, "magpie spins while dropping a window (%.1f rad)", worstSpin);
+  CHECK(worstDropTime < 25.f, "window drag took too long (%.1fs) - probably circling", worstDropTime);
+}
+
 int runSim(const std::string& outdir) {
   Config cfg;
   cfg.minWander = 3.f;
@@ -288,6 +347,7 @@ int runSim(const std::string& outdir) {
     CHECK(inside, "window dropped partly off-screen at (%.0f,%.0f)", w->tl.x, w->tl.y);
   }
   CHECK(dropped > 1, "no windows were dropped on screen");
+  runStress(cfg, unit, work, mon);
   std::printf(g_fail ? "\n%d CHECK(S) FAILED\n" : "\nALL CHECKS PASSED\n", g_fail);
   return g_fail ? 1 : 0;
 }

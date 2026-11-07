@@ -8,10 +8,10 @@ inline const char* soundName(SoundId id) {
   switch (id) {
     case SoundId::Call: return "Call";        // 까악
     case SoundId::Chatter: return "Chatter";  // 깍깍깍깍 (화났을 때)
-    case SoundId::Bite: return "Bite";        // 딱 (물기)
+    case SoundId::Bite: return "Bite";        // 뽁 (물기)
     case SoundId::Step: return "Step";        // 톡 (발소리)
-    case SoundId::Flap: return "Flap";        // 푸드덕 (뛰기 시작)
-    case SoundId::Drop: return "Drop";        // 툭 (창 내려놓기)
+    case SoundId::Flap: return "Flap";        // 파닥 (뛰기 시작)
+    case SoundId::Drop: return "Drop";        // 통 (창 내려놓기)
     case SoundId::Count: break;
   }
   return "?";

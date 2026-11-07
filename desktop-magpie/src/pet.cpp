@@ -10,7 +10,11 @@ constexpr float kRunSpeed = 240.f;       // 커서 쫓아갈 때
 constexpr float kDragSpeed = 48.f;       // 창 끌고 올 때
 constexpr float kMouseDragSpeed = 55.f;  // 커서 물고 끌고 갈 때
 constexpr float kMudSpeed = 62.f;
-constexpr float kTurnRate = 8.f;            // 라디안/초
+constexpr float kTurnRate = 5.5f;           // 라디안/초
+constexpr float kHopStart = 110.f;          // 이 속도보다 빠르면 깡충 뛰기
+constexpr float kHopStop = 85.f;            // 이 속도보다 느려지면 다시 걷기
+constexpr float kLegReach = 6.f;            // 발이 이만큼 뒤처지면 바로 한 걸음
+constexpr float kLegMax = 8.5f;             // 들린 발은 이 길이를 넘지 않음
 constexpr float kFootprintLife = 16.f;      // 발자국 수명 (초)
 constexpr float kFootprintFade = 5.f;       // 마지막 몇 초 동안 흐려짐
 constexpr float kGrabRadius = 12.f;         // 부리 끝 ~ 커서 거리 (단위)
@@ -150,7 +154,9 @@ void Pet::thinkNab(float dt) {
   taskTimer_ += dt;
   if (sub_ == 0) {
     Vec2 cur = plat_.cursorPos();
-    goTo(targetForBeak(cur), kRunSpeed);
+    Vec2 toCur = cur - pos_;
+    float faceCur = length(toCur) > 1.f ? std::atan2(toCur.y, toCur.x) : heading_;
+    goTo(cur - beakOffsetFor(faceCur), kRunSpeed);
     if (length(beakTip() - cur) < kGrabRadius * u_) {
       plat_.playSound(SoundId::Bite);
       holdingMouse_ = true;
@@ -185,6 +191,10 @@ void Pet::thinkCollect(float dt) {
       }
       plat_.playSound(SoundId::Bite);
       dropBeak_ = pickDropPoint(*carried_);
+      {  // 내려놓을 자리를 처음 한 번만 계산 (뒷걸음이라 창 쪽 = 지나온 쪽을 보고 있게 됨)
+        Vec2 travel = normalize(dropBeak_ - beakTip());
+        dropPos_ = dropBeak_ - beakOffsetFor(std::atan2(-travel.y, -travel.x));
+      }
       backward_ = true;
       sub_ = 1;
       taskTimer_ = 0.f;
@@ -195,8 +205,8 @@ void Pet::thinkCollect(float dt) {
       endTask();
       return;
     }
-    goTo(targetForBeak(dropBeak_), kDragSpeed);
-    if (length(beakTip() - dropBeak_) < 8.f * u_ || taskTimer_ > 30.f) {
+    goTo(dropPos_, kDragSpeed);
+    if (arrived(4.f) || taskTimer_ > 30.f) {
       carried_->release();
       carried_.reset();
       plat_.playSound(SoundId::Drop);
@@ -305,11 +315,80 @@ void Pet::move(float dt) {
   turnRate_ = wrapAngle(heading_ - prev) / dt;
 }
 
-// 절차적 걷기: 발은 바닥에 고정, 몸이 멀어지면 한 발씩 앞으로 내딛는다
+// 절차적 걷기: 발은 바닥에 고정, 몸이 멀어지면 한 발씩 앞으로 내딛는다.
+// 빨리 달릴 땐 두 발을 모아 깡충깡충 뛴다. 어떤 경우에도 다리가 kLegMax 보다 길어지지 않는다.
 void Pet::updateLegs(float dt) {
   const Vec2 f = fromAngle(heading_), r{-f.y, f.x};
   const float spd = length(vel_);
-  const float stepDur = clampf(0.19f - spd / u_ * 0.0004f, 0.09f, 0.19f);
+  Vec2 ideal[2];
+  for (int i = 0; i < 2; ++i) ideal[i] = pos_ + r * ((i == 0 ? -1.f : 1.f) * 4.2f * u_) + f * (0.5f * u_);
+
+  // ---- 깡충 뛰기 ----
+  if (!hopping_ && spd > kHopStart * u_) {
+    hopping_ = true;
+    hopPhase_ = 0.f;
+    for (Foot& ft : feet_) ft.t = 1.f;
+  } else if (hopping_ && spd < kHopStop * u_) {
+    hopping_ = false;  // 발은 지금 자리에 그대로 내려놓고, 걷기 로직이 이어받음
+    hopLift_ = 0.f;
+    for (Foot& ft : feet_) {
+      ft.lift = 0.f;
+      ft.t = 1.f;
+    }
+  }
+  if (hopping_) {
+    constexpr float kAir = 0.7f;  // 한 번 뛸 때 공중에 있는 비율
+    const float rate = clampf(spd / (38.f * u_), 4.f, 6.5f);  // 초당 뛰는 횟수
+    const float prev = hopPhase_ - std::floor(hopPhase_);
+    hopPhase_ += rate * dt;
+    const float ph = hopPhase_ - std::floor(hopPhase_);
+    const bool landed = (prev < kAir && ph >= kAir) || (ph < prev && prev < kAir);
+    if (landed) {  // 착지: 발을 몸보다 살짝 앞에 딛어서, 땅에 있는 동안 몸이 발 위를 지나가게
+      const float ground = (1.f - kAir) / rate;
+      for (int i = 0; i < 2; ++i) hopPlant_[i] = ideal[i] + vel_ * (ground * 0.5f);
+    }
+    if (ph < kAir) {  // 공중: 발은 몸 아래에 붙어서 같이 뜸
+      hopLift_ = std::sin(kPi * ph / kAir) * (3.f + spd / u_ * 0.01f);
+      for (int i = 0; i < 2; ++i) {
+        feet_[i].pos = ideal[i];
+        feet_[i].lift = hopLift_;
+      }
+    } else {  // 땅: 발 고정
+      hopLift_ = 0.f;
+      for (int i = 0; i < 2; ++i) {
+        feet_[i].pos = hopPlant_[i];
+        feet_[i].lift = 0.f;
+      }
+    }
+    if (landed) {
+      for (int i = 0; i < 2; ++i) {
+        if (muddy_) prints_.push_back({hopPlant_[i], heading_, 0.f});
+      }
+      if (muddy_) printsChanged_ = true;
+      plat_.playSound(SoundId::Step);
+    }
+    return;
+  }
+
+  // ---- 걷기 ----
+  const float stepDur = clampf(0.19f - spd / u_ * 0.0004f, 0.12f, 0.19f);
+  const float reach = kLegReach * u_, maxLeg = kLegMax * u_;
+  // 발이 땅에 닿을 때 몸이 있을 자리(이동 + 회전까지 예측)
+  auto idealAt = [&](int i, float ahead) {
+    float h = heading_ + clampf(turnRate_, -kTurnRate, kTurnRate) * ahead;
+    Vec2 ff = fromAngle(h), rr{-ff.y, ff.x};
+    return pos_ + vel_ * ahead + rr * ((i == 0 ? -1.f : 1.f) * 4.2f * u_) + ff * (0.5f * u_);
+  };
+  auto startStep = [&](int i, float dur) {
+    Foot& ft = feet_[i];
+    Vec2 lead{0.f, 0.f};  // 몸보다 살짝 앞에 딛기
+    if (spd > 1.f) lead = vel_ * (std::min(reach * 0.5f, spd * dur * 0.45f) / spd);
+    ft.from = ft.pos;
+    ft.to = idealAt(i, dur) + lead;
+    ft.t = 0.f;
+    ft.dur = dur;
+    ft.height = 2.2f + spd / u_ * 0.012f;
+  };
 
   bool stepping = false;
   for (int i = 0; i < 2; ++i) {
@@ -327,30 +406,35 @@ void Pet::updateLegs(float dt) {
       stepping = true;
     }
   }
-  if (stepping) return;
 
-  const float thresh = std::max(2.5f * u_, spd * stepDur * 0.75f);
-  int best = -1;
-  float bestD = thresh;
-  Vec2 ideal[2];
-  for (int i = 0; i < 2; ++i) {
-    float side = i == 0 ? -1.f : 1.f;
-    ideal[i] = pos_ + r * (side * 4.2f * u_) + f * (0.5f * u_);
-    float d = length(ideal[i] - feet_[i].pos);
-    if (d > bestD) {
-      bestD = d;
-      best = i;
+  // 너무 뒤처진 발은 다른 발이 걷는 중이어도 바로 따라붙음 (빠르게 돌 때)
+  for (int i = 0; i < 2; ++i)
+    if (feet_[i].t >= 1.f && length(feet_[i].pos - ideal[i]) > reach) {
+      startStep(i, stepDur * 0.6f);
+      stepping = true;
     }
+
+  if (!stepping) {
+    const float thresh = std::max(2.5f * u_, spd * stepDur * 0.75f);
+    int best = -1;
+    float bestD = thresh;
+    for (int i = 0; i < 2; ++i) {
+      float d = length(ideal[i] - feet_[i].pos);
+      if (d > bestD) {
+        bestD = d;
+        best = i;
+      }
+    }
+    if (best >= 0) startStep(best, stepDur);
   }
-  if (best < 0) return;
-  Foot& ft = feet_[best];
-  Vec2 lead{0.f, 0.f};
-  if (spd > 1.f) lead = vel_ * stepDur + vel_ * (thresh * 0.6f / spd);
-  ft.from = ft.pos;
-  ft.to = ideal[best] + lead;
-  ft.t = 0.f;
-  ft.dur = stepDur;
-  ft.height = 2.2f + spd / u_ * 0.012f;
+
+  // 안전장치: 들려 있는 발은 다리 길이 상한을 넘지 않게 (땅에 붙은 발은 미끄러뜨리지 않고 위에서 바로 걷게 함)
+  for (int i = 0; i < 2; ++i) {
+    if (feet_[i].t >= 1.f) continue;
+    Vec2 d = feet_[i].pos - ideal[i];
+    float L = length(d);
+    if (L > maxLeg) feet_[i].pos = ideal[i] + d * (maxLeg / L);
+  }
 }
 
 void Pet::land(int i) {
@@ -431,13 +515,20 @@ MagpiePose Pet::pose() const {
     p.feet[i] = feet_[i].pos;
     p.footLift[i] = feet_[i].lift;
   }
-  p.bob = (feet_[0].lift + feet_[1].lift) * 0.2f;
+  p.bob = hopping_ ? hopLift_ : (feet_[0].lift + feet_[1].lift) * 0.2f;
   p.tailSway = tailSway_;
   p.tailLift = std::sin(tailFlick_ * kPi) * 5.f;
   p.headTurn = headTurn_;
   p.headThrust = beakOpen_ * 1.5f;
   p.beakOpen = beakOpen_;
   return p;
+}
+
+Vec2 Pet::beakOffsetFor(float heading) const {
+  MagpiePose p = pose();
+  p.heading = heading;
+  p.headTurn = 0.f;
+  return magpieBeakTip(p) - pos_;
 }
 
 // ---------------- 화면 헬퍼 ----------------

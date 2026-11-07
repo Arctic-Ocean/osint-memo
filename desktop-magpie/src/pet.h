@@ -102,7 +102,8 @@ class Pet {
   void stop() { hasTarget_ = false; }
   bool arrived(float eps) const { return hasTarget_ && length(target_ - pos_) < eps * u_; }
   Vec2 beakTip() const { return magpieBeakTip(pose()); }
-  Vec2 targetForBeak(Vec2 p) const { return p - (beakTip() - pos_); }
+  // heading 방향을 볼 때 부리 끝이 몸(pos_)에서 얼마나 떨어져 있나. 현재 방향과 무관 → 빙글빙글 도는 피드백이 없음
+  Vec2 beakOffsetFor(float heading) const;
 
   // 화면 헬퍼
   bool onScreen() const;
@@ -142,7 +143,12 @@ class Pet {
   float subTimer_ = 0.f, taskTimer_ = 0.f, wanderTimer_ = 0.f, callTimer_ = 0.f;
   bool holdingMouse_ = false;
   bool muddy_ = false;
-  Vec2 dragTarget_{0.f, 0.f}, dropBeak_{0.f, 0.f};
+  Vec2 dragTarget_{0.f, 0.f}, dropBeak_{0.f, 0.f}, dropPos_{0.f, 0.f};
+
+  // 빨리 달릴 땐 두 발 모아 깡충깡충 (까치는 실제로 그렇게 뜀)
+  bool hopping_ = false;
+  float hopPhase_ = 0.f, hopLift_ = 0.f;
+  Vec2 hopPlant_[2];
   std::unique_ptr<ICarriedWindow> carried_;
 
   std::vector<Footprint> prints_;
