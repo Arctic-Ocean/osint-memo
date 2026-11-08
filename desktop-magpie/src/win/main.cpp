@@ -37,7 +37,7 @@
 
 namespace {
 
-constexpr const char* kVersion = "1.0.4";
+constexpr const char* kVersion = "1.0.5";
 constexpr float kQuitHoldSeconds = 1.2f;  // ESC 를 이만큼 누르고 있으면 종료
 constexpr UINT WM_TRAY = WM_APP + 1;
 constexpr UINT WM_MAGPIE_QUIT = WM_APP + 2;  // Close_Magpie.bat (DesktopMagpie.exe --quit) 가 보내는 "집에 가" 신호
@@ -280,6 +280,60 @@ LRESULT CALLBACK OverlayProc(HWND h, UINT m, WPARAM w, LPARAM l) {
 
 // DesktopMagpie.exe --quit : 실행 중인 까치(들)에게 종료 신호를 보낸다.
 // taskkill 과 달리 관리자 권한으로 실행된 까치도 끌 수 있고, exe 이름이 바뀌어도 된다.
+// ---- 관리자 권한으로 실행됐을 때 ----
+// 관리자 권한으로 돌고 있는 까치는 일반 권한의 탐색기·배치 파일이 건드릴 수 없다
+// (폴더 삭제 시 "폴더 액세스가 거부됨", taskkill 실패 등). 그래서 UAC 로 승격된 상태로
+// 실행되면 탐색기를 통해 일반 사용자 권한으로 다시 실행하고 자신은 끝낸다.
+const wchar_t* const kRelaunchMark = L"Local\\DesktopMagpieRelaunch";
+
+bool isUacElevated() {
+  HANDLE tok = nullptr;
+  if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &tok)) return false;
+  TOKEN_ELEVATION_TYPE type = TokenElevationTypeDefault;
+  DWORD len = 0;
+  // Full = UAC 로 승격된 관리자. (UAC 가 꺼진 PC 는 Default 라서 건드리지 않음)
+  const bool full = GetTokenInformation(tok, TokenElevationType, &type, sizeof type, &len) &&
+                    type == TokenElevationTypeFull;
+  CloseHandle(tok);
+  return full;
+}
+
+bool relaunchAsNormalUser() {
+  // 이미 한 번 다시 실행된 것이라면(표식이 있으면) 무한 반복하지 않고 그대로 실행
+  HANDLE mark = OpenEventW(SYNCHRONIZE, FALSE, kRelaunchMark);
+  if (mark) {
+    CloseHandle(mark);
+    return false;
+  }
+  mark = CreateEventW(nullptr, TRUE, FALSE, kRelaunchMark);
+  wchar_t exe[MAX_PATH * 2];
+  DWORD n = GetModuleFileNameW(nullptr, exe, (DWORD)(sizeof(exe) / sizeof(exe[0])));
+  bool ok = false;
+  if (n > 0 && n < sizeof(exe) / sizeof(exe[0])) {
+    CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+    std::wstring arg = L"\"" + std::wstring(exe, n) + L"\"";
+    std::vector<HWND> before;  // 이미 떠 있던 까치들은 빼고 새로 뜬 것만 확인
+    for (HWND w = FindWindowExW(nullptr, nullptr, kControlClass, nullptr); w;
+         w = FindWindowExW(nullptr, w, kControlClass, nullptr))
+      before.push_back(w);
+    // explorer.exe 는 일반 사용자 권한으로 돌고 있으므로, 그를 통해 열면 일반 권한으로 실행됨
+    if ((INT_PTR)ShellExecuteW(nullptr, L"open", L"explorer.exe", arg.c_str(), nullptr, SW_SHOWNORMAL) > 32) {
+      // 새 까치가 정말 떴는지 확인 (다른 프로세스의 까치 제어 창이 생기면 성공).
+      // 5초 안에 안 뜨면 실패로 보고 이 프로세스가 그냥 실행한다 → "아무것도 안 뜨는" 일은 없음
+      for (int i = 0; i < 50 && !ok; ++i) {
+        Sleep(100);
+        for (HWND w = FindWindowExW(nullptr, nullptr, kControlClass, nullptr); w && !ok;
+             w = FindWindowExW(nullptr, w, kControlClass, nullptr)) {
+          ok = std::find(before.begin(), before.end(), w) == before.end();
+        }
+      }
+    }
+    CoUninitialize();
+  }
+  if (mark) CloseHandle(mark);
+  return ok;
+}
+
 int quitRunning() {
   std::vector<HWND> wins;
   for (HWND w = FindWindowExW(nullptr, nullptr, kControlClass, nullptr); w;
@@ -449,11 +503,16 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
   g_selftest = st.on;
   SetUnhandledExceptionFilter(crashFilter);
 
+  // 관리자 권한(UAC 승격)으로 실행되면 일반 권한으로 다시 실행 (자가 진단 중엔 그대로)
+  const bool elevated = isUacElevated();
+  if (elevated && !st.on && relaunchAsNormalUser()) return 0;
+
   const std::wstring dir = exeDir();
   mlog::open(dir + L"\\DesktopMagpie.log", tempDir() + L"\\DesktopMagpie.log");
   mlog::line("Desktop Magpie %s start%s", kVersion, st.on ? " (selftest)" : "");
   mlog::line("exe dir: %s", mlog::utf8(dir).c_str());
   logWindowsVersion();
+  if (elevated) mlog::line("running as administrator (could not relaunch as normal user)");
 
   enableDpiAwareness();
   Config cfg = loadConfig(dir);

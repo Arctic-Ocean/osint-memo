@@ -89,6 +89,7 @@ cmake --build build --config Release
 
 ## 진단
 
+- 관리자 권한(UAC 승격)으로 실행되면 탐색기를 통해 일반 사용자 권한으로 다시 실행하고 자신은 끝냅니다. 관리자 권한으로 돌면 일반 권한의 탐색기·배치 파일이 건드리지 못해서 폴더 삭제("폴더 액세스가 거부됨")나 종료가 막히기 때문입니다. 5초 안에 새 까치가 뜨지 않으면 그냥 그대로 실행합니다.
 - 실행할 때마다 exe 옆에 `DesktopMagpie.log`가 생깁니다(쓸 수 없으면 `%TEMP%`). 시작 과정, 모니터, 오디오, 작업 변화, 오류, 충돌 위치가 남습니다.
 - `DesktopMagpie.exe --selftest [초]`: 사진 → 메모 → 진흙 → 마우스 → 까치 클릭 순서로 모든 행동을 시키고, **화면을 실제로 캡처해서 까치가 보이는지**까지 확인한 뒤 종료합니다. 종료 코드 0이면 통과입니다.
 - GitHub Actions(`.github/workflows/desktop-magpie.yml`)가 MinGW 빌드와 MSVC 빌드를 진짜 Windows에서 `--selftest`로 돌립니다.

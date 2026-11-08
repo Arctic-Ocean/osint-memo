@@ -41,6 +41,9 @@
     - 안 생겼으면: Windows 가 실행 자체를 막은 것입니다
       Windows 보안 → 바이러스 및 위협 방지 → 보호 기록 에서 DesktopMagpie 를 확인
     (exe 폴더에 쓸 수 없으면 로그는 %TEMP%\DesktopMagpie.log 에 생깁니다)
- 4) 자가 진단: exe 가 있는 폴더 주소창에 cmd 입력 → 아래 명령 실행
+ 4) 폴더가 안 지워질 때 ("폴더 액세스가 거부됨"):
+    까치를 먼저 끄세요 (ESC 꾹 또는 Close_Magpie.bat). 실행 중인 프로그램의 폴더는 지울 수 없어요.
+    관리자 권한으로 실행해도 까치는 스스로 일반 권한으로 다시 실행되므로 이 문제가 생기지 않아요.
+ 5) 자가 진단: exe 가 있는 폴더 주소창에 cmd 입력 → 아래 명령 실행
       DesktopMagpie.exe --selftest
     40초쯤 혼자 모든 행동을 해 보고 꺼집니다. 로그 맨 아래 SELFTEST PASS / FAIL
