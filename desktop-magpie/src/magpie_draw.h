@@ -24,7 +24,12 @@ struct MagpiePose {
   float headTurn = 0.f;   // 고개 돌림 (라디안)
   float headThrust = 0.f; // 고개 내밀기 (단위)
   float beakOpen = 0.f;   // 0..1
+  float bodyZ = 12.f;     // 몸 높이 (발이 점이면 낮게, 다리를 그리면 17)
+  float legs = 0.f;       // 1 = 다리 그리기, 0 = 발을 점으로 (기본)
 };
+
+constexpr float kBodyZDots = 12.f;  // 발이 점일 때: 몸이 바닥 가까이 → 발이 몸 아래로 살짝 보임
+constexpr float kBodyZLegs = 17.f;  // 다리를 그릴 때
 
 void drawMagpie(Canvas& c, const MagpiePose& p, const MagpiePalette& pal);
 Vec2 magpieBeakTip(const MagpiePose& p);  // 부리 끝 화면 좌표 (커서/창을 무는 지점)

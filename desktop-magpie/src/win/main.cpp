@@ -37,7 +37,7 @@
 
 namespace {
 
-constexpr const char* kVersion = "1.0.3";
+constexpr const char* kVersion = "1.0.4";
 constexpr float kQuitHoldSeconds = 1.2f;  // ESC 를 이만큼 누르고 있으면 종료
 constexpr UINT WM_TRAY = WM_APP + 1;
 constexpr UINT WM_MAGPIE_QUIT = WM_APP + 2;  // Close_Magpie.bat (DesktopMagpie.exe --quit) 가 보내는 "집에 가" 신호
@@ -696,7 +696,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
       else if (st.visChecked && idle && st.next == 4) {
         st.next = 5;
         if (cfg.chaseWhenClicked) {  // 까치 몸통 한가운데를 진짜 마우스 클릭으로 눌러 봄
-          const Vec2 body = pose.pos + Vec2{0.f, -17.f * unit};
+          const Vec2 body = pose.pos + Vec2{0.f, -pose.bodyZ * unit};
           SetCursorPos((int)std::lround(body.x), (int)std::lround(body.y));
           INPUT in[2] = {};
           in[0].type = in[1].type = INPUT_MOUSE;

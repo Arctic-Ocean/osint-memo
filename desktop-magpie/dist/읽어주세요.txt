@@ -25,6 +25,7 @@
  Task_CanAttackMouse   False 면 마우스를 훔치지 않음
  AttackRandomly        True 면 돌아다니다가도 갑자기 마우스를 습격
  ChaseWhenClicked      True 면 까치를 클릭했을 때 커서를 쫓아옴 (기본 True)
+ ShowLegs              False 면 발을 동그란 점으로 (기본), True 면 다리를 그림
  UseCustomColors       True 면 아래 Magpie... 색을 사용
  Min/MaxWanderingTimeSeconds  다음 장난까지 어슬렁거리는 시간 (초)
  FirstWanderTimeSeconds       처음 장난까지의 시간 (초)

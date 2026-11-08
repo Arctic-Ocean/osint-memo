@@ -12,6 +12,7 @@ struct Config {
   bool canAttackMouse = true;   // Task_CanAttackMouse: 마우스 훔치기 작업 사용 여부
   bool attackRandomly = false;  // AttackRandomly: 돌아다니다가도 아무 때나 마우스 습격
   bool chaseWhenClicked = true; // ChaseWhenClicked: 까치를 클릭하면 화나서 커서를 쫓아옴
+  bool showLegs = false;        // ShowLegs: True 면 다리를 그림, False 면 발을 점으로 (기본)
   bool useCustomColors = false;
   Color black{0x1d, 0x1d, 0x24};
   Color white{0xf4, 0xf4, 0xf0};

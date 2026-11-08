@@ -13,8 +13,8 @@ constexpr float kMudSpeed = 62.f;
 constexpr float kTurnRate = 5.5f;           // 라디안/초
 constexpr float kHopStart = 110.f;          // 이 속도보다 빠르면 깡충 뛰기
 constexpr float kHopStop = 85.f;            // 이 속도보다 느려지면 다시 걷기
-constexpr float kLegReach = 6.f;            // 발이 이만큼 뒤처지면 바로 한 걸음
-constexpr float kLegMax = 8.5f;             // 들린 발은 이 길이를 넘지 않음
+constexpr float kLegReach = 5.f;            // 발이 이만큼 뒤처지면 바로 한 걸음
+constexpr float kLegMax = 7.f;              // 들린 발은 이 길이를 넘지 않음
 constexpr float kFootprintLife = 16.f;      // 발자국 수명 (초)
 constexpr float kFootprintFade = 5.f;       // 마지막 몇 초 동안 흐려짐
 constexpr float kGrabRadius = 12.f;         // 부리 끝 ~ 커서 거리 (단위)
@@ -536,6 +536,8 @@ MagpiePose Pet::pose() const {
   p.headTurn = headTurn_;
   p.headThrust = beakOpen_ * 1.5f;
   p.beakOpen = beakOpen_;
+  p.legs = cfg_.showLegs ? 1.f : 0.f;
+  p.bodyZ = cfg_.showLegs ? kBodyZLegs : kBodyZDots;
   return p;
 }
 

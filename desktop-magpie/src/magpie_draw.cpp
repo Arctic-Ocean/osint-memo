@@ -20,7 +20,6 @@ Basis basisOf(const MagpiePose& p) {
   return {p.pos, f, Vec2{-f.y, f.x}, p.unit};
 }
 
-constexpr float kBodyZ = 17.f;
 
 struct HeadGeo {
   Vec2 neckBase, center, dir, perp, beakBase, tip;
@@ -29,7 +28,7 @@ struct HeadGeo {
 HeadGeo headGeo(const MagpiePose& p) {
   const Basis B = basisOf(p);
   const float u = p.unit;
-  const float bz = kBodyZ + p.bob;
+  const float bz = p.bodyZ + p.bob;
   HeadGeo h;
   h.dir = rotate(B.f, p.headTurn);
   h.perp = {-h.dir.y, h.dir.x};
@@ -88,20 +87,30 @@ Vec2 magpieBeakTip(const MagpiePose& p) { return headGeo(p).tip; }
 void drawMagpie(Canvas& c, const MagpiePose& p, const MagpiePalette& pal) {
   const Basis B = basisOf(p);
   const float u = p.unit;
-  const float bz = kBodyZ + p.bob;
+  const float bz = p.bodyZ + p.bob;
   const float ow = std::max(1.f, 1.3f * u);  // 외곽선 두께 (픽셀)
   const Vec2 up{0.f, -u};
 
   // 1) 그림자
   c.fill(Ellipse(B.P(-5.f, 0.f, 0.f), 23.f * u, 12.5f * u, p.heading), pal.shadow);
 
-  // 2) 다리 + 발가락
+  // 2) 발. 그림 단계의 안전장치: 걷기 계산이 어떻든 발은 몸 바로 아래 일정 거리 안에만 그린다
+  //    → 다리(또는 발)가 거미처럼 멀리 늘어나 보이는 일이 구조적으로 없음
+  const bool legs = p.legs > 0.5f;
+  const float maxOff = (legs ? 5.f : 3.5f) * u;
   for (int i = 0; i < 2; ++i) {
     float side = i == 0 ? -1.f : 1.f;
-    Vec2 hip = B.P(0.5f, side * 4.2f, bz - 4.f);
-    Vec2 foot = p.feet[i] + Vec2{0.f, -p.footLift[i] * u};
-    drawToes(c, foot, B.f, u, pal.leg, 0.85f);
-    c.fill(Capsule(hip, foot, 1.25f * u), pal.leg);
+    Vec2 under = B.ground(0.5f, side * 4.2f);
+    Vec2 d = p.feet[i] - under;
+    if (length(d) > maxOff) d = normalize(d) * maxOff;
+    Vec2 foot = under + d + Vec2{0.f, -p.footLift[i] * u};
+    if (legs) {
+      drawToes(c, foot, B.f, u, pal.leg, 0.85f);
+      c.fill(Capsule(B.P(0.5f, side * 4.2f, bz - 4.f), foot, 1.25f * u), pal.leg);
+    } else {  // 동글동글한 점 발
+      c.fill(Circle(foot, 2.5f * u), pal.outline);
+      c.fill(Circle(foot, 1.9f * u), pal.leg);
+    }
   }
 
   // 3) 몸 도형들 계산
@@ -170,7 +179,7 @@ MagpiePose makeStandingPose(Vec2 visualCenter, float unit, float heading) {
   MagpiePose p;
   Vec2 f = fromAngle(heading), r{-f.y, f.x};
   // 까치 그림의 시각적 중심은 바닥 위치보다 뒤쪽(꼬리 쪽)·위쪽에 있다
-  p.pos = visualCenter + f * (9.f * unit) + Vec2{0.f, 10.f * unit};
+  p.pos = visualCenter + f * (9.f * unit) + Vec2{0.f, 5.f * unit};
   p.heading = heading;
   p.unit = unit;
   p.feet[0] = p.pos + r * (-4.2f * unit) + f * (0.5f * unit);

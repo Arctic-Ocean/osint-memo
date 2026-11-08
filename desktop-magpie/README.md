@@ -110,6 +110,7 @@ cmake --build build --config Release
 | `Task_CanAttackMouse` | True | 마우스 훔치기 사용 |
 | `AttackRandomly` | False | 어슬렁거리다가도 아무 때나 마우스 습격 |
 | `ChaseWhenClicked` | True | 까치를 클릭하면 커서를 쫓아옴 (끄면 까치가 클릭을 그대로 통과시킴) |
+| `ShowLegs` | False | False: 발을 점으로 그림(몸이 바닥 가까이). True: 다리와 발가락을 그림 |
 | `UseCustomColors` | False | 아래 `Magpie*` 색 사용 |
 | `MagpieBlack` / `MagpieWhite` / `MagpieBlue` / `MagpieOutline` | | 몸 / 어깨깃 / 날개·꼬리 광택 / 외곽선 색 |
 | `MinWanderingTimeSeconds` | 20 | 장난 사이 최소 대기 |

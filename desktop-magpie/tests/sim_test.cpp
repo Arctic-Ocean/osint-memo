@@ -156,7 +156,7 @@ void runStress(const Config& baseCfg, float unit, const RectF& work, const RectF
     for (int i = 0; i < 90 + 13 * trial; ++i) pet.update(dt);
     MagpiePose p = pet.pose();
     Vec2 off{(float)((trial % 5) - 2) * 4.f * unit, (float)((trial / 5) - 1) * 4.f * unit};
-    plat.cursor = p.pos + Vec2{0.f, -17.f * unit} + off;  // 몸통 한가운데 근처
+    plat.cursor = p.pos + Vec2{0.f, -p.bodyZ * unit} + off;  // 몸통 한가운데 근처
     ++clickTrials;
     if (!pet.poke()) {
       std::printf("  click trial %d: poke refused (task %s, carrying %d)\n", trial, taskName(pet.task()), pet.carrying());
@@ -408,6 +408,38 @@ int runSim(const std::string& outdir) {
   }
   CHECK(dropped > 1, "no windows were dropped on screen");
   runStress(cfg, unit, work, mon);
+
+  // 그림 단계 안전장치: 발 좌표가 엉뚱하게 멀어도(60단위) 화면엔 몸 근처에만 그려져야 함
+  for (int legs = 0; legs < 2; ++legs) {
+    const int W = 400, H = 400;
+    std::vector<uint32_t> px(W * H, 0u);
+    Canvas cv;
+    cv.px = px.data();
+    cv.w = W;
+    cv.h = H;
+    cv.stride = W;
+    MagpiePose p = makeStandingPose(Vec2{200.f, 200.f}, 2.f, 0.4f);
+    p.legs = (float)legs;
+    p.bodyZ = legs ? kBodyZLegs : kBodyZDots;
+    MagpiePose ref = p;
+    p.feet[0] += Vec2{-60.f, 45.f} * 2.f;
+    p.feet[1] += Vec2{50.f, 60.f} * 2.f;
+    drawMagpie(cv, p, pal);
+    std::vector<uint32_t> px2(W * H, 0u);
+    cv.px = px2.data();
+    drawMagpie(cv, ref, pal);
+    // 정상 자세의 그림에서 가장 먼 픽셀보다 발 때문에 더 멀리 칠해진 픽셀이 없어야 함
+    float maxRef = 0.f, maxBad = 0.f;
+    for (int y = 0; y < H; ++y)
+      for (int x = 0; x < W; ++x) {
+        float d = length(Vec2{(float)x, (float)y} - ref.pos);
+        if (px2[y * W + x] >> 24) maxRef = std::max(maxRef, d);
+        if (px[y * W + x] >> 24) maxBad = std::max(maxBad, d);
+      }
+    std::printf("render guard (%s): farthest pixel %.0fpx with feet 60 units away vs %.0fpx normal\n",
+                legs ? "legs" : "dot feet", maxBad, maxRef);
+    CHECK(maxBad <= maxRef + 8.f, "feet drawn far from the body (%.0f > %.0f)", maxBad, maxRef);
+  }
   std::printf(g_fail ? "\n%d CHECK(S) FAILED\n" : "\nALL CHECKS PASSED\n", g_fail);
   return g_fail ? 1 : 0;
 }
